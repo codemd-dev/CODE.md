@@ -1,120 +1,401 @@
 # CODE.md
 
-**A parser-generated source map for AI coding assistants.**
+Machine-generated structural truth for this repository.
 
-CODE.md is a single, structured Markdown file that gives AI coding assistants a reliable map of your repository: languages, structure, entry points, API routes, callgraphs, filegraphs, UI flows, TODOs, behavior constraints, validation notes, and known gaps.
+Used by AI coding assistants to understand architecture, code flow, dependencies, UI behavior, TODOs, known gaps, and validation rules.
 
-It is extracted from the actual codebase instead of guessed.
-
-**README.md is for humans.**
-**AGENTS.md is for agent behavior.**
-**CLAUDE.md is for Claude-specific context.**
-**CODE.md is for the codebase itself.**
+Generated from direct repository evidence only.
 
 ---
 
-## Why CODE.md?
+## Overview
 
-AI coding assistants often waste tokens exploring the same repository over and over. Worse, they can hallucinate architecture, routes, dependencies, or code flow when they do not have enough context.
+This repository contains the source code for `<project_name>`.
 
-CODE.md gives them a structured starting point.
-
-It helps AI agents:
-
-* Understand the repository faster
-* Follow real code flow
-* Find entry points and important files
-* Use parser-generated callgraphs and filegraphs
-* Trace UI-to-code behavior
-* Reduce hallucinations
-* Avoid repeated repo exploration
-* Save developer time and token cost
-
----
-
-## What is CODE.md?
-
-CODE.md is a structured Markdown file placed in the root of a repository.
-
-It gives AI coding assistants a parser-generated understanding of the codebase, including:
-
-* Repository structure
-* Primary languages
-* Entry points
-* API routes
-* Modules and responsibilities
-* Callgraph summary
-* Filegraph summary
-* UI graph
-* TODOs and known gaps
-* Behavior constraints
-* Drift analysis
-* Validation notes
-* Autoheal or self-healing rules
-
-A CODE.md file can be written manually, but it is most useful when it is auto-generated from real repository evidence.
-
----
-
-## Where CODE.md fits
-
-CODE.md is one of the core files for AI-assisted development:
-
-| File        | Purpose                                          |
-| ----------- | ------------------------------------------------ |
-| `README.md` | Explains the project to humans                   |
-| `AGENTS.md` | Tells AI agents how to behave                    |
-| `CLAUDE.md` | Gives Claude-specific project context            |
-| `CODE.md`   | Explains the codebase structure to AI assistants |
-
-Simple version:
+Its primary purpose is:
 
 ```text
-AGENTS.md = the rules
-CLAUDE.md = the briefing
-CODE.md   = the source map
+<brief_description>
 ```
 
-Reference `CODE.md` from your `AGENTS.md` or `CLAUDE.md` file so every AI coding session starts with the repository map instead of rediscovering the project from scratch.
+Key capabilities include:
+
+* `<capability_1>`
+* `<capability_2>`
+* `<capability_3>`
+
+### Why this helps LLMs
+
+LLMs perform better when they start with a high-level mental model of the project. This reduces misinterpretation and prevents the model from wasting tokens trying to infer the repository’s purpose from scattered source files.
 
 ---
 
-## CODE.md format guide
+## Evidence Policy
 
-A CODE.md file uses plain Markdown sections. Each section answers a question an AI coding assistant would otherwise have to infer by scanning the repository manually.
+* Scope of analysis: `<folder_or_repo_scope>`
+* Artifact root: `<artifact_path>`
+* Only direct extraction artifacts used: `<true/false>`
+* LLM-generated content included: `<true/false>`
+* Excluded artifacts:
 
-The standard sections are:
+  * `<excluded_artifact_1>`
+  * `<excluded_artifact_2>`
+  * `<excluded_artifact_3>`
 
-1. Overview
-2. Evidence Policy
-3. System Summary
-4. Repository Structure
-5. Modules & Responsibilities
-6. API Routes
-7. Entry Points
-8. Callgraph Summary
-9. Filegraph Summary
-10. UI Graph
-11. Source Inventory
-12. Behavior & Constraints
-13. Drift Analysis
-14. Validation
-15. Autoheal / Self-Healing
-16. Why This Helps LLMs
+Notes:
+
+```text
+<clarifications_about_missing_semantics_or_intent>
+```
+
+### Why this helps LLMs
+
+LLMs hallucinate when they assume missing context. This section tells the model what was extracted, what was excluded, and what should not be inferred.
 
 ---
 
-## Generate CODE.md
+## System Summary
 
-CodeMD.dev generates CODE.md from real repository evidence, including source files, parser output, callgraphs, filegraphs, UI graphs, TODOs, and structural metadata.
+* Primary languages:
 
-The goal is simple:
+  * `<language_1>`: `<percentage_or_count>`
+  * `<language_2>`: `<percentage_or_count>`
+  * `<language_3>`: `<percentage_or_count>`
+
+* Total source files: `<count>`
+
+* Total lines of code: `<count>`
+
+* Description: `<short_system_description>`
+
+### Why this helps LLMs
+
+Knowing the languages, file counts, and scale helps the model reason faster and avoid incorrect assumptions about the architecture.
+
+---
+
+## Repository Structure
+
+Folders:
+
+* `/src` — `<description>`
+* `/features` — `<description>`
+* `/static` — `<description>`
+* `/tests` — `<description>`
+
+Sample files:
+
+* `/src/main.py` — `<description>`
+* `/features/detector.py` — `<description>`
+* `/static/dashboard.html` — `<description>`
+
+### Why this helps LLMs
+
+LLMs waste tokens scanning file trees. A structured summary lets them jump directly to the relevant parts of the repository.
+
+---
+
+## Modules & Responsibilities
+
+### Module: `<module_name>`
+
+* Responsibility: `<description>`
+* Allowed imports:
+
+  * `<allowed_import_1>`
+  * `<allowed_import_2>`
+* Forbidden imports:
+
+  * `<forbidden_import_1>`
+  * `<forbidden_import_2>`
+
+### Module: `<module_name>`
+
+* Responsibility: `<description>`
+* Allowed imports:
+
+  * `<allowed_import_1>`
+* Forbidden imports:
+
+  * `<forbidden_import_1>`
+
+### Why this helps LLMs
+
+LLMs often struggle with modular boundaries. This section prevents confusion and improves reasoning about dependencies.
+
+---
+
+## API Routes
+
+Routes detected from direct source evidence:
+
+| Method           | Route     | Handler     | Source   |
+| ---------------- | --------- | ----------- | -------- |
+| `<GET/POST/etc>` | `<route>` | `<handler>` | `<file>` |
+
+If no routes were detected:
+
+```text
+No API routes found from available direct evidence.
+```
+
+### Why this helps LLMs
+
+API routes help agents understand how external requests enter the system and which functions handle them.
+
+---
+
+## Entry Points
+
+Detected entry points:
+
+| Entry Point     | File     | Description     |
+| --------------- | -------- | --------------- |
+| `<entry_point>` | `<file>` | `<description>` |
+
+Examples:
+
+* `main.search`
+* `main.analyze_repo`
+* `api.search`
+
+### Why this helps LLMs
+
+Entry points tell the model where execution begins, so it does not have to guess which functions matter most.
+
+---
+
+## Callgraph Summary
+
+* Node count: `<count>`
+* Edge count: `<count>`
+
+Entry points:
+
+* `<entry_point_1>`
+* `<entry_point_2>`
+* `<entry_point_3>`
+
+Top connected nodes:
+
+| Function     |     Degree |
+| ------------ | ---------: |
+| `<function>` | `<degree>` |
+| `<function>` | `<degree>` |
+
+Example call edges:
+
+* `<caller>` → `<callee>`
+* `<caller>` → `<callee>`
+
+### Why this helps LLMs
+
+Instead of parsing thousands of lines of code, the model gets a pre-computed flow of how functions interact. This dramatically reduces token usage and improves reasoning accuracy.
+
+---
+
+## Filegraph Summary
+
+Core files:
+
+* `<file>` — `<description>`
+* `<file>` — `<description>`
+
+Example file edges:
+
+* `<file_a>` → `<file_b>`
+* `<file_c>` → `<file_d>`
+
+Hotspots:
+
+* `<file>` — `<reason>`
+* `<file>` — `<reason>`
+
+### Why this helps LLMs
+
+The filegraph shows architectural hotspots and dependency clusters without requiring the model to scan every file.
+
+---
+
+## UI Graph
+
+* Node count: `<count>`
+* Edge count: `<count>`
+
+Example interactions:
+
+* `<page>.<element>` → `<javascript_handler>`
+* `<page>.<button>` → `<api_route>`
+* `<form>` → `<submit_handler>`
+
+Example:
+
+* `dashboard.html.analyzeRepoButton` → `js.analyzeRepo`
+* `dashboard.html.exportPdfButton` → `js.exportDashboardPdf`
+
+### Why this helps LLMs
+
+The UI graph lets agents trace UI → JavaScript → API behavior without manually parsing HTML, JavaScript, and backend routes.
+
+---
+
+## Source Inventory
+
+* Function count: `<count>`
+* Class count: `<count>`
+* Comment count: `<count>`
+* TODO count: `<count>`
+
+TODOs:
+
+| File     |     Line | Text          |
+| -------- | -------: | ------------- |
+| `<file>` | `<line>` | `<todo_text>` |
+
+Known gaps:
+
+* `<gap_1>`
+* `<gap_2>`
+
+### Why this helps LLMs
+
+The source inventory helps agents quickly locate TODOs, missing logic, weak spots, and areas needing improvement.
+
+---
+
+## Behavior & Constraints
+
+Known invariants:
+
+* `<invariant_1>`
+* `<invariant_2>`
+
+Constraints:
+
+* `<constraint_1>`
+* `<constraint_2>`
+
+Error rules:
+
+* `<error_rule_1>`
+* `<error_rule_2>`
+
+Security or safety rules:
+
+* `<rule_1>`
+* `<rule_2>`
+
+### Why this helps LLMs
+
+This prevents incorrect assumptions about how the system behaves and what must remain true after code changes.
+
+---
+
+## Drift Analysis
+
+* Structure drift: `<unknown/low/medium/high>`
+* Semantic drift: `<unknown/low/medium/high>`
+* Documentation drift: `<unknown/low/medium/high>`
+
+Timeline:
+
+| Date     | Change     |
+| -------- | ---------- |
+| `<date>` | `<change>` |
+
+Notes:
+
+```text
+<drift_notes>
+```
+
+### Why this helps LLMs
+
+This helps the model understand whether older documentation, comments, or assumptions may be outdated.
+
+---
+
+## Validation
+
+Critical flows:
+
+* `<flow_1>`
+* `<flow_2>`
+
+Invariants to preserve:
+
+* `<invariant_1>`
+* `<invariant_2>`
+
+Browser tests:
+
+* `<test_1>`
+* `<test_2>`
+
+Backend tests:
+
+* `<test_1>`
+* `<test_2>`
+
+Manual validation steps:
+
+* `<step_1>`
+* `<step_2>`
+
+### Why this helps LLMs
+
+Validation notes improve reasoning about correctness and help agents avoid making changes without checking important flows.
+
+---
+
+## Autoheal / Self-Healing
+
+Fix patterns:
+
+* `<fix_pattern_1>`
+* `<fix_pattern_2>`
+
+Safe rules:
+
+* `<safe_rule_1>`
+* `<safe_rule_2>`
+
+Risky areas:
+
+* `<risky_area_1>`
+* `<risky_area_2>`
+
+Validation steps after auto-fix:
+
+* `<step_1>`
+* `<step_2>`
+
+### Why this helps LLMs
+
+This helps the model understand how the system repairs itself, which fixes are safe, and which areas require human review.
+
+---
+
+## Why This Helps LLMs
+
+CODE.md gives AI coding assistants a structured map of the repository before they begin working.
+
+It helps by:
+
+* Giving the LLM a source map of the repository
+* Reducing the need to scan thousands of lines of code
+* Preventing hallucinations by clarifying what is known and unknown
+* Cutting token usage through pre-computed metadata
+* Improving accuracy when answering codebase questions
+* Helping agents follow real callgraphs and file dependencies
+* Making UI, API, and backend flows easier to trace
+* Saving developer time by avoiding repeated repo exploration
+
+In simple terms:
 
 ```text
 Fewer tokens.
 Fewer hallucinations.
-Less repeated repo exploration.
-More accurate AI coding assistance.
+Less repeated exploration.
+Better AI coding assistance.
 ```
-
-CODE.md gives AI assistants a source map before they start coding.
