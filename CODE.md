@@ -263,34 +263,6 @@ The source inventory helps agents quickly locate TODOs, missing logic, weak spot
 
 ---
 
-## Behavior & Constraints
-
-Known invariants:
-
-* `<invariant_1>`
-* `<invariant_2>`
-
-Constraints:
-
-* `<constraint_1>`
-* `<constraint_2>`
-
-Error rules:
-
-* `<error_rule_1>`
-* `<error_rule_2>`
-
-Security or safety rules:
-
-* `<rule_1>`
-* `<rule_2>`
-
-### Why this helps LLMs
-
-This prevents incorrect assumptions about how the system behaves and what must remain true after code changes.
-
----
-
 ## Why This Helps LLMs
 
 CODE.md gives AI coding assistants a structured map of the repository before they begin working.
