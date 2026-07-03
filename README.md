@@ -67,7 +67,7 @@ CODE.md is one of the core files for AI-assisted development:
 ## Auto-Generate CODE.md
 https://www.codemd.dev/dashboard
 
-Simple version:
+## Simple version:
 
 ```text
 AGENTS.md = the rules
