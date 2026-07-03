@@ -64,11 +64,13 @@ CODE.md is one of the core files for AI-assisted development:
 | `CLAUDE.md` | Gives Claude-specific project context |
 | `CODE.md` | Explains the codebase structure to AI assistants |
 
+---
+
 ## Auto-Generate CODE.md
 https://www.codemd.dev/dashboard
 
-## Simple version:
-
+---
+## Simple version
 ```text
 AGENTS.md = the rules
 CLAUDE.md = the briefing
