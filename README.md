@@ -1,16 +1,6 @@
-
-CM
-CodeMD.dev
-Why CODE.md
-What is CODE.md?
-API
-Generate CODE.md
-CODE.md format guide
 What is CODE.md?
 CODE.md is a single, structured markdown file that gives AI coding assistants a parser-generated map of your repository: languages, structure, entry points, callgraphs, UI flows, TODOs, and known gaps, all extracted from the actual code rather than guessed. Drop it into your repo and every AI agent that reads it starts from truth, not exploration.
 
-Generate my CODE.md
-Jump to the format
 CODE.md gives AI assistants a reliable, parser-generated understanding of the codebase, helping them answer with more accuracy, reduce hallucinations, and save developers time by avoiding repeated repo exploration.
 
 Where CODE.md fits
