@@ -70,3 +70,7 @@ Simple version:
 AGENTS.md = the rules
 CLAUDE.md = the briefing
 CODE.md   = the source map
+
+## Auto-Generate of CODE.md
+https://www.codemd.dev/dashboard
+
