@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-L5ZYJ817HR"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-L5ZYJ817HR');
+    </script>
+    <meta charset="utf-8" />
+    <title>Graph</title>
+
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        #cy {
+            width: 100%;
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            background: #fff;
+        }
+
+        #status {
+            position: absolute;
+            left: 8px;
+            top: 8px;
+            z-index: 10;
+            max-width: calc(100% - 16px);
+            font-family: Arial, sans-serif;
+            font-size: 13px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 6px 8px;
+            border: 1px solid #ddd;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="status">Loading Graph...</div>
+    <div id="cy"></div>
+
+<script>
+const GRAPH_JSON = "/output_a1b2c3d4/local-_Finall_5580e01e/python/python_callgraph.json";
+const GRAPH_TITLE = "Graph";
+const statusEl = document.getElementById("status");
+
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Failed to load script ${src}`));
+        document.head.appendChild(script);
+    });
+}
+
+function loadCytoscape() {
+    return loadScript("/lib/cytoscape/cytoscape.min.js")
+        .catch(() => loadScript("https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"))
+        .then(() => {
+            if (!window.cytoscape) throw new Error("Cytoscape failed to initialize.");
+        });
+}
+
+function loadGraphData() {
+    return fetch(GRAPH_JSON)
+    .then(r => {
+        if (!r.ok) throw new Error(`Failed to load ${GRAPH_JSON}: ${r.status}`);
+        return r.json();
+    })
+    .catch(err => {
+        console.warn(err);
+        statusEl.textContent = `Using embedded graph data because ${GRAPH_JSON} could not be fetched.`;
+        return EMBEDDED_GRAPH_DATA;
+    });
+}
+
+const EMBEDDED_GRAPH_DATA = {"mode":"python_semantic_ast_merged","parser":"python-analyzer-pycg+python-ast","version":4,"nodes":["tasksChat","tasksChat._urlsafe_b64decode","tasksChat.complete_task","tasksChat.create_signed_oauth_state","tasksChat.create_task","tasksChat.create_user_with_google_tokens","tasksChat.debug_pending_states","tasksChat.get_current_user","tasksChat.get_google_token_for_request","tasksChat.get_valid_google_token","tasksChat.list_task_lists","tasksChat.list_tasks","tasksChat.now_ts","tasksChat.oauth_callback","tasksChat.oauth_start","tasksChat.oauth_token","tasksChat.parse_signed_oauth_state","tasksChat.privacy","tasksChat.privacy_html","tasksChat.refresh_google_token","tasksChat.taskschat","tasksChat.terms","tasksChat.terms_html","tasksChat.uncomplete_task","tasksChat.update_task","tasksChat___urlsafe_b64decode","tasksChat__complete_task","tasksChat__create_signed_oauth_state","tasksChat__create_task","tasksChat__create_user_with_google_tokens","tasksChat__debug_pending_states","tasksChat__get_current_user","tasksChat__get_google_token_for_request","tasksChat__get_valid_google_token","tasksChat__list_task_lists","tasksChat__list_tasks","tasksChat__now_ts","tasksChat__oauth_callback","tasksChat__oauth_start","tasksChat__oauth_token","tasksChat__parse_signed_oauth_state","tasksChat__refresh_google_token","tasksChat__uncomplete_task","tasksChat__update_task"],"edges":[["tasksChat","tasksChat__get_current_user"],["tasksChat","tasksChat__get_google_token_for_request"],["tasksChat.create_user_with_google_tokens","tasksChat.now_ts"],["tasksChat.debug_pending_states","tasksChat.now_ts"],["tasksChat.get_google_token_for_request","tasksChat.get_valid_google_token"],["tasksChat.get_valid_google_token","tasksChat.now_ts"],["tasksChat.get_valid_google_token","tasksChat.refresh_google_token"],["tasksChat.oauth_callback","tasksChat.create_user_with_google_tokens"],["tasksChat.oauth_callback","tasksChat.now_ts"],["tasksChat.oauth_callback","tasksChat.parse_signed_oauth_state"],["tasksChat.oauth_start","tasksChat.create_signed_oauth_state"],["tasksChat.oauth_start","tasksChat.now_ts"],["tasksChat.oauth_token","tasksChat.now_ts"],["tasksChat.parse_signed_oauth_state","tasksChat._urlsafe_b64decode"],["tasksChat__complete_task","tasksChat__get_google_token_for_request"],["tasksChat__create_task","tasksChat__get_google_token_for_request"],["tasksChat__create_user_with_google_tokens","tasksChat__now_ts"],["tasksChat__debug_pending_states","tasksChat__now_ts"],["tasksChat__get_google_token_for_request","tasksChat__get_current_user"],["tasksChat__get_google_token_for_request","tasksChat__get_valid_google_token"],["tasksChat__get_valid_google_token","tasksChat__now_ts"],["tasksChat__get_valid_google_token","tasksChat__refresh_google_token"],["tasksChat__list_task_lists","tasksChat__get_google_token_for_request"],["tasksChat__list_tasks","tasksChat__get_google_token_for_request"],["tasksChat__oauth_callback","tasksChat__create_user_with_google_tokens"],["tasksChat__oauth_callback","tasksChat__now_ts"],["tasksChat__oauth_callback","tasksChat__parse_signed_oauth_state"],["tasksChat__oauth_start","tasksChat__create_signed_oauth_state"],["tasksChat__oauth_start","tasksChat__now_ts"],["tasksChat__oauth_token","tasksChat__now_ts"],["tasksChat__parse_signed_oauth_state","tasksChat___urlsafe_b64decode"],["tasksChat__uncomplete_task","tasksChat__get_google_token_for_request"],["tasksChat__update_task","tasksChat__get_google_token_for_request"]],"ordered_calls":[{"caller":"tasksChat","callee":"tasksChat__get_current_user","file":"","line":null,"order":1,"call_text":"tasksChat__get_current_user"},{"caller":"tasksChat","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":2,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__get_google_token_for_request","callee":"tasksChat__get_current_user","file":"","line":null,"order":3,"call_text":"tasksChat__get_current_user"},{"caller":"tasksChat__get_google_token_for_request","callee":"tasksChat__get_valid_google_token","file":"","line":null,"order":4,"call_text":"tasksChat__get_valid_google_token"},{"caller":"tasksChat__complete_task","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":5,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__create_task","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":6,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__create_user_with_google_tokens","callee":"tasksChat__now_ts","file":"","line":null,"order":7,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__debug_pending_states","callee":"tasksChat__now_ts","file":"","line":null,"order":8,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__get_valid_google_token","callee":"tasksChat__now_ts","file":"","line":null,"order":9,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__get_valid_google_token","callee":"tasksChat__refresh_google_token","file":"","line":null,"order":10,"call_text":"tasksChat__refresh_google_token"},{"caller":"tasksChat__list_task_lists","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":11,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__list_tasks","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":12,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__oauth_callback","callee":"tasksChat__create_user_with_google_tokens","file":"","line":null,"order":13,"call_text":"tasksChat__create_user_with_google_tokens"},{"caller":"tasksChat__oauth_callback","callee":"tasksChat__now_ts","file":"","line":null,"order":14,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__oauth_callback","callee":"tasksChat__parse_signed_oauth_state","file":"","line":null,"order":15,"call_text":"tasksChat__parse_signed_oauth_state"},{"caller":"tasksChat__parse_signed_oauth_state","callee":"tasksChat___urlsafe_b64decode","file":"","line":null,"order":16,"call_text":"tasksChat___urlsafe_b64decode"},{"caller":"tasksChat__oauth_start","callee":"tasksChat__create_signed_oauth_state","file":"","line":null,"order":17,"call_text":"tasksChat__create_signed_oauth_state"},{"caller":"tasksChat__oauth_start","callee":"tasksChat__now_ts","file":"","line":null,"order":18,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__oauth_token","callee":"tasksChat__now_ts","file":"","line":null,"order":19,"call_text":"tasksChat__now_ts"},{"caller":"tasksChat__uncomplete_task","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":20,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat__update_task","callee":"tasksChat__get_google_token_for_request","file":"","line":null,"order":21,"call_text":"tasksChat__get_google_token_for_request"},{"caller":"tasksChat.parse_signed_oauth_state","callee":"tasksChat._urlsafe_b64decode","file":"tasksChat.py","line":113,"column":14,"order":22,"call_text":"_urlsafe_b64decode"},{"caller":"tasksChat.create_user_with_google_tokens","callee":"tasksChat.now_ts","file":"tasksChat.py","line":152,"column":26,"order":23,"call_text":"now_ts"},{"caller":"tasksChat.create_user_with_google_tokens","callee":"tasksChat.now_ts","file":"tasksChat.py","line":154,"column":22,"order":24,"call_text":"now_ts"},{"caller":"tasksChat.get_valid_google_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":205,"column":24,"order":25,"call_text":"now_ts"},{"caller":"tasksChat.get_valid_google_token","callee":"tasksChat.refresh_google_token","file":"tasksChat.py","line":211,"column":17,"order":26,"call_text":"refresh_google_token"},{"caller":"tasksChat.get_valid_google_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":214,"column":31,"order":27,"call_text":"now_ts"},{"caller":"tasksChat.get_google_token_for_request","callee":"tasksChat.get_valid_google_token","file":"tasksChat.py","line":223,"column":11,"order":28,"call_text":"get_valid_google_token"},{"caller":"tasksChat.oauth_start","callee":"tasksChat.now_ts","file":"tasksChat.py","line":256,"column":22,"order":29,"call_text":"now_ts"},{"caller":"tasksChat.oauth_start","callee":"tasksChat.create_signed_oauth_state","file":"tasksChat.py","line":264,"column":19,"order":30,"call_text":"create_signed_oauth_state"},{"caller":"tasksChat.oauth_callback","callee":"tasksChat.parse_signed_oauth_state","file":"tasksChat.py","line":311,"column":20,"order":31,"call_text":"parse_signed_oauth_state"},{"caller":"tasksChat.oauth_callback","callee":"tasksChat.now_ts","file":"tasksChat.py","line":318,"column":16,"order":32,"call_text":"now_ts"},{"caller":"tasksChat.oauth_callback","callee":"tasksChat.create_user_with_google_tokens","file":"tasksChat.py","line":343,"column":14,"order":33,"call_text":"create_user_with_google_tokens"},{"caller":"tasksChat.oauth_callback","callee":"tasksChat.now_ts","file":"tasksChat.py","line":348,"column":22,"order":34,"call_text":"now_ts"},{"caller":"tasksChat.oauth_callback","callee":"tasksChat.now_ts","file":"tasksChat.py","line":349,"column":22,"order":35,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":423,"column":39,"order":36,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":437,"column":26,"order":37,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":438,"column":26,"order":38,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":444,"column":26,"order":39,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":468,"column":26,"order":40,"call_text":"now_ts"},{"caller":"tasksChat.oauth_token","callee":"tasksChat.now_ts","file":"tasksChat.py","line":469,"column":26,"order":41,"call_text":"now_ts"},{"caller":"tasksChat.debug_pending_states","callee":"tasksChat.now_ts","file":"tasksChat.py","line":499,"column":31,"order":42,"call_text":"now_ts"}],"function_files":{"tasksChat.taskschat":"tasksChat.py","tasksChat.privacy":"tasksChat.py","tasksChat.privacy_html":"tasksChat.py","tasksChat.terms":"tasksChat.py","tasksChat.terms_html":"tasksChat.py","tasksChat.now_ts":"tasksChat.py","tasksChat._urlsafe_b64decode":"tasksChat.py","tasksChat.create_signed_oauth_state":"tasksChat.py","tasksChat.parse_signed_oauth_state":"tasksChat.py","tasksChat.create_user_with_google_tokens":"tasksChat.py","tasksChat.refresh_google_token":"tasksChat.py","tasksChat.get_current_user":"tasksChat.py","tasksChat.get_valid_google_token":"tasksChat.py","tasksChat.get_google_token_for_request":"tasksChat.py","tasksChat.oauth_start":"tasksChat.py","tasksChat.oauth_callback":"tasksChat.py","tasksChat.debug_pending_states":"tasksChat.py","tasksChat.list_task_lists":"tasksChat.py","tasksChat.list_tasks":"tasksChat.py","tasksChat.complete_task":"tasksChat.py","tasksChat.uncomplete_task":"tasksChat.py","tasksChat.oauth_token":"tasksChat.py","tasksChat.create_task":"tasksChat.py","tasksChat.update_task":"tasksChat.py"},"node_metadata":{"tasksChat.taskschat":{"id":"tasksChat.taskschat","type":"function","file":"tasksChat.py","lineno":22,"docstring":null,"decorators":[]},"tasksChat.privacy":{"id":"tasksChat.privacy","type":"function","file":"tasksChat.py","lineno":26,"docstring":null,"decorators":[]},"tasksChat.privacy_html":{"id":"tasksChat.privacy_html","type":"function","file":"tasksChat.py","lineno":30,"docstring":null,"decorators":[]},"tasksChat.terms":{"id":"tasksChat.terms","type":"function","file":"tasksChat.py","lineno":34,"docstring":null,"decorators":[]},"tasksChat.terms_html":{"id":"tasksChat.terms_html","type":"function","file":"tasksChat.py","lineno":38,"docstring":null,"decorators":[]},"tasksChat.now_ts":{"id":"tasksChat.now_ts","type":"function","file":"tasksChat.py","lineno":96,"docstring":null,"decorators":[]},"tasksChat._urlsafe_b64decode":{"id":"tasksChat._urlsafe_b64decode","type":"function","file":"tasksChat.py","lineno":100,"docstring":null,"decorators":[]},"tasksChat.create_signed_oauth_state":{"id":"tasksChat.create_signed_oauth_state","type":"function","file":"tasksChat.py","lineno":105,"docstring":null,"decorators":[]},"tasksChat.parse_signed_oauth_state":{"id":"tasksChat.parse_signed_oauth_state","type":"function","file":"tasksChat.py","lineno":111,"docstring":null,"decorators":[]},"tasksChat.create_user_with_google_tokens":{"id":"tasksChat.create_user_with_google_tokens","type":"function","file":"tasksChat.py","lineno":131,"docstring":null,"decorators":[]},"tasksChat.refresh_google_token":{"id":"tasksChat.refresh_google_token","type":"function","file":"tasksChat.py","lineno":159,"docstring":null,"decorators":[]},"tasksChat.get_current_user":{"id":"tasksChat.get_current_user","type":"function","file":"tasksChat.py","lineno":177,"docstring":null,"decorators":[]},"tasksChat.get_valid_google_token":{"id":"tasksChat.get_valid_google_token","type":"function","file":"tasksChat.py","lineno":196,"docstring":null,"decorators":[]},"tasksChat.get_google_token_for_request":{"id":"tasksChat.get_google_token_for_request","type":"function","file":"tasksChat.py","lineno":222,"docstring":null,"decorators":[]},"tasksChat.oauth_start":{"id":"tasksChat.oauth_start","type":"function","file":"tasksChat.py","lineno":232,"docstring":null,"decorators":[]},"tasksChat.oauth_callback":{"id":"tasksChat.oauth_callback","type":"function","file":"tasksChat.py","lineno":293,"docstring":null,"decorators":[]},"tasksChat.debug_pending_states":{"id":"tasksChat.debug_pending_states","type":"function","file":"tasksChat.py","lineno":491,"docstring":"Debug endpoint to check current pending OAuth states","decorators":[]},"tasksChat.list_task_lists":{"id":"tasksChat.list_task_lists","type":"function","file":"tasksChat.py","lineno":507,"docstring":null,"decorators":[]},"tasksChat.list_tasks":{"id":"tasksChat.list_tasks","type":"function","file":"tasksChat.py","lineno":550,"docstring":null,"decorators":[]},"tasksChat.complete_task":{"id":"tasksChat.complete_task","type":"function","file":"tasksChat.py","lineno":669,"docstring":null,"decorators":[]},"tasksChat.uncomplete_task":{"id":"tasksChat.uncomplete_task","type":"function","file":"tasksChat.py","lineno":699,"docstring":null,"decorators":[]}},"raw_node_count":20,"raw_edge_count":21,"resolved_call_count":33,"file_graph":{"nodes":[],"edges":[]},"per_file_graphs":{},"symbol_index":{"tasksChat.taskschat":{"id":"tasksChat.taskschat","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":22,"docstring":null,"decorators":[]},"tasksChat.privacy":{"id":"tasksChat.privacy","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":26,"docstring":null,"decorators":[]},"tasksChat.privacy_html":{"id":"tasksChat.privacy_html","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":30,"docstring":null,"decorators":[]},"tasksChat.terms":{"id":"tasksChat.terms","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":34,"docstring":null,"decorators":[]},"tasksChat.terms_html":{"id":"tasksChat.terms_html","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":38,"docstring":null,"decorators":[]},"tasksChat.now_ts":{"id":"tasksChat.now_ts","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":96,"docstring":null,"decorators":[]},"tasksChat._urlsafe_b64decode":{"id":"tasksChat._urlsafe_b64decode","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":100,"docstring":null,"decorators":[]},"tasksChat.create_signed_oauth_state":{"id":"tasksChat.create_signed_oauth_state","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":105,"docstring":null,"decorators":[]},"tasksChat.parse_signed_oauth_state":{"id":"tasksChat.parse_signed_oauth_state","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":111,"docstring":null,"decorators":[]},"tasksChat.create_user_with_google_tokens":{"id":"tasksChat.create_user_with_google_tokens","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":131,"docstring":null,"decorators":[]},"tasksChat.refresh_google_token":{"id":"tasksChat.refresh_google_token","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":159,"docstring":null,"decorators":[]},"tasksChat.get_current_user":{"id":"tasksChat.get_current_user","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":177,"docstring":null,"decorators":[]},"tasksChat.get_valid_google_token":{"id":"tasksChat.get_valid_google_token","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":196,"docstring":null,"decorators":[]},"tasksChat.get_google_token_for_request":{"id":"tasksChat.get_google_token_for_request","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":222,"docstring":null,"decorators":[]},"tasksChat.oauth_start":{"id":"tasksChat.oauth_start","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":232,"docstring":null,"decorators":[]},"tasksChat.oauth_callback":{"id":"tasksChat.oauth_callback","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":293,"docstring":null,"decorators":[]},"tasksChat.debug_pending_states":{"id":"tasksChat.debug_pending_states","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":491,"docstring":"Debug endpoint to check current pending OAuth states","decorators":[]},"tasksChat.list_task_lists":{"id":"tasksChat.list_task_lists","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":507,"docstring":null,"decorators":[]},"tasksChat.list_tasks":{"id":"tasksChat.list_tasks","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":550,"docstring":null,"decorators":[]},"tasksChat.complete_task":{"id":"tasksChat.complete_task","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":669,"docstring":null,"decorators":[]},"tasksChat.uncomplete_task":{"id":"tasksChat.uncomplete_task","type":"function","file":"C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_5580e01e\\src\\tasksChat.py","lineno":699,"docstring":null,"decorators":[]}},"semantic_edge_count":21,"ast_edge_count":12,"ast_raw_call_count":226,"ast_resolved_call_count":21,"parse_errors":[],"parse_error_count":0};
+
+loadCytoscape()
+  .then(loadGraphData)
+    .then(data => {
+        const graphMode = data && !Array.isArray(data) ? data.mode : "legacy_edges";
+        const rawNodes = data && !Array.isArray(data) && Array.isArray(data.nodes) ? data.nodes : [];
+        const rawEdges = data && !Array.isArray(data) && Array.isArray(data.edges) ? data.edges : data;
+
+        if (!Array.isArray(rawEdges) || (rawEdges.length === 0 && rawNodes.length === 0)) {
+            statusEl.textContent = `No graph edges found in ${GRAPH_JSON}.`;
+            return;
+        }
+
+        const edges = [];
+        const nodeSet = new Set();
+        const providedNodeLabels = data && !Array.isArray(data) && data.node_labels && typeof data.node_labels === "object" ? data.node_labels : {};
+        const providedEdgeLabels = data && !Array.isArray(data) && data.edge_labels && typeof data.edge_labels === "object" ? data.edge_labels : {};
+        const nodeLabels = {};
+        let edgeIndex = 0;
+
+        const sanitize = s => String(s).replace(/[^a-zA-Z0-9_]/g, "_");
+        const compactLabel = raw => {
+            let label = String(raw || "").replace(/^(author|commit|file|function):/, "");
+            const htmlMatch = label.match(/(?:^|_)([^_/.]+)_html[._]([^/.]+)$/);
+            if (htmlMatch) label = `${htmlMatch[1]}.html.${htmlMatch[2]}`;
+            let parts = label.split(/[._/\\]+/).filter(Boolean).filter(part => !/^[0-9a-f]{7,}$/i.test(part));
+            if (parts.length >= 3 && parts[parts.length - 2].toLowerCase() === "html") {
+                label = parts.slice(-3).join(".");
+            } else if (parts.length >= 2) {
+                label = parts.slice(-2).join(".");
+            } else if (parts.length) {
+                label = parts[0];
+            }
+            return (label || raw || "").slice(0, 42);
+        };
+        const addNode = raw => {
+            const id = sanitize(raw);
+            nodeSet.add(id);
+            nodeLabels[id] = String(providedNodeLabels[String(raw)] || raw);
+            return id;
+        };
+        const addEdge = (src, dst, extra = {}) => {
+            nodeSet.add(src);
+            nodeSet.add(dst);
+            edges.push({
+                data: {
+                    id: `edge_${edgeIndex++}_${src}_${dst}`,
+                    source: src,
+                    target: dst,
+                    ...extra
+                }
+            });
+        };
+
+        rawNodes.forEach(node => addNode(node));
+
+        // 0. Cytoscape element format
+        if (rawEdges[0] && rawEdges[0].data && rawEdges[0].data.source && rawEdges[0].data.target) {
+            rawEdges.forEach(el => {
+                const src = addNode(el.data.source);
+                const dst = addNode(el.data.target);
+                addEdge(
+                    src,
+                    dst,
+                    {
+                        order: el.data.order || "",
+                        line: el.data.line || "",
+                        label: el.data.label || ""
+                    }
+                );
+            });
+        }
+        // -------------------------------
+        // 1. JAVALANG FORMAT (array edges)
+        // -------------------------------
+        else if (Array.isArray(rawEdges[0])) {
+            rawEdges.forEach(([rawSrc, rawDst, order, line]) => {
+                const src = addNode(rawSrc);
+                const dst = addNode(rawDst);
+                const edgeLabel = providedEdgeLabels[`${rawSrc}->${rawDst}`] || providedEdgeLabels[`${src}->${dst}`] || "";
+
+                addEdge(src, dst, {
+                    order: order || "",
+                    line: line || "",
+                    label: edgeLabel || (line && order ? `L${line} (#${order})` : (order ? `#${order}` : ""))
+                });
+            });
+        }
+        // -------------------------------
+        // 2. JOERN ORDERED FORMAT (method + calls[])
+        // -------------------------------
+        else if (rawEdges[0] && rawEdges[0].method && rawEdges[0].calls) {
+            rawEdges.forEach(item => {
+                const caller = addNode(item.method);
+
+                item.calls.forEach(call => {
+                    const callee = addNode(call.callee_fullName);
+                    const order = call.order || "";
+                    const line = call.line || "";
+
+                    addEdge(caller, callee, {
+                        order: order,
+                        line: line,
+                        label: line && order ? `L${line} (#${order})` : ""
+                    });
+                });
+            });
+        }
+        // -------------------------------
+        // 3. JOERN FORMAT (object edges)
+        // -------------------------------
+        else if (rawEdges[0] && rawEdges[0].caller && rawEdges[0].callee) {
+            rawEdges.forEach(edge => {
+                const src = addNode(edge.caller);
+                const dst = addNode(edge.callee);
+
+                addEdge(src, dst, { order: "", line: "" });
+            });
+        }
+
+        if (edges.length === 0 && nodeSet.size === 0) {
+            statusEl.textContent = `No renderable graph edges found in ${GRAPH_JSON}.`;
+            return;
+        }
+
+        const graphElements = [];
+        const isFileDependencyGraph = graphMode === "file_dependency_graph";
+
+        // -------------------------------
+        // 3. ADD NODES BEFORE EDGES
+        // -------------------------------
+        nodeSet.forEach(id => {
+            graphElements.push({
+                data: {
+                    id,
+                    label: (graphMode === "search_graph" || isFileDependencyGraph) ? compactLabel(nodeLabels[id] || id) : (nodeLabels[id] || id),
+                    fullLabel: nodeLabels[id] || id
+                }
+            });
+        });
+        graphElements.push(...edges);
+        const isLargeGraph = graphElements.length > 1000;
+        const isSearchGraph = graphMode === "search_graph";
+        const isOrderedGraph = !isLargeGraph && !isSearchGraph && !isFileDependencyGraph;
+        const graphFontSize = isLargeGraph ? "0px" : (isSearchGraph ? "4px" : (isFileDependencyGraph ? "7px" : "18px"));
+        const edgeFontSize = isLargeGraph ? "0px" : (isSearchGraph ? "3px" : (isFileDependencyGraph ? "4px" : "14px"));
+        const nodeSize = isLargeGraph ? 10 : (isSearchGraph ? 5 : (isFileDependencyGraph ? 8 : 20));
+        const textMaxWidth = isSearchGraph ? 34 : (isFileDependencyGraph ? 72 : 180);
+
+        // -------------------------------
+        // 4. BUILD CYTOSCAPE GRAPH
+        // -------------------------------
+        try {
+            const cy = cytoscape({
+                container: document.getElementById("cy"),
+                elements: graphElements,
+                style: [
+                    {
+                        selector: "node",
+                        style: {
+                            "label": "data(label)",
+                            "background-color": "#0074D9",
+                            "color": "#000",
+                            "font-size": graphFontSize,
+                            "text-valign": "center",
+                            "text-halign": isFileDependencyGraph ? "center" : "right",
+                            "text-margin-x": isSearchGraph ? 1 : (isFileDependencyGraph ? 0 : 4),
+                            "text-margin-y": isFileDependencyGraph ? 9 : 0,
+                            "text-wrap": "wrap",
+                            "text-max-width": textMaxWidth,
+                            "width": nodeSize,
+                            "height": nodeSize,
+                            "border-width": isSearchGraph ? 1 : 0,
+                            "border-color": "#ffffff"
+                        }
+                    },
+                    {
+                        selector: "edge",
+                        style: {
+                            "label": "data(label)",
+                            "width": isLargeGraph ? 0.6 : (isSearchGraph ? 0.4 : (isFileDependencyGraph ? 0.7 : 1)),
+                            "line-color": "#aaa",
+                            "opacity": isLargeGraph ? 0.45 : (isSearchGraph ? 0.65 : 1),
+                            "target-arrow-color": "#aaa",
+                            "target-arrow-shape": "triangle",
+                            "curve-style": isOrderedGraph ? "taxi" : (isSearchGraph ? "straight" : "bezier"),
+                            "taxi-direction": "horizontal",
+                            "taxi-turn": "50%",
+                            "taxi-turn-min-distance": 10,
+                            "font-size": edgeFontSize,
+                            "color": "red",
+                            "text-margin-y": isSearchGraph ? -2 : (isFileDependencyGraph ? -4 : -10)
+                        }
+                    }
+                ]
+            });
+
+            // -------------------------------
+            // Ordered tiered layout (default mode only): levels nodes
+            // left-to-right by call depth, and within each level stacks
+            // them top-to-bottom by ascending call order/line so the
+            // taxi (L-shaped) edges above connect callers/callees in order.
+            // -------------------------------
+            function edgeOrderValue(edge) {
+                const order = Number(edge.data("order"));
+                if (Number.isFinite(order)) return order;
+                const line = Number(edge.data("line"));
+                return Number.isFinite(line) ? line : Number.MAX_SAFE_INTEGER;
+            }
+
+            function applyOrderedTierLayout() {
+                const nodes = cy.nodes();
+                if (!nodes.length) return;
+                const indegree = new Map();
+                nodes.forEach(node => indegree.set(node.id(), 0));
+                cy.edges().forEach(edge => indegree.set(edge.target().id(), (indegree.get(edge.target().id()) || 0) + 1));
+                let roots = nodes.filter(node => (indegree.get(node.id()) || 0) === 0);
+                if (!roots.length) roots = nodes.slice(0, 1);
+
+                const levels = new Map();
+                const queue = [];
+                roots.forEach(node => {
+                    levels.set(node.id(), 0);
+                    queue.push(node.id());
+                });
+                let guard = 0;
+                while (queue.length && guard < 20000) {
+                    guard++;
+                    const id = queue.shift();
+                    const level = levels.get(id) || 0;
+                    cy.getElementById(id).outgoers("edge").forEach(edge => {
+                        const targetId = edge.target().id();
+                        const nextLevel = level + 1;
+                        if (!levels.has(targetId) || nextLevel > levels.get(targetId)) {
+                            levels.set(targetId, nextLevel);
+                            if (nextLevel < 200) queue.push(targetId);
+                        }
+                    });
+                }
+                nodes.forEach(node => {
+                    if (!levels.has(node.id())) levels.set(node.id(), 0);
+                });
+
+                const minIncomingOrder = new Map();
+                cy.edges().forEach(edge => {
+                    const targetId = edge.target().id();
+                    const value = edgeOrderValue(edge);
+                    const existing = minIncomingOrder.has(targetId) ? minIncomingOrder.get(targetId) : Number.MAX_SAFE_INTEGER;
+                    minIncomingOrder.set(targetId, Math.min(existing, value));
+                });
+
+                const groups = new Map();
+                nodes.forEach(node => {
+                    const level = levels.get(node.id()) || 0;
+                    if (!groups.has(level)) groups.set(level, []);
+                    const order = minIncomingOrder.get(node.id());
+                    groups.get(level).push({ node, order: Number.isFinite(order) ? order : Number.MAX_SAFE_INTEGER });
+                });
+
+                const xSpacing = 220;
+                const ySpacing = 110;
+                [...groups.keys()].sort((a, b) => a - b).forEach(level => {
+                    const items = groups.get(level).sort((a, b) => (
+                        a.order - b.order ||
+                        String(a.node.data("label")).localeCompare(String(b.node.data("label")))
+                    ));
+                    const offset = (items.length - 1) / 2;
+                    items.forEach((item, index) => {
+                        item.node.position({ x: level * xSpacing, y: (index - offset) * ySpacing });
+                    });
+                });
+            }
+
+            const layout = cy.layout(isLargeGraph ? {
+                name: "cose",
+                animate: false,
+                fit: true,
+                padding: 50,
+                nodeRepulsion: 4000,
+                nodeOverlap: 10,
+                idealEdgeLength: 100,
+                edgeElasticity: 100,
+                nestingFactor: 5,
+                gravity: 80,
+                numIter: 1000,
+                initialTemp: 200,
+                coolingFactor: 0.95,
+                minTemp: 1.0
+            } : isSearchGraph ? {
+                name: "breadthfirst",
+                animate: false,
+                fit: true,
+                directed: true,
+                padding: 18,
+                spacingFactor: 0.82,
+                circle: false,
+                grid: false,
+                maximal: false
+            } : isFileDependencyGraph ? {
+                name: "cose",
+                animate: false,
+                fit: true,
+                padding: 28,
+                nodeRepulsion: 9000,
+                nodeOverlap: 20,
+                idealEdgeLength: 150,
+                edgeElasticity: 80,
+                nestingFactor: 4,
+                gravity: 50,
+                numIter: 1400,
+                initialTemp: 250,
+                coolingFactor: 0.95,
+                minTemp: 1.0
+            } : (applyOrderedTierLayout(), {
+                name: "preset",
+                animate: false,
+                fit: true,
+                padding: 60
+            }));
+
+            layout.on("layoutstop", () => {
+                cy.resize();
+                cy.fit(undefined, isSearchGraph ? 14 : (isFileDependencyGraph ? 28 : 50));
+                statusEl.textContent = `${GRAPH_TITLE}: loaded ${nodeSet.size} nodes and ${edges.length} edges (${graphMode}). Drag or scroll to explore.`;
+            });
+
+            layout.run();
+            cy.on('tap', 'node', function(evt) {
+                const fn = evt.target.data('id');
+                if (typeof gtag === 'function') {
+                    gtag('event', 'callgraph_interaction', {
+                        'function_name': fn
+                    });
+                }
+            });
+            setTimeout(() => {
+                cy.resize();
+                cy.fit(undefined, isSearchGraph ? 14 : (isFileDependencyGraph ? 28 : 50));
+                if (statusEl.textContent.startsWith("Loading")) {
+                    statusEl.textContent = `${GRAPH_TITLE}: loaded ${nodeSet.size} nodes and ${edges.length} edges (${graphMode}). Drag or scroll to explore.`;
+                }
+            }, 1200);
+            if (isLargeGraph) {
+                cy.zoom(0.55);
+                cy.center();
+            } else if (isSearchGraph) {
+                cy.zoom(Math.min(cy.zoom(), 0.68));
+                cy.center();
+            } else if (isFileDependencyGraph) {
+                cy.zoom(Math.min(cy.zoom(), 0.82));
+                cy.center();
+            }
+        } catch (err) {
+            statusEl.textContent = `Cytoscape render error: ${err.message}`;
+            console.error(err);
+        }
+
+
+    })
+    .catch(err => {
+        statusEl.textContent = err.message;
+        console.error(err);
+    });
+</script>
+
+</body>
+</html>

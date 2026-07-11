@@ -1,0 +1,47 @@
+{
+  "extractor_version": 27,
+  "input_root": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\src",
+  "output_dir": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\scim",
+  "model_scope": "generic_multi_repo",
+  "generic_graphs": true,
+  "embedding_backend": "tfidf",
+  "sbert_model": null,
+  "code_embedding_dim": 384,
+  "graph_embedding_dim": 128,
+  "fused_embedding_dim": 512,
+  "vector_embedding_policy": "code_unit_embedding_with_zero_graph_padding",
+  "vector_embedding_note": "vectors.sqlite stores code-unit embeddings only: functions, methods, classes, and docstrings/inline comments contained inside those units. Whole-file text, README/docs/config files, generated artifacts, and graph outputs are not embedded.",
+  "repos": [
+    {
+      "repo_id": "src",
+      "repo_path": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\src",
+      "chunks": 24,
+      "graph_nodes": 24,
+      "graph_edges": 0,
+      "graph_files": [],
+      "avg_in_degree": 0.0,
+      "avg_out_degree": 0.0
+    }
+  ],
+  "totals": {
+    "repos": 1,
+    "chunks": 24,
+    "edges": 0,
+    "chunks_with_callgraph_edges": 0
+  },
+  "limits": {
+    "max_chunks_per_repo": 3000,
+    "max_file_bytes": 5000000,
+    "max_record_code_chars": 1500
+  },
+  "files": {
+    "functions": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\scim\\functions.jsonl",
+    "nodes": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\architecture\\nodes.csv",
+    "edges": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\architecture\\edges.csv",
+    "train_pairs": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\architecture\\train_pairs.jsonl",
+    "embedding_model": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\scim\\embedding_model.json",
+    "vector_db": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_3d297afb\\scim\\vectors.sqlite",
+    "faiss_index": null,
+    "faiss_metadata": null
+  }
+}

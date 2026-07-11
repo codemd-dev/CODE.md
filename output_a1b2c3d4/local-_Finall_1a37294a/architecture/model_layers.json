@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-07-04T12:06:39.950240",
+  "model": "SCIM",
+  "description": "Source Code Intelligence Model layers for this repository.",
+  "layers": {
+    "raw_text": {
+      "status": "implemented",
+      "artifacts": [
+        "code-unit chunks: functions, methods, classes, docstrings, inline comments"
+      ],
+      "note": "The SCIM vector index is restricted to code units only. Whole-file text, README/docs/config files, generated artifacts, and graph outputs are not embedded."
+    },
+    "structural": {
+      "status": "implemented_partial_by_language",
+      "artifacts": [
+        "language callgraphs",
+        "combined_callgraph",
+        "file_graph",
+        "html_ui_graph",
+        "graph JSON artifacts"
+      ],
+      "note": "Control-flow graphs are included when extractor artifacts exist; otherwise callgraph/dependency graph evidence is used."
+    },
+    "semantic": {
+      "status": "implemented",
+      "artifacts": [
+        "feature_summaries.json",
+        "derived_memory/answers.jsonl",
+        "product summaries",
+        "daily summaries"
+      ],
+      "truth_policy": "Generated summaries are derived evidence, not original source truth."
+    },
+    "embedding": {
+      "status": "implemented",
+      "artifacts": [
+        "scim/vectors.sqlite",
+        "scim/embedding_model.json",
+        "scim/functions.jsonl"
+      ],
+      "indexed_typed_evidence": 0,
+      "typed_evidence_path": "C:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs\\output_a1b2c3d4\\local-_Finall_1a37294a\\architecture\\typed_evidence.jsonl"
+    },
+    "retrieval": {
+      "status": "implemented",
+      "artifacts": [
+        "retrieval planner",
+        "source-type boosts",
+        "callgraph-aware search",
+        "text/code/evidence retrieval"
+      ]
+    },
+    "synthesis": {
+      "status": "implemented_via_external_llm",
+      "artifacts": [
+        "search-answer",
+        "summary",
+        "feature-summary",
+        "daily-summary prompts"
+      ]
+    }
+  }
+}

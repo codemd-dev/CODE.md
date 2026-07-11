@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>codemd.dev | Generate CODE.md for every repository</title>
+  <meta name="description" content="codemd.dev generates CODE.md, a factual repo map that gives AI coding agents better context before they edit code.">
+  <meta property="og:title" content="Every repository needs CODE.md">
+  <meta property="og:description" content="Give Codex, Claude, Cursor, Copilot, and other AI coding agents a factual map of your codebase before they start.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="/static/images/every-repo-needs-code-md-ai-coding-agent.jpg">
+  <style>
+    :root {
+      --bg: #070a12;
+      --panel: #0f1320;
+      --panel-2: #141a2a;
+      --line: rgba(255,255,255,0.12);
+      --line-strong: rgba(255,255,255,0.22);
+      --text: #f7f9fc;
+      --muted: #a7b0c3;
+      --blue: #6d8cff;
+      --green: #22c78a;
+      --amber: #f4b23f;
+      --red: #ef476f;
+      --radius: 18px;
+      --shadow: 0 24px 80px rgba(0,0,0,0.36);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--bg);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(109,140,255,0.28), transparent 34rem),
+        radial-gradient(circle at 80% 12%, rgba(34,199,138,0.16), transparent 28rem),
+        linear-gradient(180deg, #090d18 0%, #070a12 52%, #0e0b25 100%);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    a { color: inherit; }
+
+    .page {
+      width: calc(100% - 80px);
+      margin: 0 auto;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(7,10,18,0.78);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav {
+      width: calc(100% - 80px);
+      min-height: 68px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--blue), #8457ff);
+      box-shadow: 0 10px 30px rgba(109,140,255,0.32);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      padding: 9px 10px;
+      border-radius: 999px;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 0 18px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      font-weight: 760;
+      text-decoration: none;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+
+    .button.primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--green), #13a8d2);
+      color: #03110d;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+    }
+
+    .hero {
+      padding: 78px 0 34px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 38px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      padding: 8px 12px;
+      border: 1px solid rgba(109,140,255,0.35);
+      border-radius: 999px;
+      background: rgba(109,140,255,0.12);
+      color: #ccd7ff;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    h1 {
+      margin: 22px 0 18px;
+      font-size: clamp(44px, 6vw, 76px);
+      line-height: 0.96;
+      letter-spacing: -0.065em;
+    }
+
+    h1 span {
+      color: #aabaff;
+    }
+
+    .hero-copy {
+      margin: 0;
+      max-width: 780px;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.65;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .trust-line {
+      margin-top: 18px;
+      color: #8d98ad;
+      font-size: 14px;
+    }
+
+    .hero-visual {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      overflow: hidden;
+      background: #0b0f1a;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-visual img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .section {
+      padding: 56px 0;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .section-header {
+      max-width: 760px;
+      margin: 0 auto 28px;
+      text-align: center;
+    }
+
+    .section-header h2 {
+      margin: 0 0 12px;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.05;
+      letter-spacing: -0.045em;
+    }
+
+    .section-header p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.6;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .compare-card,
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035));
+      box-shadow: 0 18px 50px rgba(0,0,0,0.18);
+    }
+
+    .compare-card {
+      padding: 24px;
+      min-height: 220px;
+    }
+
+    .compare-card.bad {
+      border-color: rgba(239,71,111,0.38);
+      background: linear-gradient(180deg, rgba(239,71,111,0.12), rgba(255,255,255,0.035));
+    }
+
+    .compare-card.good {
+      border-color: rgba(34,199,138,0.4);
+      background: linear-gradient(180deg, rgba(34,199,138,0.13), rgba(255,255,255,0.035));
+    }
+
+    .compare-card h3,
+    .card h3 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .list li {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .bad .list li span:first-child { color: var(--red); }
+    .good .list li span:first-child { color: var(--green); }
+
+    .budget-callout {
+      margin-top: 20px;
+      border: 1px solid rgba(34,199,138,0.38);
+      border-radius: 20px;
+      padding: 24px;
+      background:
+        linear-gradient(135deg, rgba(34,199,138,0.14), rgba(109,140,255,0.08)),
+        rgba(255,255,255,0.04);
+      box-shadow: 0 20px 70px rgba(0,0,0,0.22);
+    }
+
+    .budget-callout strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #c8ffe9;
+      font-size: 18px;
+    }
+
+    .budget-callout p {
+      max-width: 980px;
+      margin: 0;
+      color: #c3cedf;
+      line-height: 1.65;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      padding: 22px;
+    }
+
+    .step-number {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      margin-bottom: 18px;
+      border-radius: 12px;
+      background: rgba(109,140,255,0.16);
+      color: #dbe3ff;
+      font-weight: 850;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.58;
+    }
+
+    .proof {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 26px;
+    }
+
+    .quote {
+      border: 1px solid rgba(109,140,255,0.3);
+      border-radius: 24px;
+      padding: 30px;
+      background: linear-gradient(180deg, rgba(109,140,255,0.12), rgba(255,255,255,0.04));
+    }
+
+    .quote p {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.35;
+      letter-spacing: -0.025em;
+    }
+
+    .quote cite {
+      display: block;
+      margin-top: 18px;
+      color: var(--muted);
+      font-style: normal;
+      line-height: 1.5;
+    }
+
+    .image-frame {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .image-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .mini {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.05);
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .mini span {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .honest {
+      border: 1px solid rgba(244,178,63,0.45);
+      border-radius: 20px;
+      padding: 24px;
+      background: rgba(244,178,63,0.08);
+    }
+
+    .honest h3 {
+      margin: 0 0 8px;
+      color: #ffe2a7;
+    }
+
+    .honest p {
+      margin: 0;
+      color: #d8c7a6;
+      line-height: 1.65;
+    }
+
+    .cta {
+      padding: 64px 0 88px;
+      text-align: center;
+    }
+
+    .cta-box {
+      border: 1px solid rgba(109,140,255,0.32);
+      border-radius: 28px;
+      padding: 46px 28px;
+      background:
+        radial-gradient(circle at top, rgba(109,140,255,0.22), transparent 26rem),
+        linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.035));
+      box-shadow: var(--shadow);
+    }
+
+    .cta h2 {
+      margin: 0 0 12px;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: -0.055em;
+    }
+
+    .cta p {
+      margin: 0 auto 26px;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.6;
+    }
+
+    footer {
+      padding: 26px 0 42px;
+      color: #7f899c;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 14px;
+    }
+
+    footer .page {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 900px) {
+      .hero,
+      .proof,
+      .compare,
+      .steps,
+      .grid-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding-top: 44px;
+      }
+
+      .nav-links {
+        display: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .page,
+      .nav {
+        width: min(100% - 26px, 1180px);
+      }
+
+      h1 {
+        font-size: 42px;
+      }
+
+      .hero-copy,
+      .section-header p,
+      .cta p {
+        font-size: 16px;
+      }
+
+      .hero-panel,
+      .quote,
+      .cta-box {
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="/">
+        <span class="brand-mark">CM</span>
+        <span>codemd.dev</span>
+      </a>
+      <div class="nav-links">
+        <a href="#why">Why CODE.md</a>
+        <a href="#how">How it works</a>
+        <a href="#proof">Codex proof</a>
+        <a href="/api">API</a>
+        <a href="/dashboard" class="button primary">Generate CODE.md</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="page hero">
+      <div>
+        <div class="eyebrow">Read-only repo analysis -> one CODE.md file</div>
+        <h1>Supercharge your LLM with <span>CODE.md</span>.</h1>
+        <p class="hero-copy">
+          codemd.dev analyzes your repository and generates CODE.md: a factual map of your architecture, file relationships,
+          code flows, and UI graph. Drop it into your source branch or repo so Codex, Claude, Cursor, Copilot, and other AI
+          coding agents start with the truth before they edit. Less time rediscovering the codebase. Fewer wasted prompts.
+          Faster answers. Smarter use of your LLM budget.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="/dashboard">Search Source Code Repository</a>
+          <a class="button" href="#how">See how CODE.md works</a>
+        </div>
+        <div class="trust-line">No training required. No runtime access needed. No LLM summaries required for the truth layer.</div>
+      </div>
+      <div class="hero-visual">
+        <img src="/static/images/codeval-webpage-hero-claude.jpg" alt="codemd.dev page explaining that AI coding assistants are only as good as the context they start with.">
+      </div>
+    </section>
+
+    <section class="page section" id="why">
+      <div class="section-header">
+        <h2>Your AI coding agent is only as good as the context it starts with.</h2>
+        <p>
+          Most AI coding tools are powerful, but they still start each task by searching and guessing.
+          CODE.md gives them a factual starting map of your repository before the first prompt.
+        </p>
+      </div>
+      <div class="compare">
+        <div class="compare-card bad">
+          <h3>Without CODE.md</h3>
+          <p class="body">The agent starts cold and has to discover your repo while answering.</p>
+          <ul class="list">
+            <li><span>x</span><span>Opens many files before finding the right one.</span></li>
+            <li><span>x</span><span>Misses important dependencies and change impact.</span></li>
+            <li><span>x</span><span>Gives generic answers that sound right but may not fit your code.</span></li>
+            <li><span>x</span><span>Spends more turns narrowing down what your team already knows.</span></li>
+          </ul>
+        </div>
+        <div class="compare-card good">
+          <h3>With CODE.md</h3>
+          <p class="body">The agent starts with a repo map generated from actual code evidence.</p>
+          <ul class="list">
+            <li><span>✓</span><span>Finds core files, entry points, routes, UI surfaces, and TODOs faster.</span></li>
+            <li><span>✓</span><span>Understands callgraph and file dependency relationships up front.</span></li>
+            <li><span>✓</span><span>Answers with more repo-specific context and less guessing.</span></li>
+            <li><span>✓</span><span>Helps developers review, debug, onboard, and change code with more confidence.</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="budget-callout">
+        <strong>Use your LLM budget on engineering work, not repeated repo discovery.</strong>
+        <p>
+          If your team spends thousands per month on AI coding tools, even a small reduction in repeated repo-discovery work can matter.
+          CODE.md helps make those AI sessions more efficient by giving the model high-signal context upfront.
+        </p>
+      </div>
+    </section>
+
+    <section class="page section" id="how">
+      <div class="section-header">
+        <h2>How codemd.dev gives every repo its CODE.md</h2>
+        <p>
+          codemd.dev does not need to run your app. It reads the repository, extracts structure, and generates a file your AI agent can use immediately.
+        </p>
+      </div>
+      <div class="steps">
+        <div class="card">
+          <div class="step-number">1</div>
+          <h3>Connect or upload</h3>
+          <p>Allow codemd.dev to run read-only analysis on a GitHub repo, or upload a code archive.</p>
+        </div>
+        <div class="card">
+          <div class="step-number">2</div>
+          <h3>codemd.dev maps the repo</h3>
+          <p>It extracts routes, files, functions, callgraphs, UI elements, TODOs, dependencies, and source inventory.</p>
+        </div>
+        <div class="card">
+          <div class="step-number">3</div>
+          <h3>You get CODE.md</h3>
+          <p>A single machine-readable file summarizes the structure and evidence found in the repository.</p>
+        </div>
+        <div class="card">
+          <div class="step-number">4</div>
+          <h3>Drop it into the repo</h3>
+          <p>Put CODE.md in your source branch so your AI coding agent has context in every coding session.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="page section" id="proof">
+      <div class="proof">
+        <div class="quote">
+          <p>"CODE.md helps because it gives me a factual starting map before I search, explain, or edit."</p>
+          <cite>
+            Codex, explaining why one generated repo map improves AI coding work.
+            Like design.md gives agents product and design context, CODE.md gives agents codebase structure and evidence.
+          </cite>
+        </div>
+        <div class="image-frame">
+          <img src="/static/images/every-repo-needs-code-md-ai-coding-agent.jpg" alt="AI coding assistant diagram saying every repository needs CODE.md.">
+        </div>
+      </div>
+    </section>
+
+    <section class="page section">
+      <div class="section-header">
+        <h2>What CODE.md contains</h2>
+        <p>
+          A useful CODE.md is not a marketing summary. It is a factual repo briefing generated from actual analysis.
+        </p>
+      </div>
+      <div class="grid-3">
+        <div class="mini"><strong>Repository overview</strong><span>Main languages, structure, source inventory, and what was actually analyzed.</span></div>
+        <div class="mini"><strong>Architecture map</strong><span>Entry points, modules, core files, file dependencies, and callgraph relationships.</span></div>
+        <div class="mini"><strong>UI and routes</strong><span>Buttons, forms, links, pages, API routes, and where user-facing behavior connects to code.</span></div>
+        <div class="mini"><strong>Known gaps</strong><span>TODOs and unfinished work signals directly extracted from developer-authored code comments.</span></div>
+        <div class="mini"><strong>Risk signals</strong><span>Highly connected functions, dependency hotspots, recent changes, and code areas to treat carefully.</span></div>
+        <div class="mini"><strong>Evidence policy</strong><span>What was found, what was unavailable, and where the agent should avoid speculation.</span></div>
+      </div>
+    </section>
+
+    <section class="page cta">
+      <div class="cta-box">
+        <h2>Give your AI the map it needs.</h2>
+        <p>
+          Run codemd.dev analysis, generate CODE.md, and add it to your repository so every AI coding session starts with real code context.
+        </p>
+        <a class="button primary" href="/dashboard">Generate CODE.md for your repo</a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="page">
+      <span>codemd.dev - code intelligence for AI-assisted software teams</span>
+      <span>Read-only analysis. Repo evidence. Better agent context.</span>
+    </div>
+  </footer>
+</body>
+</html>

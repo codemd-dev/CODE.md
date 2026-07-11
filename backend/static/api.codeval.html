@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-L5ZYJ817HR"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-L5ZYJ817HR');
+</script>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Callgraph API Explorer</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@600;800&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg: #0a0c10;
+  --surface: #111418;
+  --surface2: #161b22;
+  --border: #21262d;
+  --border2: #30363d;
+  --text: #e6edf3;
+  --muted: #7d8590;
+  --accent: #00d4aa;
+  --accent-dim: rgba(0,212,170,0.12);
+  --accent-border: rgba(0,212,170,0.3);
+  --blue: #58a6ff;
+  --blue-dim: rgba(88,166,255,0.1);
+  --orange: #f78166;
+  --yellow: #e3b341;
+  --purple: #bc8cff;
+  --green: #3fb950;
+  --radius: 8px;
+  --mono: 'JetBrains Mono', monospace;
+  --display: 'Syne', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* Grid bg pattern */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 0;
+  background-image:
+    linear-gradient(rgba(0,212,170,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,170,0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+}
+
+.layout { position: relative; z-index: 1; display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+
+/* ── SIDEBAR ── */
+aside {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1.5rem 0;
+  position: sticky; top: 0; height: 100vh;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+
+.sidebar-logo {
+  padding: 0 1.5rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.sidebar-logo .wordmark {
+  font-family: var(--display);
+  font-size: 1.1rem; font-weight: 800;
+  color: var(--accent); letter-spacing: -0.02em;
+}
+
+.sidebar-logo .tagline {
+  font-size: 10px; color: var(--muted);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.sidebar-section { padding: 0 1rem; margin-bottom: 1.5rem; }
+
+.sidebar-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--muted);
+  padding: 0 0.5rem; margin-bottom: 0.5rem;
+}
+
+.sidebar-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px;
+  cursor: pointer; transition: background 0.15s;
+  font-size: 12px; color: var(--muted); border: none;
+  background: none; width: 100%; text-align: left;
+}
+.sidebar-item:hover { background: var(--surface2); color: var(--text); }
+.sidebar-item.active { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent-border); }
+.sidebar-item .method {
+  font-size: 9px; font-weight: 700; padding: 2px 5px;
+  border-radius: 4px; letter-spacing: 0.05em; flex-shrink: 0;
+}
+.method.post { background: rgba(63,185,80,0.15); color: var(--green); }
+.method.get  { background: var(--blue-dim); color: var(--blue); }
+
+.sidebar-base-url {
+  padding: 0 1.5rem; margin-top: auto;
+  border-top: 1px solid var(--border); padding-top: 1rem;
+}
+.sidebar-base-url label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 6px; }
+.sidebar-base-url input {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 6px 8px; font-family: var(--mono);
+  font-size: 11px; color: var(--text); outline: none;
+}
+.sidebar-base-url input:focus { border-color: var(--accent); }
+
+/* ── MAIN ── */
+main { padding: 2rem; overflow-y: auto; }
+
+.endpoint-header {
+  display: flex; align-items: flex-start; gap: 1rem;
+  margin-bottom: 2rem; padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.method-badge {
+  font-size: 11px; font-weight: 700; padding: 4px 10px;
+  border-radius: 6px; letter-spacing: 0.08em; flex-shrink: 0; margin-top: 3px;
+}
+.method-badge.post { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+.method-badge.get  { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+
+.endpoint-info h1 {
+  font-family: var(--display); font-size: 1.4rem; font-weight: 800;
+  color: var(--text); letter-spacing: -0.02em; line-height: 1.2;
+}
+.endpoint-info .path {
+  font-size: 12px; color: var(--muted); margin-top: 4px;
+  font-family: var(--mono);
+}
+.endpoint-info .path span { color: var(--accent); }
+.endpoint-info p { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+
+/* Panels */
+.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.panel-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--surface2);
+}
+.panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.panel-body { padding: 1rem; }
+
+/* URL bar */
+.url-bar {
+  display: flex; gap: 8px; align-items: center;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 3px 3px 3px 12px;
+  margin-bottom: 1rem;
+}
+.url-bar .full-url {
+  flex: 1; font-family: var(--mono); font-size: 12px;
+  color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.url-bar .full-url span { color: var(--accent); }
+
+/* Form fields */
+.field-group { margin-bottom: 1rem; }
+.field-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500; color: var(--muted);
+  margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.field-label .required { color: var(--orange); font-size: 10px; }
+.field-label .type-tag {
+  font-size: 9px; padding: 2px 5px; border-radius: 4px;
+  background: var(--blue-dim); color: var(--blue); letter-spacing: 0.05em;
+}
+.field-desc { font-size: 11px; color: var(--muted); margin-bottom: 6px; line-height: 1.5; }
+
+input[type="text"], textarea, select {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 90px; }
+
+/* Send button */
+.btn-send {
+  width: 100%; padding: 10px;
+  background: var(--accent); color: #0a0c10;
+  font-family: var(--display); font-weight: 800;
+  font-size: 13px; letter-spacing: 0.02em;
+  border: none; border-radius: 6px; cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-send:hover { opacity: 0.9; }
+.btn-send:active { transform: scale(0.98); }
+.btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-send .spinner {
+  width: 14px; height: 14px; border: 2px solid rgba(0,0,0,0.3);
+  border-top-color: #0a0c10; border-radius: 50%;
+  animation: spin 0.7s linear infinite; display: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Response panel */
+.response-status {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 1rem;
+  font-size: 12px;
+}
+.status-pill {
+  padding: 2px 8px; border-radius: 999px; font-weight: 700; font-size: 11px;
+}
+.status-200 { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+.status-4xx, .status-5xx { background: rgba(247,129,102,0.15); color: var(--orange); border: 1px solid rgba(247,129,102,0.3); }
+.status-time { color: var(--muted); }
+
+.response-tabs { display: flex; gap: 2px; margin-bottom: 1rem; }
+.rtab {
+  padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;
+  cursor: pointer; border: none; background: none; color: var(--muted);
+  transition: background 0.15s;
+}
+.rtab:hover { background: var(--surface2); color: var(--text); }
+.rtab.active { background: var(--surface2); color: var(--text); border: 1px solid var(--border2); }
+
+pre {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1rem; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+  max-height: 420px; color: var(--text);
+}
+
+/* JSON syntax highlight */
+.j-key   { color: var(--blue); }
+.j-str   { color: var(--green); }
+.j-num   { color: var(--purple); }
+.j-bool  { color: var(--yellow); }
+.j-null  { color: var(--muted); }
+.j-url   { color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+/* Response fields breakdown */
+.response-schema { display: flex; flex-direction: column; gap: 6px; }
+.schema-row {
+  display: grid; grid-template-columns: 160px 80px 1fr;
+  gap: 8px; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface2);
+  align-items: start;
+}
+.schema-field { color: var(--blue); font-size: 11px; }
+.schema-type { color: var(--purple); font-size: 10px; }
+.schema-desc { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+/* Assets panel */
+.assets-panel { margin-top: 1.5rem; }
+.asset-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.asset-link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--border2); background: var(--surface2);
+  cursor: pointer; transition: border-color 0.15s, background 0.15s;
+  text-decoration: none; color: inherit;
+}
+.asset-link:hover { border-color: var(--accent); background: var(--accent-dim); }
+.asset-link .al-icon { font-size: 16px; }
+.asset-link .al-text strong { display: block; font-size: 11px; font-weight: 600; color: var(--text); }
+.asset-link .al-text span { font-size: 10px; color: var(--muted); }
+.asset-link.disabled { opacity: 0.35; pointer-events: none; }
+
+/* Code sample */
+.code-sample { position: relative; }
+.copy-btn {
+  position: absolute; top: 8px; right: 8px;
+  background: var(--border2); border: none; border-radius: 4px;
+  padding: 4px 8px; font-size: 10px; color: var(--muted);
+  cursor: pointer; font-family: var(--mono);
+  transition: background 0.15s, color 0.15s;
+}
+.copy-btn:hover { background: var(--accent); color: #0a0c10; }
+
+/* Empty state */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 200px; color: var(--muted); text-align: center; gap: 8px;
+}
+.empty-state .icon { font-size: 2rem; opacity: 0.3; }
+.empty-state p { font-size: 12px; }
+
+/* Section divider */
+.section-divider {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--muted); margin: 1.25rem 0 0.75rem;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* Tooltip */
+.tooltip-wrap { position: relative; display: inline-block; }
+.tooltip {
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 4px 8px; font-size: 10px; color: var(--text);
+  white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.15s;
+}
+.tooltip-wrap:hover .tooltip { opacity: 1; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* Error banner */
+.error-banner {
+  background: rgba(247,129,102,0.1); border: 1px solid rgba(247,129,102,0.3);
+  border-radius: 6px; padding: 10px 14px;
+  color: var(--orange); font-size: 12px; margin-bottom: 1rem;
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; }
+  .panels { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+<!-- ══════════════════ SIDEBAR ══════════════════ -->
+<aside>
+  <div class="sidebar-logo">
+    <div class="wordmark">callgraph/</div>
+    <div class="tagline">API Explorer</div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-label">Endpoints</div>
+    <button class="sidebar-item active" data-ep="analyze" onclick="showEndpoint('analyze')">
+      <span class="method post">POST</span>
+      /analyze
+    </button>
+    <button class="sidebar-item" data-ep="search" onclick="showEndpoint('search')">
+      <span class="method post">POST</span>
+      /search
+    </button>
+    <button class="sidebar-item" data-ep="health" onclick="showEndpoint('health')">
+      <span class="method get">GET</span>
+      /health
+    </button>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-label">Response assets</div>
+    <button class="sidebar-item" onclick="scrollToAssets()">
+      <span style="font-size:11px;">⬡</span>
+      callgraph_html
+    </button>
+    <button class="sidebar-item" onclick="scrollToAssets()">
+      <span style="font-size:11px;">{ }</span>
+      callgraph_json
+    </button>
+    <button class="sidebar-item" onclick="scrollToAssets()">
+      <span style="font-size:11px;">⬡</span>
+      joern_callgraph_html
+    </button>
+    <button class="sidebar-item" onclick="showEndpoint('search');scrollToAssets()">
+      <span style="font-size:11px;">⬡</span>
+      search_graph_url
+    </button>
+  </div>
+
+  <div class="sidebar-base-url">
+    <label>Base URL</label>
+    <input type="text" id="baseUrl" value="https://codeval.ai" placeholder="https://codeval.ai"/>
+  </div>
+</aside>
+
+<!-- ══════════════════ MAIN ══════════════════ -->
+<main id="mainContent">
+
+  <!-- ── POST /analyze ── -->
+  <div id="ep-analyze">
+
+    <div class="endpoint-header">
+      <span class="method-badge post">POST</span>
+      <div class="endpoint-info">
+        <h1>Analyze Repository</h1>
+        <div class="path"><span id="urlPreview">http://localhost:8000</span>/analyze</div>
+        <p>Submit a public GitHub repository URL to extract its call graph and AST node data. Returns URLs to interactive HTML visualizations and raw JSON for javalang-parsed nodes.</p>
+      </div>
+    </div>
+
+    <div class="panels">
+
+      <!-- LEFT: Request -->
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Request</span>
+            <span style="font-size:10px;color:var(--muted);">application/json</span>
+          </div>
+          <div class="panel-body">
+
+            <div class="url-bar">
+              <span class="full-url"><span id="urlPreview2">http://localhost:8000</span>/analyze</span>
+            </div>
+
+            <div class="section-divider">Body parameters</div>
+
+            <div class="field-group">
+              <div class="field-label">
+                repoUrl <span class="required">* required</span>
+                <span class="type-tag">string</span>
+              </div>
+              <div class="field-desc">Full GitHub repository URL. Must be public and contain Java source files.</div>
+              <input type="text" id="repoUrl"
+                placeholder="https://github.com/owner/repo"
+                value="https://github.com/owner/repo"/>
+            </div>
+
+            <div class="section-divider">Live request body</div>
+
+            <div class="code-sample" style="margin-bottom:1rem;">
+              <button class="copy-btn" onclick="copyBody()">copy</button>
+              <pre id="liveBody">{
+  <span class="j-key">"repoUrl"</span>: <span class="j-str" id="bodyUrl">"https://github.com/owner/repo"</span>
+}</pre>
+            </div>
+
+            <button class="btn-send" id="sendBtn" onclick="sendRequest()">
+              <div class="spinner" id="spinner"></div>
+              <span id="btnLabel">Send Request</span>
+            </button>
+
+          </div>
+        </div>
+
+        <!-- Code samples -->
+        <div class="section-divider" style="margin-top:1.5rem;">Code samples</div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">cURL</span>
+            <button class="copy-btn" style="position:static;" onclick="copyCurl()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre id="curlSample">curl -X POST <span class="j-str">"http://localhost:8000/analyze"</span> \
+  -H <span class="j-str">"Content-Type: application/json"</span> \
+  -d '<span class="j-str">{"repoUrl":"https://github.com/owner/repo"}</span>'</pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header">
+            <span class="panel-title">Python</span>
+            <button class="copy-btn" style="position:static;" onclick="copyPython()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre><span class="j-key">import</span> requests
+
+url  = <span class="j-str" id="pyUrl">"http://localhost:8000/analyze"</span>
+body = {<span class="j-str">"repoUrl"</span>: <span class="j-str" id="pyRepoUrl">"https://github.com/owner/repo"</span>}
+
+resp = requests.post(url, json=body)
+data = resp.json()
+
+<span class="j-key">print</span>(data[<span class="j-str">"graphs"</span>][<span class="j-str">"callgraph_json"</span>])
+<span class="j-key">print</span>(data[<span class="j-str">"graphs"</span>][<span class="j-str">"callgraph_html"</span>])</pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header">
+            <span class="panel-title">JavaScript (fetch)</span>
+            <button class="copy-btn" style="position:static;" onclick="copyJs()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre><span class="j-key">const</span> resp = <span class="j-key">await</span> fetch(<span class="j-str" id="jsUrl">"http://localhost:8000/analyze"</span>, {
+  method: <span class="j-str">"POST"</span>,
+  headers: { <span class="j-str">"Content-Type"</span>: <span class="j-str">"application/json"</span> },
+  body: JSON.stringify({ repoUrl: <span class="j-str" id="jsRepoUrl">"https://github.com/owner/repo"</span> })
+});
+<span class="j-key">const</span> data = <span class="j-key">await</span> resp.json();
+console.log(data.graphs.callgraph_json);
+console.log(data.graphs.callgraph_html);</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Response -->
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Response</span>
+            <span id="statusBadge" style="font-size:10px;color:var(--muted);">awaiting request…</span>
+          </div>
+          <div class="panel-body">
+
+            <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
+            <div class="response-tabs">
+              <button class="rtab active" onclick="switchTab('body',this)">Body</button>
+              <button class="rtab" onclick="switchTab('schema',this)">Schema</button>
+            </div>
+
+            <!-- Body tab -->
+            <div id="tab-body">
+              <div id="emptyState" class="empty-state">
+                <div class="icon">⬡</div>
+                <p>Hit <strong>Send Request</strong> to see the response</p>
+              </div>
+              <pre id="responseBody" style="display:none;"></pre>
+            </div>
+
+            <!-- Schema tab -->
+            <div id="tab-schema" style="display:none;">
+              <div class="response-schema">
+                <div class="schema-row">
+                  <span class="schema-field">timestamp</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">ISO 8601 datetime of when analysis ran</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">owner_name</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">GitHub repository owner</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">repo_name</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Repository name</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">repo</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Short deterministic ID for this repo</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">output_folder</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Server-side path where outputs are stored</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.callgraph_html</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Cytoscape.js interactive call graph (javalang)</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.callgraph_json</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Raw javalang node JSON for programmatic use</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.joern_callgraph_html</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Ordered Joern call graph visualization</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.joern_raw_callgraph_html</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Full unfiltered Joern call graph</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.reduced_joern_callgraph_html</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Reduced/simplified Joern call graph</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">graphs.joern_error</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Joern error message, if any</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Asset links panel (populated after response) -->
+        <div id="assetsPanel" class="assets-panel" style="display:none;">
+          <div class="section-divider">Open response assets</div>
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">Graphs &amp; files</span></div>
+            <div class="panel-body">
+              <div class="asset-links" id="assetLinks"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error details -->
+        <div id="errorPanel" style="display:none; margin-top:1rem;">
+          <div class="section-divider">Error</div>
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">Details</span></div>
+            <div class="panel-body">
+              <pre id="errorDetail" style="color:var(--orange);"></pre>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── POST /search ── -->
+  <div id="ep-search" style="display:none;">
+
+    <div class="endpoint-header">
+      <span class="method-badge post">POST</span>
+      <div class="endpoint-info">
+        <h1>Search Call Graph</h1>
+        <div class="path"><span id="urlPreviewS">http://localhost:8000</span>/search</div>
+        <p>Search for methods/functions within a previously analyzed repository. Requires the repo to have been processed by <code style="color:var(--accent)">/analyze</code> first. Returns matched functions with their outgoing calls, callers, and ordered execution trace.</p>
+      </div>
+    </div>
+
+    <div class="panels">
+
+      <!-- LEFT: Request -->
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Request</span>
+            <span style="font-size:10px;color:var(--muted);">application/json</span>
+          </div>
+          <div class="panel-body">
+
+            <div class="url-bar">
+              <span class="full-url"><span id="urlPreviewS2">http://localhost:8000</span>/search</span>
+            </div>
+
+            <div class="section-divider">Body parameters</div>
+
+            <div class="field-group">
+              <div class="field-label">
+                owner_name
+                <span class="type-tag">string</span>
+              </div>
+              <div class="field-desc">GitHub repository owner username. Defaults to <code style="color:var(--accent)">Glank</code> if omitted.</div>
+              <input type="text" id="s-owner" placeholder="e.g. octocat" value=""/>
+            </div>
+
+            <div class="field-group">
+              <div class="field-label">
+                repo_name
+                <span class="type-tag">string</span>
+              </div>
+              <div class="field-desc">Repository name. Defaults to <code style="color:var(--accent)">Java-Games</code> if omitted.</div>
+              <input type="text" id="s-repo" placeholder="e.g. my-java-repo" value=""/>
+            </div>
+
+            <div class="field-group">
+              <div class="field-label">
+                query <span class="required">* required</span>
+                <span class="type-tag">string</span>
+              </div>
+              <div class="field-desc">Method name or keyword to search for in the call graph. Matches against both short names and fully-qualified names.</div>
+              <input type="text" id="s-query" placeholder="e.g. processPayment or com.example.Service.run"/>
+            </div>
+
+            <div class="section-divider">Live request body</div>
+
+            <div class="code-sample" style="margin-bottom:1rem;">
+              <button class="copy-btn" onclick="copySearchBody()">copy</button>
+              <pre id="s-liveBody">{
+  <span class="j-key">"owner_name"</span>: <span class="j-str" id="s-bodyOwner">""</span>,
+  <span class="j-key">"repo_name"</span>:  <span class="j-str" id="s-bodyRepo">""</span>,
+  <span class="j-key">"query"</span>:      <span class="j-str" id="s-bodyQuery">""</span>
+}</pre>
+            </div>
+
+            <button class="btn-send" id="s-sendBtn" onclick="sendSearch()">
+              <div class="spinner" id="s-spinner"></div>
+              <span id="s-btnLabel">Send Request</span>
+            </button>
+
+          </div>
+        </div>
+
+        <!-- Code samples -->
+        <div class="section-divider" style="margin-top:1.5rem;">Code samples</div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">cURL</span>
+            <button class="copy-btn" style="position:static;" onclick="copySearchCurl()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre id="s-curlSample">curl -X POST <span class="j-str" id="s-curlUrl">"http://localhost:8000/search"</span> \
+  -H <span class="j-str">"Content-Type: application/json"</span> \
+  -d <span class="j-str">'{"owner_name":"","repo_name":"","query":""}'</span></pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header">
+            <span class="panel-title">Python</span>
+            <button class="copy-btn" style="position:static;" onclick="copySearchPython()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre><span class="j-key">import</span> requests
+
+url  = <span class="j-str" id="s-pyUrl">"http://localhost:8000/search"</span>
+body = {
+    <span class="j-str">"owner_name"</span>: <span class="j-str" id="s-pyOwner">""</span>,
+    <span class="j-str">"repo_name"</span>:  <span class="j-str" id="s-pyRepo">""</span>,
+    <span class="j-str">"query"</span>:      <span class="j-str" id="s-pyQuery">""</span>
+}
+
+resp    = requests.post(url, json=body)
+data    = resp.json()
+results = data[<span class="j-str">"results"</span>]
+
+<span class="j-key">for</span> fn <span class="j-key">in</span> results:
+    <span class="j-key">print</span>(fn[<span class="j-str">"fullName"</span>], <span class="j-str">"calls"</span>, fn[<span class="j-str">"orderedExecution"</span>])</pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header">
+            <span class="panel-title">JavaScript (fetch)</span>
+            <button class="copy-btn" style="position:static;" onclick="copySearchJs()">copy</button>
+          </div>
+          <div class="panel-body">
+            <pre><span class="j-key">const</span> resp = <span class="j-key">await</span> fetch(<span class="j-str" id="s-jsUrl">"http://localhost:8000/search"</span>, {
+  method: <span class="j-str">"POST"</span>,
+  headers: { <span class="j-str">"Content-Type"</span>: <span class="j-str">"application/json"</span> },
+  body: JSON.stringify({
+    owner_name: <span class="j-str" id="s-jsOwner">""</span>,
+    repo_name:  <span class="j-str" id="s-jsRepo">""</span>,
+    query:      <span class="j-str" id="s-jsQuery">""</span>
+  })
+});
+<span class="j-key">const</span> { count, results } = <span class="j-key">await</span> resp.json();
+results.forEach(fn => console.log(fn.fullName, fn.orderedExecution));</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Response -->
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Response</span>
+            <span id="s-statusBadge" style="font-size:10px;color:var(--muted);">awaiting request…</span>
+          </div>
+          <div class="panel-body">
+
+            <div id="s-errorBanner" class="error-banner" style="display:none;"></div>
+
+            <div class="response-tabs">
+              <button class="rtab s-rtab active" onclick="switchSearchTab('body',this)">Body</button>
+              <button class="rtab s-rtab" onclick="switchSearchTab('schema',this)">Schema</button>
+              <button class="rtab s-rtab" onclick="switchSearchTab('results',this)">Results table</button>
+            </div>
+
+            <!-- Body tab -->
+            <div id="s-tab-body">
+              <div id="s-emptyState" class="empty-state">
+                <div class="icon">⬡</div>
+                <p>Hit <strong>Send Request</strong> to search the call graph</p>
+              </div>
+              <pre id="s-responseBody" style="display:none;"></pre>
+            </div>
+
+            <!-- Schema tab -->
+            <div id="s-tab-schema" style="display:none;">
+              <div class="response-schema">
+                <div class="schema-row">
+                  <span class="schema-field">query</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">The search string that was submitted</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">count</span>
+                  <span class="schema-type">number</span>
+                  <span class="schema-desc">Total number of matched functions</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">results[].name</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Short method name (last segment of full name)</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">results[].fullName</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Fully-qualified method name (e.g. com.pkg.Class.method)</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">results[].calls</span>
+                  <span class="schema-type">string[]</span>
+                  <span class="schema-desc">Structural outgoing call targets (unordered)</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">results[].calledBy</span>
+                  <span class="schema-type">string[]</span>
+                  <span class="schema-desc">Callers of this function (reverse edges)</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">results[].orderedExecution</span>
+                  <span class="schema-type">object[]</span>
+                  <span class="schema-desc">Outgoing calls sorted by (line, order) — execution sequence</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">orderedExecution[].callee_fullName</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Fully-qualified name of called method</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">orderedExecution[].line</span>
+                  <span class="schema-type">number|null</span>
+                  <span class="schema-desc">Source line number of the call site</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">orderedExecution[].order</span>
+                  <span class="schema-type">number|null</span>
+                  <span class="schema-desc">AST order index within the line</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">orderedExecution[].call_code</span>
+                  <span class="schema-type">string|null</span>
+                  <span class="schema-desc">Raw source code snippet of the call</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">orderedExecution[].call_name</span>
+                  <span class="schema-type">string|null</span>
+                  <span class="schema-desc">Short call name as it appears in source</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">search_graph_url</span>
+                  <span class="schema-type">url</span>
+                  <span class="schema-desc">Interactive subgraph visualization centered on matched functions</span>
+                </div>
+                <div class="schema-row">
+                  <span class="schema-field">error</span>
+                  <span class="schema-type">string</span>
+                  <span class="schema-desc">Error message if call graph failed to load</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Results table tab -->
+            <div id="s-tab-results" style="display:none;">
+              <div id="s-resultsTable">
+                <div class="empty-state">
+                  <div class="icon">⬡</div>
+                  <p>Results will appear here after a successful search</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Search graph asset -->
+        <div id="s-assetsPanel" style="display:none; margin-top:1rem;">
+          <div class="section-divider">Search graph</div>
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">Visualization</span></div>
+            <div class="panel-body">
+              <div class="asset-links">
+                <a id="s-graphLink" class="asset-link disabled" href="#" target="_blank">
+                  <span class="al-icon">⬡</span>
+                  <div class="al-text">
+                    <strong>Search Graph</strong>
+                    <span>Subgraph centered on results</span>
+                  </div>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── GET /health ── -->
+  <div id="ep-health" style="display:none;">
+    <div class="endpoint-header">
+      <span class="method-badge get">GET</span>
+      <div class="endpoint-info">
+        <h1>Health Check</h1>
+        <div class="path"><span id="urlPreviewH">http://localhost:8000</span>/health</div>
+        <p>Verify the API server is running and reachable.</p>
+      </div>
+    </div>
+    <div class="panels">
+      <div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Request</span></div>
+          <div class="panel-body">
+            <p style="color:var(--muted);font-size:12px;margin-bottom:1rem;">No body or parameters required.</p>
+            <button class="btn-send" onclick="sendHealth()">
+              <span>Send Request</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Response</span>
+            <span id="healthStatus" style="font-size:10px;color:var(--muted);">awaiting…</span>
+          </div>
+          <div class="panel-body">
+            <pre id="healthBody" style="color:var(--muted);">— hit Send —</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<script>
+// ── Live URL preview sync ──
+const baseUrlInput = document.getElementById('baseUrl');
+const repoUrlInput = document.getElementById('repoUrl');
+
+if (window.location.origin && window.location.origin !== 'null') {
+  baseUrlInput.value = window.location.origin;
+}
+
+function syncPreviews() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  document.querySelectorAll('#urlPreview,#urlPreview2,#urlPreviewH,#urlPreviewS,#urlPreviewS2').forEach(el => el.textContent = base);
+  document.getElementById('pyUrl').textContent = `"${base}/analyze"`;
+  document.getElementById('jsUrl').textContent = `"${base}/analyze"`;
+  document.getElementById('s-pyUrl').textContent  = `"${base}/search"`;
+  document.getElementById('s-jsUrl').textContent  = `"${base}/search"`;
+  document.getElementById('s-curlUrl').textContent = `"${base}/search"`;
+}
+baseUrlInput.addEventListener('input', syncPreviews);
+syncPreviews();
+
+repoUrlInput.addEventListener('input', () => {
+  const v = repoUrlInput.value || 'https://github.com/owner/repo';
+  document.getElementById('bodyUrl').textContent = `"${v}"`;
+  document.getElementById('pyRepoUrl').textContent = `"${v}"`;
+  document.getElementById('jsRepoUrl').textContent = `"${v}"`;
+});
+
+// ── Endpoint switcher ──
+const EP_IDS = ['analyze','search','health'];
+function showEndpoint(ep) {
+  EP_IDS.forEach(id => {
+    const el = document.getElementById(`ep-${id}`);
+    if (el) el.style.display = ep === id ? '' : 'none';
+  });
+  document.querySelectorAll('.sidebar-item[data-ep]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.ep === ep);
+  });
+}
+
+// ── Tab switcher ──
+function switchTab(name, btn) {
+  document.getElementById('tab-body').style.display   = name === 'body'   ? '' : 'none';
+  document.getElementById('tab-schema').style.display = name === 'schema' ? '' : 'none';
+  document.querySelectorAll('.rtab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// ── JSON syntax highlighter ──
+function highlight(json) {
+  return JSON.stringify(json, null, 2)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) return `<span class="j-key">${match}</span>`;
+        // Detect URLs
+        const inner = match.replace(/^"|"$/g,'').replace(/:$/, '');
+        if (inner.startsWith('http')) {
+          return `<span class="j-url" onclick="openUrl('${inner}')">${match}</span>`;
+        }
+        return `<span class="j-str">${match}</span>`;
+      }
+      if (/true|false/.test(match)) return `<span class="j-bool">${match}</span>`;
+      if (/null/.test(match)) return `<span class="j-null">${match}</span>`;
+      return `<span class="j-num">${match}</span>`;
+    });
+}
+
+function openUrl(url) { if(url) window.open(url, '_blank'); }
+
+// ── Asset link builder ──
+const ASSET_DEFS = [
+  { key: 'callgraph_html',               icon: '⬡', label: 'Call Graph',             sub: 'Cytoscape · javalang' },
+  { key: 'callgraph_json',               icon: '{ }', label: 'Nodes JSON',            sub: 'javalang · raw data'  },
+  { key: 'joern_callgraph_html',         icon: '⬡', label: 'Joern Call Graph',       sub: 'Ordered visualization' },
+  { key: 'joern_raw_callgraph_html',     icon: '⬡', label: 'Joern Raw',              sub: 'Unfiltered output'     },
+  { key: 'reduced_joern_callgraph_html', icon: '⬡', label: 'Joern Reduced',          sub: 'Simplified graph'      },
+];
+
+function buildAssets(graphs) {
+  const container = document.getElementById('assetLinks');
+  container.innerHTML = '';
+  ASSET_DEFS.forEach(def => {
+    const url = graphs[def.key];
+    const el = document.createElement('a');
+    el.className = 'asset-link' + (url ? '' : ' disabled');
+    el.href = url || '#';
+    if (url) el.target = '_blank';
+    el.innerHTML = `
+      <span class="al-icon">${def.icon}</span>
+      <div class="al-text">
+        <strong>${def.label}</strong>
+        <span>${def.sub}</span>
+      </div>`;
+    container.appendChild(el);
+  });
+  document.getElementById('assetsPanel').style.display = '';
+}
+
+// ── Main request ──
+async function sendRequest() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const repoUrl = repoUrlInput.value.trim();
+
+  if (!repoUrl || !repoUrl.includes('github.com')) {
+    document.getElementById('errorBanner').textContent = 'Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)';
+    document.getElementById('errorBanner').style.display = '';
+    return;
+  }
+  document.getElementById('errorBanner').style.display = 'none';
+
+  // Loading state
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+  document.getElementById('spinner').style.display = '';
+  document.getElementById('btnLabel').textContent = 'Analyzing…';
+  document.getElementById('statusBadge').textContent = 'pending…';
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('responseBody').style.display = 'none';
+  document.getElementById('assetsPanel').style.display = 'none';
+  document.getElementById('errorPanel').style.display = 'none';
+
+  const t0 = Date.now();
+
+  try {
+    const resp = await fetch(`${base}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl })
+    });
+
+    const elapsed = Date.now() - t0;
+    const data = await resp.json();
+
+    // Status badge
+    const badge = document.getElementById('statusBadge');
+    const cls = resp.ok ? 'status-200' : (resp.status >= 500 ? 'status-5xx' : 'status-4xx');
+    badge.innerHTML = `<span class="status-pill ${cls}">${resp.status}</span> <span class="status-time">${elapsed}ms</span>`;
+
+    // Body
+    const pre = document.getElementById('responseBody');
+    pre.innerHTML = highlight(data);
+    pre.style.display = '';
+
+    // Assets
+    if (data.graphs) buildAssets(data.graphs);
+
+    // Error in payload
+    if (data.error) {
+      document.getElementById('errorDetail').textContent = data.error;
+      document.getElementById('errorPanel').style.display = '';
+    }
+
+  } catch(e) {
+    document.getElementById('statusBadge').textContent = 'network error';
+    document.getElementById('errorBanner').textContent = `Could not reach ${base}/analyze — is the server running? ${e.message}`;
+    document.getElementById('errorBanner').style.display = '';
+    document.getElementById('emptyState').style.display = '';
+  } finally {
+    btn.disabled = false;
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('btnLabel').textContent = 'Send Request';
+  }
+}
+
+// ── Health check ──
+async function sendHealth() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  try {
+    const t0 = Date.now();
+    const resp = await fetch(`${base}/health`);
+    const elapsed = Date.now() - t0;
+    let body;
+    try { body = await resp.json(); } catch(_) { body = await resp.text(); }
+    document.getElementById('healthStatus').innerHTML = `<span class="status-pill status-200">${resp.status}</span> <span class="status-time">${elapsed}ms</span>`;
+    document.getElementById('healthBody').innerHTML = highlight(typeof body === 'string' ? { message: body } : body);
+  } catch(e) {
+    document.getElementById('healthStatus').textContent = 'error';
+    document.getElementById('healthBody').textContent = e.message;
+  }
+}
+
+// ── Copy helpers ──
+function copyText(txt) {
+  navigator.clipboard.writeText(txt).catch(() => {});
+}
+function copyBody() {
+  copyText(JSON.stringify({ repoUrl: repoUrlInput.value }, null, 2));
+}
+function copyCurl() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const url = repoUrlInput.value;
+  copyText(`curl -X POST "${base}/analyze" \\\n  -H "Content-Type: application/json" \\\n  -d '{"repoUrl":"${url}"}'`);
+}
+function copyPython() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const url = repoUrlInput.value;
+  copyText(`import requests\n\nurl  = "${base}/analyze"\nbody = {"repoUrl": "${url}"}\n\nresp = requests.post(url, json=body)\ndata = resp.json()\nprint(data["graphs"]["callgraph_json"])\nprint(data["graphs"]["callgraph_html"])`);
+}
+function copyJs() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const url = repoUrlInput.value;
+  copyText(`const resp = await fetch("${base}/analyze", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ repoUrl: "${url}" })\n});\nconst data = await resp.json();\nconsole.log(data.graphs.callgraph_json);`);
+}
+
+function scrollToAssets() {
+  document.getElementById('assetsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Search live body sync ──
+['s-owner','s-repo','s-query'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateSearchBody);
+});
+function updateSearchBody() {
+  const o = document.getElementById('s-owner').value;
+  const r = document.getElementById('s-repo').value;
+  const q = document.getElementById('s-query').value;
+  document.getElementById('s-bodyOwner').textContent = `"${o}"`;
+  document.getElementById('s-bodyRepo').textContent  = `"${r}"`;
+  document.getElementById('s-bodyQuery').textContent = `"${q}"`;
+  document.getElementById('s-pyOwner').textContent   = `"${o}"`;
+  document.getElementById('s-pyRepo').textContent    = `"${r}"`;
+  document.getElementById('s-pyQuery').textContent   = `"${q}"`;
+  document.getElementById('s-jsOwner').textContent   = `"${o}"`;
+  document.getElementById('s-jsRepo').textContent    = `"${r}"`;
+  document.getElementById('s-jsQuery').textContent   = `"${q}"`;
+}
+
+// ── Search tab switcher ──
+function switchSearchTab(name, btn) {
+  ['body','schema','results'].forEach(t => {
+    document.getElementById(`s-tab-${t}`).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.s-rtab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// ── Build results table ──
+function buildResultsTable(results) {
+  if (!results || results.length === 0) {
+    document.getElementById('s-resultsTable').innerHTML =
+      '<div class="empty-state"><div class="icon">⬡</div><p>No functions matched the query</p></div>';
+    return;
+  }
+  let html = `<div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border2);text-align:left;">
+          <th style="padding:6px 8px;color:var(--muted);font-weight:600;white-space:nowrap;">Method</th>
+          <th style="padding:6px 8px;color:var(--muted);font-weight:600;">Calls out</th>
+          <th style="padding:6px 8px;color:var(--muted);font-weight:600;">Called by</th>
+          <th style="padding:6px 8px;color:var(--muted);font-weight:600;">Exec steps</th>
+        </tr>
+      </thead>
+      <tbody>`;
+  results.forEach((fn, i) => {
+    const bg = i % 2 === 0 ? 'var(--surface2)' : 'transparent';
+    html += `<tr style="background:${bg};border-bottom:1px solid var(--border);">
+      <td style="padding:7px 8px;color:var(--accent);font-family:var(--mono);word-break:break-all;">${fn.fullName}</td>
+      <td style="padding:7px 8px;color:var(--text);">${fn.calls ? fn.calls.length : 0}</td>
+      <td style="padding:7px 8px;color:var(--text);">${fn.calledBy ? fn.calledBy.length : 0}</td>
+      <td style="padding:7px 8px;color:var(--text);">${fn.orderedExecution ? fn.orderedExecution.length : 0}</td>
+    </tr>`;
+    if (fn.orderedExecution && fn.orderedExecution.length > 0) {
+      html += `<tr style="background:${bg};">
+        <td colspan="4" style="padding:0 8px 8px 24px;">
+          <div style="color:var(--muted);font-size:10px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em;">Execution order</div>`;
+      fn.orderedExecution.forEach((c, ci) => {
+        html += `<div style="display:flex;align-items:baseline;gap:8px;padding:2px 0;border-left:2px solid var(--border2);padding-left:8px;margin-bottom:2px;">
+          <span style="color:var(--purple);min-width:28px;font-size:10px;">${ci+1}</span>
+          <span style="color:var(--blue);word-break:break-all;">${c.callee_fullName}</span>
+          ${c.line !== null ? `<span style="color:var(--muted);font-size:10px;">L${c.line}</span>` : ''}
+          ${c.call_code ? `<code style="color:var(--green);font-size:10px;opacity:.75">${c.call_code}</code>` : ''}
+        </div>`;
+      });
+      html += `</td></tr>`;
+    }
+  });
+  html += '</tbody></table></div>';
+  document.getElementById('s-resultsTable').innerHTML = html;
+}
+
+// ── Send /search ──
+async function sendSearch() {
+  const base  = baseUrlInput.value.replace(/\/$/, '');
+  const owner = document.getElementById('s-owner').value.trim();
+  const repo  = document.getElementById('s-repo').value.trim();
+  const query = document.getElementById('s-query').value.trim();
+
+  if (!query) {
+    document.getElementById('s-errorBanner').textContent = 'Please enter a search query.';
+    document.getElementById('s-errorBanner').style.display = '';
+    return;
+  }
+  document.getElementById('s-errorBanner').style.display = 'none';
+
+  const btn = document.getElementById('s-sendBtn');
+  btn.disabled = true;
+  document.getElementById('s-spinner').style.display = '';
+  document.getElementById('s-btnLabel').textContent = 'Searching…';
+  document.getElementById('s-statusBadge').textContent = 'pending…';
+  document.getElementById('s-emptyState').style.display = 'none';
+  document.getElementById('s-responseBody').style.display = 'none';
+  document.getElementById('s-assetsPanel').style.display = 'none';
+
+  const payload = { query };
+  if (owner) payload.owner_name = owner;
+  if (repo)  payload.repo_name  = repo;
+
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(`${base}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const elapsed = Date.now() - t0;
+    const data = await resp.json();
+
+    const badge = document.getElementById('s-statusBadge');
+    const cls = resp.ok ? 'status-200' : (resp.status >= 500 ? 'status-5xx' : 'status-4xx');
+    badge.innerHTML = `<span class="status-pill ${cls}">${resp.status}</span> <span class="status-time">${elapsed}ms</span> <span style="color:var(--muted)">${data.count ?? 0} result${data.count === 1 ? '' : 's'}</span>`;
+
+    const pre = document.getElementById('s-responseBody');
+    pre.innerHTML = highlight(data);
+    pre.style.display = '';
+
+    buildResultsTable(data.results || []);
+
+    if (data.search_graph_url) {
+      const link = document.getElementById('s-graphLink');
+      link.href = data.search_graph_url;
+      link.classList.remove('disabled');
+      document.getElementById('s-assetsPanel').style.display = '';
+    }
+  } catch(e) {
+    document.getElementById('s-statusBadge').textContent = 'network error';
+    document.getElementById('s-errorBanner').textContent = `Could not reach ${base}/search — ${e.message}`;
+    document.getElementById('s-errorBanner').style.display = '';
+    document.getElementById('s-emptyState').style.display = '';
+  } finally {
+    btn.disabled = false;
+    document.getElementById('s-spinner').style.display = 'none';
+    document.getElementById('s-btnLabel').textContent = 'Send Request';
+  }
+}
+document.getElementById('s-query').addEventListener('keydown', e => { if(e.key === 'Enter') sendSearch(); });
+
+// ── Search copy helpers ──
+function getSearchPayload() {
+  return {
+    owner_name: document.getElementById('s-owner').value || undefined,
+    repo_name:  document.getElementById('s-repo').value  || undefined,
+    query:      document.getElementById('s-query').value
+  };
+}
+function copySearchBody()   { copyText(JSON.stringify(getSearchPayload(), null, 2)); }
+function copySearchCurl() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  copyText(`curl -X POST "${base}/search" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(getSearchPayload())}'`);
+}
+function copySearchPython() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const p = getSearchPayload();
+  copyText(`import requests\n\nurl  = "${base}/search"\nbody = ${JSON.stringify(p, null, 4)}\n\nresp    = requests.post(url, json=body)\ndata    = resp.json()\nresults = data["results"]\n\nfor fn in results:\n    print(fn["fullName"], fn["orderedExecution"])`);
+}
+function copySearchJs() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const p = getSearchPayload();
+  copyText(`const resp = await fetch("${base}/search", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify(${JSON.stringify(p)})\n});\nconst { count, results } = await resp.json();\nresults.forEach(fn => console.log(fn.fullName, fn.orderedExecution));`);
+}
+
+// Allow Enter key in input
+repoUrlInput.addEventListener('keydown', e => { if(e.key === 'Enter') sendRequest(); });
+</script>
+</body>
+</html>

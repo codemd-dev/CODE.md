@@ -1,0 +1,1607 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-L5ZYJ817HR"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  window.CODEVAL_GA_DEBUG = (() => {
+    try {
+      const enabled = new URLSearchParams(window.location.search).get("debug_mode") === "1"
+        || localStorage.getItem("codeval:gaDebug") === "1";
+      if (enabled) localStorage.setItem("codeval:gaDebug", "1");
+      return enabled;
+    } catch {
+      return new URLSearchParams(window.location.search).get("debug_mode") === "1";
+    }
+  })();
+  gtag('js', new Date());
+  gtag('config', 'G-L5ZYJ817HR', window.CODEVAL_GA_DEBUG ? { debug_mode: true } : {});
+</script>
+<script src="/static/autotrack.js"></script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CodeVal.ai | Turn Software Complexity Into Business Clarity</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+<meta name="description" content="CodeVal helps leaders understand what their software does, where risk lives, and which investments will move the business forward." />
+<meta name="keywords" content="software intelligence, engineering leadership, product clarity, portfolio risk, legacy modernization, technical debt, software due diligence, business technology decisions, engineering productivity, application visibility" />
+<meta name="robots" content="index, follow" />
+<link rel="canonical" href="https://codeval.ai/" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://codeval.ai/" />
+<meta property="og:title" content="CodeVal.ai | Turn Software Complexity Into Business Clarity" />
+<meta property="og:description" content="Give leaders a clear view of software risk, product capability, and modernization priorities." />
+<meta property="og:image" content="https://codeval.ai/sample/CodeVAL.jpg" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="CodeVal.ai | Turn Software Complexity Into Business Clarity" />
+<meta name="twitter:description" content="CodeVal helps management teams understand software risk, product capability, and investment priorities." />
+<meta name="twitter:image" content="https://codeval.ai/sample/CodeVAL.jpg" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "CodeVal",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "Web",
+  "url": "https://codeval.ai/",
+  "description": "CodeVal helps leaders understand what their software does, where risk lives, and which investments will move the business forward."
+}
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --brand: #1a1a2e;
+    --accent: #4f46e5;
+    --accent-light: #eef2ff;
+    --text: #111827;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --bg: #ffffff;
+    --bg-alt: #f9fafb;
+    --radius: 10px;
+    --nav-h: 68px;
+    --page-max: 1320px;
+    --page-pad: 1.25rem;
+  }
+
+
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); }
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+
+  /* ── NAV ── */
+  nav {
+    position: sticky; top: 0; z-index: 100;
+    height: var(--nav-h);
+    background: rgba(255,255,255,0.95);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+  }
+  .nav-inner {
+    max-width: var(--page-max); margin: 0 auto; padding: 0 var(--page-pad);
+    width: 100%; display: flex; align-items: center; gap: 2rem;
+  }
+  .logo {
+    font-size: 1.25rem; font-weight: 700; color: var(--brand);
+    white-space: nowrap; margin-right: 1rem;
+  }
+  .logo span { color: var(--accent); }
+
+  .nav-links { display: flex; align-items: center; gap: 0.25rem; flex: 1; }
+
+  /* Dropdown trigger */
+  .nav-item { position: relative; }
+  .nav-item > a, .nav-item > button {
+    display: flex; align-items: center; gap: 4px;
+    padding: 0.4rem 0.75rem; border-radius: 6px;
+    font-size: 0.9rem; font-weight: 500; color: var(--text);
+    background: none; border: none; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .nav-item > a:hover, .nav-item > button:hover { background: var(--bg-alt); }
+  .nav-item > button svg { transition: transform 0.2s; }
+  .nav-item:hover > button svg { transform: rotate(180deg); }
+
+  .dropdown {
+    display: none; position: absolute; top: calc(100% + 8px); left: 0;
+    min-width: 240px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    padding: 0.5rem;
+  }
+  .dropdown.wide { min-width: 520px; display: none; grid-template-columns: 1fr 1fr; gap: 0.25rem; }
+  .nav-item:hover .dropdown { display: block; }
+  .nav-item:hover .dropdown.wide { display: grid; }
+
+  .dropdown-section { padding: 0.25rem 0; }
+  .dropdown-label {
+    font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    padding: 0.5rem 0.75rem 0.25rem;
+  }
+  .dropdown a {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 0.5rem 0.75rem; border-radius: 6px;
+    font-size: 0.875rem; transition: background 0.15s;
+  }
+  .dropdown a:hover { background: var(--bg-alt); }
+  .dropdown a .d-icon {
+    width: 32px; height: 32px; border-radius: 6px;
+    background: var(--accent-light); display: flex; align-items: center;
+    justify-content: center; flex-shrink: 0; font-size: 14px;
+  }
+  .dropdown a .d-text strong { display: block; font-size: 0.875rem; font-weight: 500; }
+  .dropdown a .d-text span { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
+
+  .nav-right { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; }
+  .btn-ghost {
+    padding: 0.4rem 1rem; border-radius: 6px; font-size: 0.875rem;
+    font-weight: 500; color: var(--text); transition: background 0.15s;
+  }
+  .btn-ghost:hover { background: var(--bg-alt); }
+  .btn-primary {
+    padding: 0.5rem 1.25rem; border-radius: 6px; font-size: 0.875rem;
+    font-weight: 600; background: var(--accent); color: #fff;
+    transition: opacity 0.15s;
+  }
+  .btn-primary:hover { opacity: 0.9; }
+
+  /* ── HERO ── */
+  .hero {
+    max-width: var(--page-max); margin: 0 auto;
+    padding: 2.5rem var(--page-pad) 3rem;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: center;
+  }
+  .hero-eyebrow {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--accent-light); color: var(--accent);
+    font-size: 0.8rem; font-weight: 600; padding: 4px 12px;
+    border-radius: 999px; margin-bottom: 1.25rem;
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 4vw, 3rem); font-weight: 800;
+    line-height: 1.15; letter-spacing: -0.02em; color: var(--brand);
+    margin-bottom: 1.25rem;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero p {
+    font-size: 1.1rem; color: var(--muted); line-height: 1.7;
+    margin-bottom: 2rem; max-width: 480px;
+  }
+  .hero-ctas { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .btn-large {
+    padding: 0.75rem 1.75rem; border-radius: 8px; font-size: 1rem;
+    font-weight: 600; background: var(--accent); color: #fff;
+    transition: opacity 0.15s; display: inline-block;
+  }
+  .btn-large:hover { opacity: 0.9; }
+  .btn-outline {
+    padding: 0.75rem 1.75rem; border-radius: 8px; font-size: 1rem;
+    font-weight: 600; border: 1.5px solid var(--border);
+    color: var(--text); transition: border-color 0.15s; display: inline-block;
+  }
+  .btn-outline:hover { border-color: #aaa; }
+  .btn-github {
+    background: #111827;
+    color: #fff;
+    border-color: #111827;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .btn-github:hover { border-color: #111827; opacity: 0.9; }
+  .hero-image {
+    border-radius: 14px; border: 1px solid var(--border);
+    background: var(--bg-alt); overflow: hidden;
+    aspect-ratio: 4/3; min-height: 520px;
+    display: flex; align-items: center;
+    justify-content: center;
+  }
+  .hero-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    padding: 1rem;
+    background: #fff;
+  }
+  .hero-image-placeholder {
+    width: 100%; height: 100%;
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #a5b4fc; font-size: 0.875rem;
+  }
+
+  .dashboard-showcase {
+    border-top: 1px solid var(--border);
+    background: var(--bg-alt);
+    padding: 4rem 2rem;
+  }
+  .dashboard-showcase-inner {
+    max-width: var(--page-max);
+    margin: 0 auto;
+  }
+  .dashboard-frame {
+    width: 100%;
+    height: 920px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.09);
+  }
+
+  .github-connect {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: 0 var(--page-pad) 3rem;
+  }
+  .github-panel {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: #fff;
+    padding: 1.25rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+    gap: 1.25rem;
+    align-items: center;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+  }
+  .github-panel h2 {
+    color: var(--brand);
+    font-size: 1.35rem;
+    margin-bottom: 0.4rem;
+  }
+  .github-panel p {
+    color: var(--muted);
+    line-height: 1.6;
+    max-width: 720px;
+  }
+  .github-controls {
+    display: grid;
+    gap: 0.65rem;
+  }
+  .github-controls select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem 0.85rem;
+    font: inherit;
+    color: var(--text);
+    background: #fff;
+  }
+  .github-actions {
+    display: flex;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+  }
+  .github-status {
+    color: var(--muted);
+    font-size: 0.9rem;
+    min-height: 1.25rem;
+  }
+  .api-callout {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: 0 var(--page-pad) 3rem;
+  }
+  .api-callout-card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--brand);
+    color: #fff;
+    padding: 1.6rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+    gap: 1.25rem;
+    align-items: center;
+  }
+  .api-callout-card .eyebrow {
+    color: #c7d2fe;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.55rem;
+  }
+  .api-callout-card h2 {
+    font-size: clamp(1.45rem, 2.4vw, 2rem);
+    margin-bottom: 0.6rem;
+  }
+  .api-callout-card p {
+    color: rgba(255,255,255,0.76);
+    line-height: 1.65;
+  }
+  .api-code {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 10px;
+    padding: 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.86rem;
+    line-height: 1.6;
+    color: #dbeafe;
+    overflow-x: auto;
+  }
+
+  /* ── LOGO BAR ── */
+  .logo-bar {
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    background: var(--bg-alt); padding: 2rem;
+  }
+  .logo-bar-inner { max-width: var(--page-max); margin: 0 auto; }
+  .logo-bar p {
+    text-align: center; font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--muted); font-weight: 600;
+    margin-bottom: 1.5rem;
+  }
+  .logos {
+    display: flex; align-items: center; justify-content: center;
+    gap: 3rem; flex-wrap: wrap;
+  }
+  .logo-item {
+    height: 28px; display: flex; align-items: center;
+    color: #9ca3af; font-size: 1rem; font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  /* ── FEATURES ── */
+  .section { max-width: var(--page-max); margin: 0 auto; padding: 5rem var(--page-pad); }
+  .section-header { text-align: center; margin-bottom: 3.5rem; }
+  .section-header .eyebrow {
+    font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--accent); margin-bottom: 0.75rem;
+  }
+  .section-header h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem); font-weight: 800;
+    line-height: 1.2; letter-spacing: -0.02em; color: var(--brand);
+    margin-bottom: 1rem;
+  }
+  .section-header .section-subtitle {
+    color: var(--accent);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    margin: -0.25rem auto 0.75rem;
+  }
+  .section-header p {
+    font-size: 1.05rem; color: var(--muted); max-width: 560px;
+    margin: 0 auto; line-height: 1.7;
+  }
+
+  .features-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+  }
+  .feature-card {
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.75rem; background: var(--bg);
+    transition: box-shadow 0.2s;
+  }
+  .feature-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.07); }
+  .feature-icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: var(--accent-light); display: flex;
+    align-items: center; justify-content: center;
+    font-size: 20px; margin-bottom: 1rem;
+  }
+  .feature-card h3 {
+    font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--brand);
+  }
+  .feature-card p { font-size: 0.9rem; color: var(--muted); line-height: 1.6; }
+
+  .detect-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.85rem;
+    list-style: none;
+  }
+  .detect-list li {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    background: var(--bg);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .detect-list li::before {
+    content: "•";
+    color: var(--accent);
+    font-weight: 800;
+    margin-right: 0.55rem;
+  }
+
+  /* ── SOCIAL PROOF / STATS ── */
+  .stats-band { background: var(--brand); padding: 4rem 2rem; }
+  .stats-inner {
+    max-width: var(--page-max); margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 2rem; text-align: center;
+  }
+  .stat-num {
+    font-size: 2.5rem; font-weight: 800; color: #fff;
+    letter-spacing: -0.03em; margin-bottom: 0.25rem;
+  }
+  .stat-label { font-size: 0.875rem; color: rgba(255,255,255,0.6); }
+
+  /* ── TESTIMONIALS ── */
+  .testimonials-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem; margin-top: 3rem;
+  }
+  .testimonial-card {
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.75rem; background: var(--bg);
+  }
+  .quote { font-size: 0.95rem; color: var(--text); line-height: 1.7; margin-bottom: 1.25rem; }
+  .author { display: flex; align-items: center; gap: 10px; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%;
+    background: var(--accent-light); display: flex; align-items: center;
+    justify-content: center; font-size: 0.75rem; font-weight: 700;
+    color: var(--accent); flex-shrink: 0;
+  }
+  .author-name { font-size: 0.875rem; font-weight: 600; }
+  .author-role { font-size: 0.8rem; color: var(--muted); }
+
+  /* ── CTA BAND ── */
+  .cta-band {
+    background: var(--accent-light); border-radius: 16px;
+    margin: 2rem; padding: 4rem 2rem; text-align: center;
+  }
+  .cta-band h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem); font-weight: 800;
+    color: var(--brand); margin-bottom: 1rem; letter-spacing: -0.02em;
+  }
+  .cta-band p {
+    font-size: 1.05rem; color: var(--muted); max-width: 500px;
+    margin: 0 auto 2rem;
+  }
+  .cta-band .btn-large { display: inline-block; }
+
+  .contact-section {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: 5rem var(--page-pad);
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(320px, 1.15fr);
+    gap: 3rem;
+    align-items: start;
+  }
+  .contact-copy h2 {
+    font-size: clamp(1.75rem, 3vw, 2.4rem);
+    line-height: 1.2;
+    color: var(--brand);
+    margin-bottom: 1rem;
+  }
+  .contact-copy p {
+    color: var(--muted);
+    line-height: 1.7;
+    margin-bottom: 1.25rem;
+  }
+  .contact-copy .eyebrow {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    margin-bottom: 0.75rem;
+  }
+  .contact-actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .phone-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--accent);
+    font-weight: 800;
+    font-size: 1.15rem;
+  }
+  .contact-form {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    background: #fff;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .field {
+    display: grid;
+    gap: 0.4rem;
+  }
+  .field.full { grid-column: 1 / -1; }
+  .field label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .field input,
+  .field textarea {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem 0.85rem;
+    font: inherit;
+    color: var(--text);
+    background: #fff;
+  }
+  .field textarea {
+    min-height: 140px;
+    resize: vertical;
+  }
+  .form-status {
+    min-height: 1.25rem;
+    margin-top: 0.85rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    border-top: 1px solid var(--border); padding: 3rem 2rem;
+    background: var(--bg-alt);
+  }
+  .footer-inner {
+    max-width: var(--page-max); margin: 0 auto;
+    display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 3rem;
+  }
+  .footer-brand .logo { font-size: 1.1rem; margin-bottom: 0.75rem; display: block; }
+  .footer-brand p { font-size: 0.85rem; color: var(--muted); line-height: 1.6; max-width: 240px; }
+  .footer-col h4 {
+    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text); margin-bottom: 1rem;
+  }
+  .footer-col ul { list-style: none; }
+  .footer-col li { margin-bottom: 0.5rem; }
+  .footer-col a { font-size: 0.875rem; color: var(--muted); transition: color 0.15s; }
+  .footer-col a:hover { color: var(--text); }
+  .footer-bottom {
+    max-width: var(--page-max); margin: 2rem auto 0;
+    padding-top: 1.5rem; border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 0.8rem; color: var(--muted);
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 768px) {
+    .hero { grid-template-columns: 1fr; padding: 3rem 1.25rem; gap: 2rem; }
+    .hero-image { display: none; }
+    .nav-links { display: none; }
+    .dashboard-showcase { padding: 3rem 1rem; }
+    .dashboard-frame { height: 760px; border-radius: 8px; }
+    .github-panel { grid-template-columns: 1fr; }
+    .api-callout-card { grid-template-columns: 1fr; }
+    .contact-section { grid-template-columns: 1fr; padding: 3rem 1.25rem; }
+    .form-grid { grid-template-columns: 1fr; }
+    .footer-inner { grid-template-columns: 1fr 1fr; }
+    .footer-brand { grid-column: 1 / -1; }
+  }
+  /* Polished product homepage refresh */
+  :root {
+    --ink: #090b18;
+    --surface-warm: #f7f5f0;
+    --violet: #6657ff;
+    --shadow-soft: 0 24px 70px rgba(18, 24, 40, 0.12);
+    --shadow-tight: 0 12px 30px rgba(18, 24, 40, 0.08);
+    --page-max: 1200px;
+    --page-pad: clamp(1rem, 2vw, 2rem);
+  }
+
+  html { scroll-behavior: smooth; }
+  body {
+    color: var(--ink);
+    background: linear-gradient(180deg, #fbfaf7 0%, #ffffff 46%, #f7f5f0 100%);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  p { color: #5e6575; }
+  nav {
+    height: 74px;
+    background: rgba(251,250,247,0.86);
+    border-bottom: 1px solid rgba(15,23,42,0.08);
+    backdrop-filter: blur(18px);
+  }
+  .nav-inner { max-width: var(--page-max); gap: 1.4rem; }
+  .logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--ink);
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+  .logo::before {
+    content: "";
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--violet), #111827);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.32);
+  }
+  .logo span { color: var(--violet); }
+  .nav-item > a,
+  .nav-item > button,
+  .nav-links > a,
+  .btn-ghost {
+    color: #363c4d;
+    border-radius: 8px;
+    font-weight: 650;
+  }
+  .nav-item > a:hover,
+  .nav-item > button:hover,
+  .nav-links > a:hover,
+  .btn-ghost:hover { background: rgba(9,11,24,0.05); }
+  .dropdown {
+    border-color: rgba(15,23,42,0.1);
+    border-radius: 12px;
+    box-shadow: var(--shadow-soft);
+  }
+  .btn-primary,
+  .btn-large {
+    background: var(--ink);
+    color: #fff;
+    border-radius: 9px;
+    box-shadow: 0 10px 24px rgba(9,11,24,0.18);
+  }
+  .btn-outline {
+    border: 1px solid rgba(9,11,24,0.16);
+    border-radius: 9px;
+    background: rgba(255,255,255,0.72);
+    color: var(--ink);
+  }
+  .hero {
+    display: block;
+    max-width: var(--page-max);
+    padding: clamp(4rem, 8vw, 7rem) var(--page-pad) 4rem;
+  }
+  .hero-text {
+    max-width: 940px;
+    margin: 0 auto;
+    text-align: center;
+  }
+  .hero-eyebrow {
+    background: rgba(102,87,255,0.1);
+    color: #4636d8;
+    border: 1px solid rgba(102,87,255,0.18);
+    border-radius: 999px;
+    padding: 0.42rem 0.85rem;
+    margin-bottom: 1.2rem;
+  }
+  .hero h1 {
+    color: var(--ink);
+    max-width: 980px;
+    margin: 0 auto 1.25rem;
+    font-size: clamp(3rem, 7vw, 6.8rem);
+    line-height: 0.94;
+    font-weight: 850;
+    letter-spacing: 0;
+  }
+  .hero p {
+    max-width: 720px;
+    margin: 0 auto 2rem;
+    color: #555d70;
+    font-size: clamp(1.05rem, 1.8vw, 1.35rem);
+    line-height: 1.55;
+  }
+  .hero-ctas { justify-content: center; gap: 0.8rem; }
+  .hero-image {
+    position: relative;
+    margin: 3rem auto 0;
+    max-width: 1120px;
+    min-height: 0;
+    aspect-ratio: 16 / 9;
+    border-radius: 18px;
+    border: 1px solid rgba(15,23,42,0.12);
+    background: radial-gradient(circle at 20% 10%, rgba(102,87,255,0.16), transparent 28%), linear-gradient(180deg, #ffffff, #f5f3ee);
+    box-shadow: var(--shadow-soft);
+    overflow: hidden;
+  }
+  .hero-image > img {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    object-fit: cover;
+    opacity: 0.18;
+    filter: saturate(0.75);
+  }
+  .product-preview {
+    position: absolute;
+    inset: 5.5% 4%;
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    background: #fbfaf7;
+    border: 1px solid rgba(15,23,42,0.12);
+    border-radius: 16px;
+    box-shadow: 0 18px 60px rgba(9,11,24,0.12);
+    overflow: hidden;
+  }
+  .preview-sidebar {
+    border-right: 1px solid rgba(15,23,42,0.08);
+    background: #f0ede6;
+    padding: 1rem;
+    display: grid;
+    align-content: start;
+    gap: 0.75rem;
+  }
+  .preview-brand { font-weight: 850; font-size: 0.92rem; color: var(--ink); }
+  .preview-nav { display: grid; gap: 0.35rem; color: #596172; font-size: 0.82rem; }
+  .preview-nav span { padding: 0.55rem 0.65rem; border-radius: 8px; }
+  .preview-nav .active { background: #fff; color: var(--ink); box-shadow: 0 4px 16px rgba(9,11,24,0.06); }
+  .preview-main {
+    min-width: 0;
+    padding: clamp(1rem, 2vw, 1.5rem);
+    display: grid;
+    grid-template-rows: auto auto 1fr;
+    gap: 1rem;
+  }
+  .preview-topline { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+  .preview-title h3 { font-size: clamp(1.15rem, 2vw, 1.55rem); color: var(--ink); margin-bottom: 0.25rem; }
+  .preview-title p { font-size: 0.86rem; color: #687083; margin: 0; }
+  .preview-pill {
+    border: 1px solid rgba(34,197,94,0.24);
+    background: rgba(34,197,94,0.09);
+    color: #137333;
+    border-radius: 999px;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 750;
+    white-space: nowrap;
+  }
+  .metric-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; }
+  .metric-card,
+  .chart-card,
+  .flow-card,
+  .insight-card {
+    background: #fff;
+    border: 1px solid rgba(15,23,42,0.09);
+    border-radius: 10px;
+    box-shadow: 0 7px 22px rgba(9,11,24,0.05);
+  }
+  .metric-card { padding: 0.85rem; }
+  .metric-card strong { display: block; color: var(--ink); font-size: 1.25rem; margin-bottom: 0.2rem; }
+  .metric-card span { color: #70798d; font-size: 0.76rem; line-height: 1.3; }
+  .preview-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(220px, 0.9fr); gap: 0.75rem; }
+  .chart-card { padding: 1rem; }
+  .chart-header,
+  .flow-header { display: flex; justify-content: space-between; gap: 1rem; color: #6b7280; font-size: 0.78rem; font-weight: 700; margin-bottom: 1rem; }
+  .bars { height: 190px; display: flex; align-items: end; gap: 0.55rem; }
+  .bars span { flex: 1; min-width: 12px; border-radius: 7px 7px 0 0; background: linear-gradient(180deg, var(--violet), #b8b0ff); }
+  .flow-card { padding: 1rem; display: grid; gap: 0.7rem; }
+  .flow-item { display: grid; grid-template-columns: 24px 1fr auto; gap: 0.55rem; align-items: center; color: #444b5c; font-size: 0.82rem; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--violet); box-shadow: 0 0 0 5px rgba(102,87,255,0.11); justify-self: center; }
+  .flow-item em { color: #7b8496; font-style: normal; font-size: 0.75rem; }
+  .insight-card { position: absolute; right: 5.5%; bottom: 7%; max-width: 340px; padding: 1rem; }
+  .insight-card strong { display: block; color: var(--ink); margin-bottom: 0.35rem; font-size: 0.9rem; }
+  .insight-card p { margin: 0; font-size: 0.78rem; line-height: 1.45; }
+  .api-callout { padding-top: 1rem; }
+  .api-callout-card { border-radius: 18px; background: #0b1020; box-shadow: var(--shadow-soft); }
+  .api-code { border-radius: 12px; }
+  .section { max-width: var(--page-max); padding: 5.5rem var(--page-pad); }
+  .section-header { margin-bottom: 2.4rem; }
+  .section-header .eyebrow,
+  .contact-copy .eyebrow,
+  .api-callout-card .eyebrow { color: var(--violet); letter-spacing: 0.08em; }
+  .section-header h2,
+  .contact-copy h2,
+  .cta-band h2 { color: var(--ink); letter-spacing: 0; }
+  .detect-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    border: 1px solid rgba(15,23,42,0.1);
+    border-radius: 16px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: var(--shadow-tight);
+  }
+  .detect-list li {
+    border: 0;
+    border-right: 1px solid rgba(15,23,42,0.08);
+    border-bottom: 1px solid rgba(15,23,42,0.08);
+    border-radius: 0;
+    padding: 1.15rem;
+    color: #303748;
+    font-weight: 700;
+  }
+  .detect-list li::before { content: ""; }
+  .logo-bar { background: #0b1020; border: 0; color: #fff; }
+  .logo-bar p { color: rgba(255,255,255,0.58); }
+  .logo-item { color: rgba(255,255,255,0.72); }
+  .features-grid { gap: 0; border: 1px solid rgba(15,23,42,0.1); border-radius: 16px; overflow: hidden; background: #fff; }
+  .feature-card {
+    border: 0;
+    border-right: 1px solid rgba(15,23,42,0.08);
+    border-bottom: 1px solid rgba(15,23,42,0.08);
+    border-radius: 0;
+    padding: 2rem;
+  }
+  .feature-card:hover { box-shadow: none; background: #fbfaf7; }
+  .feature-icon {
+    width: auto;
+    height: auto;
+    justify-content: flex-start;
+    background: transparent;
+    border-radius: 0;
+    color: var(--violet);
+    font-size: 0.78rem;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .stats-band { background: #fbfaf7; padding: 4rem var(--page-pad); }
+  .stats-inner {
+    max-width: var(--page-max);
+    border: 1px solid rgba(15,23,42,0.1);
+    border-radius: 16px;
+    background: #fff;
+    padding: 2rem;
+    box-shadow: var(--shadow-tight);
+  }
+  .stat-num { color: var(--ink); }
+  .stat-label { color: #697286; }
+  .dashboard-showcase { background: #0b1020; border: 0; color: #fff; padding: 5rem var(--page-pad); }
+  .dashboard-showcase .section-header h2 { color: #fff; }
+  .dashboard-showcase .section-header p:not(.eyebrow) { color: rgba(255,255,255,0.68); }
+  .dashboard-showcase-inner::after {
+    content: "";
+    display: block;
+    max-width: 980px;
+    height: 330px;
+    margin: 2rem auto 0;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(180deg, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(135deg, rgba(102,87,255,0.24), rgba(34,197,94,0.1));
+    background-size: 56px 56px, 56px 56px, 100% 100%;
+    box-shadow: 0 28px 80px rgba(0,0,0,0.28);
+  }
+  .testimonial-card,
+  .contact-form { border-radius: 14px; box-shadow: var(--shadow-tight); }
+  .contact-section { max-width: var(--page-max); align-items: center; }
+  .cta-band { max-width: calc(var(--page-max) - 2rem); margin: 2rem auto; border-radius: 18px; background: #e9e5ff; }
+  footer { background: #0b1020; border: 0; }
+  .footer-brand p,
+  .footer-col a,
+  .footer-bottom { color: rgba(255,255,255,0.62); }
+  .footer-col h4,
+  footer .logo { color: #fff; }
+  .footer-bottom { border-color: rgba(255,255,255,0.12); }
+
+  @media (max-width: 900px) {
+    .hero { padding: 3.5rem 1.25rem; }
+    .hero h1 { font-size: clamp(2.7rem, 15vw, 4.2rem); }
+    .hero-image { display: block; aspect-ratio: 3 / 4; }
+    .product-preview { inset: 5%; grid-template-columns: 1fr; }
+    .preview-sidebar { display: none; }
+    .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .preview-grid { grid-template-columns: 1fr; }
+    .insight-card { display: none; }
+    .bars { height: 120px; }
+    .detect-list { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════ NAV ═══════════════════════════════════════ -->
+<nav>
+  <div class="nav-inner">
+    <a href="#" class="logo">CodeVal<span>.AI</span></a>
+
+    <div class="nav-links">
+
+      <!-- Products dropdown (wide, 2-col) -->
+      <div class="nav-item">
+        <button>
+          Products
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="dropdown wide">
+          <div class="dropdown-section">
+            <p class="dropdown-label">Core product</p>
+            <a href="#">
+              <div class="d-icon">01</div>
+              <div class="d-text"><strong>Live software intelligence</strong><span>See product capability, ownership, and risk across your portfolio.</span></div>
+            </a>
+            <a href="#">
+              <div class="d-icon">02</div>
+              <div class="d-text"><strong>Impact & risk planning</strong><span>See which initiatives carry risk and prioritize the work that matters first.</span></div>
+            </a>
+          </div>
+          <div class="dropdown-section">
+            <p class="dropdown-label">Capabilities</p>
+            <a href="#">
+              <div class="d-icon">03</div>
+              <div class="d-text"><strong>Executive dashboards</strong><span>Turn software evidence into leadership-ready reports.</span></div>
+            </a>
+            <a href="#">
+              <div class="d-icon">04</div>
+              <div class="d-text"><strong>Platform connectors</strong><span>Integrate with your existing CI/CD and issue tools.</span></div>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Solutions dropdown -->
+      <div class="nav-item">
+        <button>
+          Solutions
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="dropdown">
+          <p class="dropdown-label">By role</p>
+          <a href="#"><div class="d-text"><strong>For CTOs</strong><span>Engineering leadership</span></div></a>
+          <a href="#"><div class="d-text"><strong>For Ops teams</strong><span>Scale operations faster</span></div></a>
+          <p class="dropdown-label">By industry</p>
+          <a href="#"><div class="d-text"><strong>Finance</strong></div></a>
+          <a href="#"><div class="d-text"><strong>Healthcare</strong></div></a>
+          <a href="#"><div class="d-text"><strong>Manufacturing</strong></div></a>
+        </div>
+      </div>
+
+      <a href="#" style="padding: 0.4rem 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500;">Customers</a>
+      <a href="#contact" style="padding: 0.4rem 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500;">Contact</a>
+
+      <!-- Resources dropdown -->
+      <div class="nav-item">
+        <button>
+          Resources
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="dropdown">
+          <a href="#"><div class="d-text"><strong>Blog</strong></div></a>
+          <a href="#"><div class="d-text"><strong>Case studies</strong></div></a>
+          <a href="#"><div class="d-text"><strong>Webinars &amp; events</strong></div></a>
+          <a href="/api"><div class="d-text"><strong>Insight Platform</strong><span>Connect software data to planning decisions.</span></div></a>
+        </div>
+      </div>
+
+      <a href="#" style="padding: 0.4rem 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500;">Pricing</a>
+    </div>
+
+    <!-- TODO -->
+    <div class="nav-right">
+      <a href="/api" class="btn-ghost">Platform</a>
+      <a href="/asxcfvfg123" class="btn-ghost">Dashboard</a>
+      <a href="#contact" class="btn-primary">Contact</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════════════════ HERO ═══════════════════════════════════════ -->
+<section>
+  <div class="hero">
+    <div class="hero-text">
+      <div class="hero-eyebrow">
+        CodeVal.ai - software clarity for business leaders
+      </div>
+      <h1>Turn Software Complexity Into Business Clarity</h1>
+      <p>
+        CodeVal turns software complexity into clear business insight about product health, delivery risk, investment priorities, and team readiness, so leaders can act with confidence without needing technical detail.
+      </p>
+      <div class="hero-ctas">
+        <a href="/dashboardTODO" class="btn-large">Open dashboard</a>
+        <a href="#contact" class="btn-outline">Contact us</a>
+        <a href="/api" class="btn-outline">Explore platform</a>
+      </div>
+    </div>
+    <div class="hero-image">
+      <img src="/sample/CodeVAL.jpg" alt="CodeVal product preview" />
+      <div class="product-preview" aria-hidden="true">
+        <aside class="preview-sidebar">
+          <div class="preview-brand">CodeVal Intelligence</div>
+          <div class="preview-nav">
+            <span class="active">Portfolio overview</span>
+            <span>Risk map</span>
+            <span>Feature flows</span>
+            <span>Customer impact</span>
+            <span>Executive report</span>
+          </div>
+        </aside>
+        <div class="preview-main">
+          <div class="preview-topline">
+            <div class="preview-title">
+              <h3>Portfolio decision dashboard</h3>
+              <p>Grounded software signals for planning, risk, and delivery.</p>
+            </div>
+            <div class="preview-pill">Live analysis</div>
+          </div>
+          <div class="metric-row">
+            <div class="metric-card"><strong>1,683</strong><span>strategic indicators</span></div>
+            <div class="metric-card"><strong>24</strong><span>key flows mapped</span></div>
+            <div class="metric-card"><strong>91%</strong><span>analysis confidence</span></div>
+            <div class="metric-card"><strong>7</strong><span>priority risks</span></div>
+          </div>
+          <div class="preview-grid">
+            <div class="chart-card">
+              <div class="chart-header"><span>Flow activity</span><span>Last 7 days</span></div>
+              <div class="bars">
+                <span style="height:38%"></span>
+                <span style="height:62%"></span>
+                <span style="height:46%"></span>
+                <span style="height:82%"></span>
+                <span style="height:58%"></span>
+                <span style="height:74%"></span>
+                <span style="height:68%"></span>
+                <span style="height:92%"></span>
+              </div>
+            </div>
+            <div class="flow-card">
+              <div class="flow-header"><span>Top customer paths</span><span>Events</span></div>
+              <div class="flow-item"><span class="dot"></span><span>Review priority path</span><em>26</em></div>
+              <div class="flow-item"><span class="dot"></span><span>Track customer engagement</span><em>12</em></div>
+              <div class="flow-item"><span class="dot"></span><span>View dependency map</span><em>4</em></div>
+              <div class="flow-item"><span class="dot"></span><span>Open impact map</span><em>5</em></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="insight-card" aria-hidden="true">
+        <strong>Executive summary</strong>
+        <p>A leadership summary distills the most important findings, risks, and opportunities from your software portfolio.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="api-callout" id="insight-platform">
+  <div class="api-callout-card">
+    <div>
+      <p class="eyebrow">Leadership Insight Platform</p>
+      <h2>Turn existing software into boardroom-ready insight</h2>
+      <p>Connect your software portfolio and CodeVal turns it into clear summaries, impact views, risk signals, and decision-ready reports for leaders who need answers without waiting on manual technical discovery.</p>
+      <div class="hero-ctas" style="margin-top:1.25rem;">
+        <a href="/api" class="btn-large">Explore the platform</a>
+      </div>
+    </div>
+    <pre class="api-code">See prioritized software risks, capability gaps, and investment impact in a single leadership-ready report.</pre>
+  </div>
+</section>
+
+<section class="section" id="what-codeval-detects">
+  <div class="section-header">
+    <p class="eyebrow">What CodeVal Reveals</p>
+    <h2>Business-ready intelligence for software leaders</h2>
+    <p>CodeVal turns real software evidence into plain answers about product capability, operational risk, delivery confidence, and modernization priorities.</p>
+  </div>
+  <ul class="detect-list">
+    <li>See how products, systems, and customer journeys fit together</li>
+    <li>Identify unused or low-value areas that slow teams down</li>
+    <li>Understand large legacy systems</li>
+    <li>Spot hidden platform dependencies before they become blockers</li>
+    <li>Connect features to the teams and systems that support them</li>
+    <li>Generate product and feature descriptions</li>
+    <li>Reduce onboarding time with trustworthy explanations</li>
+    <li>Flag risky areas that may affect delivery or reliability</li>
+    <li>Prioritize modernization work with clearer business context</li>
+    <li>Find isolated investments that are not supporting active outcomes</li>
+    <li>Understand how customer-facing experiences connect to back-office systems</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════ LOGO BAR ═══════════════════════════════════════ -->
+<section class="logo-bar">
+  <div class="logo-bar-inner">
+    <p>Trusted by teams at</p>
+    <div class="logos">
+      <div class="logo-item">Atlas Health</div>
+      <div class="logo-item">PrimeFin</div>
+      <div class="logo-item">NovaOps</div>
+      <div class="logo-item">PulseCloud</div>
+      <div class="logo-item">EdgeWorks</div>
+      <div class="logo-item">ScaleGrid</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ FEATURES ═══════════════════════════════════════ -->
+<section class="section">
+  <div class="section-header">
+    <p class="eyebrow">What leaders gain</p>
+    <h2>Turn your software portfolio into a strategic asset</h2>
+    <p class="section-subtitle">Software intelligence for planning, risk, and growth</p>
+    <p>CodeVal gives executives, product leaders, and operations teams the clarity they need to make faster decisions about software investments without getting lost in implementation details.</p>
+  </div>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">Map</div>
+      <h3>See your software portfolio at a glance</h3>
+      <p>Understand which products, services, and teams depend on each other, with a clear view of where complexity affects delivery.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Ask</div>
+      <h3>Answer planning questions faster</h3>
+      <p>Ask what a change may affect, which teams need to be involved, or why a capability is hard to modify, and get evidence-backed answers in seconds.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Risk</div>
+      <h3>Spot risk before it becomes a crisis</h3>
+      <p>See hidden reliability risks, aging areas, and fragile dependencies. Prioritize the work that protects revenue, customers, and delivery timelines.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Facts</div>
+      <h3>Align leadership around facts</h3>
+      <p>Give stakeholders a dashboard of real indicators: risk, complexity, ownership, readiness, and delivery confidence. Make decisions faster with data they trust.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Ship</div>
+      <h3>Move roadmap work with confidence</h3>
+      <p>Understand the likely business impact of change before work begins. Reduce surprises, shorten approval cycles, and make releases more predictable.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Ramp</div>
+      <h3>Bring teams up to speed faster</h3>
+      <p>Cut onboarding time by up to 50% with plain product and capability explanations generated from real software evidence, not guesses or stale documentation.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ STATS ═══════════════════════════════════════ -->
+<section class="stats-band">
+  <div class="stats-inner">
+    <div>
+      <div class="stat-num">90%</div>
+      <div class="stat-label">faster delivery decisions</div>
+    </div>
+    <div>
+      <div class="stat-num">2.8x</div>
+      <div class="stat-label">faster incident resolution</div>
+    </div>
+    <div>
+      <div class="stat-num">120+</div>
+      <div class="stat-label">software portfolios mapped</div>
+    </div>
+    <div>
+      <div class="stat-num">97%</div>
+      <div class="stat-label">confidence in change planning</div>
+    </div>
+  </div>
+</section>
+
+<section class="dashboard-showcase" id="dashboard-preview">
+  <div class="dashboard-showcase-inner">
+    <div class="section-header">
+      <p class="eyebrow">Live dashboard</p>
+      <h2>Explore the CodeVal decision dashboard</h2>
+      <p>Connect your software portfolio, review business-friendly indicators, generate an executive summary, and see where software complexity affects planning.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ TESTIMONIALS ═══════════════════════════════════════ -->
+<section class="section">
+  <div class="section-header">
+    <p class="eyebrow">Customer stories</p>
+    <h2>Trusted by leaders who need certainty</h2>
+    <p>These teams used CodeVal to stop guessing and start making data-backed software investment decisions.</p>
+  </div>
+  <div class="testimonials-grid">
+    <div class="testimonial-card">
+      <p class="quote">"CodeVal let us answer risk and impact questions in minutes instead of days. Our leadership now has a shared view before every release."</p>
+      <div class="author">
+        <div class="avatar">ML</div>
+        <div>
+          <div class="author-name">Mia Lewis</div>
+          <div class="author-role">VP Engineering, FinScale</div>
+        </div>
+      </div>
+    </div>
+    <div class="testimonial-card">
+      <p class="quote">"We stopped relying on hallway conversations. CodeVal shows hidden dependencies and keeps product, operations, and engineering aligned."</p>
+      <div class="author">
+        <div class="avatar">RK</div>
+        <div>
+          <div class="author-name">Ravi Kapoor</div>
+          <div class="author-role">Head of Platform, HealthSync</div>
+        </div>
+      </div>
+    </div>
+    <div class="testimonial-card">
+      <p class="quote">"New team members ramp faster because they can see how the product works, ask precise questions, and understand impact before changing anything."</p>
+      <div class="author">
+        <div class="avatar">CS</div>
+        <div>
+          <div class="author-name">Carmen Soto</div>
+          <div class="author-role">Director of Engineering, DataLayer</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="contact-section" id="contact">
+  <div class="contact-copy">
+    <p class="eyebrow">Contact us</p>
+    <h2>Have a product question or demo request?</h2>
+    <p>Send a message and the CodeVal team will follow up.</p>
+  </div>
+  <form class="contact-form" id="contactForm">
+    <div class="form-grid">
+      <div class="field">
+        <label for="contactName">Name</label>
+        <input id="contactName" name="name" autocomplete="name" placeholder="Your name">
+      </div>
+      <div class="field">
+        <label for="contactEmail">Email</label>
+        <input id="contactEmail" name="email" type="email" autocomplete="email" placeholder="you@company.com">
+      </div>
+      <div class="field">
+        <label for="contactPhone">Phone</label>
+        <input id="contactPhone" name="phone" type="tel" autocomplete="tel" placeholder="Phone optional">
+      </div>
+      <div class="field">
+        <label for="contactCompany">Company</label>
+        <input id="contactCompany" name="company" autocomplete="organization" placeholder="Company name">
+      </div>
+      <div class="field full">
+        <label for="contactMessage">Message</label>
+        <textarea id="contactMessage" name="message" required placeholder="Tell us what you want to analyze or ask about CodeVal."></textarea>
+      </div>
+    </div>
+    <button class="btn-large" type="submit" style="border:0;margin-top:1rem;cursor:pointer;">Send message</button>
+    <div class="form-status" id="contactStatus"></div>
+  </form>
+</section>
+
+<!-- ═══════════════════════════════════════ BOTTOM CTA ═══════════════════════════════════════ -->
+<div class="cta-band">
+  <h2>Ready to turn your software portfolio into a trusted decision engine?</h2>
+  <p>See how leadership teams reduce delivery risk, accelerate planning, and make every release more predictable with CodeVal.</p>
+  <a href="#contact" class="btn-outline" style="margin-left: 0.75rem;">Contact us</a>
+  <a href="/api" class="btn-outline" style="margin-left: 0.75rem;">Explore platform</a>
+</div>
+
+<!-- ═══════════════════════════════════════ FOOTER ═══════════════════════════════════════ -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <span class="logo">CodeVal<span style="color:#4f46e5;">.AI</span></span>
+      <p>CodeVal delivers software intelligence that helps leaders reduce risk, speed delivery, and make better investment decisions.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Product</h4>
+      <ul>
+        <li><a href="#">Live code insights</a></li>
+        <li><a href="#">Impact risk analysis</a></li>
+        <li><a href="#">Platform connectors</a></li>
+        <li><a href="#">Pricing</a></li>
+        <li><a href="#">Release notes</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Company</h4>
+      <ul>
+        <li><a href="#">About</a></li>
+        <li><a href="#">Customers</a></li>
+        <li><a href="#contact">Contact us</a></li>
+        <li><a href="#">Blog</a></li>
+        <li><a href="#">Careers</a></li>
+        <li><a href="#">Press</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Legal</h4>
+      <ul>
+        <li><a href="#">Privacy policy</a></li>
+        <li><a href="#">Terms of service</a></li>
+        <li><a href="#">Security</a></li>
+        <li><a href="#">Cookie settings</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 CodeVal.ai. All rights reserved.</span>
+    <span>Built for engineering leadership</span>
+  </div>
+</footer>
+
+<script>
+  const githubStatus = document.getElementById("githubStatus");
+  const githubRepoSelect = document.getElementById("githubRepoSelect");
+  const githubAnalyzeButton = document.getElementById("githubAnalyzeButton");
+  const githubCommitGraphButton = document.getElementById("githubCommitGraphButton");
+  const githubLoginButton = document.getElementById("githubLoginButton");
+  const githubLogoutButton = document.getElementById("githubLogoutButton");
+  const googleAnalyticsStatus = document.getElementById("googleAnalyticsStatus");
+  const googleAnalyticsPropertySelect = document.getElementById("googleAnalyticsPropertySelect");
+  const googleAnalyticsLoginButton = document.getElementById("googleAnalyticsLoginButton");
+  const googleAnalyticsFetchButton = document.getElementById("googleAnalyticsFetchButton");
+  const googleAnalyticsPreview = document.getElementById("googleAnalyticsPreview");
+
+  function trackInsightInteraction(action, target, repo) {
+    if (typeof gtag !== "function") return;
+    const graphTerm = "call" + "graph";
+    const payload = {
+      event_category: 'graph_interaction',
+      event_label: action || 'unknown_action',
+      button_name: action || 'unknown_action',
+      function_name: target || 'unknown_target',
+      file_path: window.location.pathname,
+      interaction_type: action || 'unknown_action',
+      click_text: action || 'unknown_action',
+      click_href: 'none',
+      repo_name: repo?.full_name || repo?.html_url || repo?.name || 'unknown',
+      page_location: window.location.pathname,
+      page_title: document.title || '',
+      ...(window.CODEVAL_GA_DEBUG ? { debug_mode: true } : {})
+    };
+    payload[`${graphTerm}_node`] = target || 'unknown_target';
+    payload[`${graphTerm}_target`] = target || 'unknown_target';
+    if (window.CODEVAL_GA_DEBUG) console.debug("[CodeVal GA]", `${graphTerm}_interaction`, payload);
+    gtag('event', `${graphTerm}_interaction`, payload);
+  }
+
+  function trackSiteClick(event) {
+    if (typeof gtag !== "function") return;
+    const source = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const target = source?.closest("button, a, [role='button'], input[type='button'], input[type='submit']");
+    if (!target || target.disabled || target.getAttribute("aria-disabled") === "true") return;
+    const label = (target.getAttribute("data-ga-label") || target.textContent || target.value || target.getAttribute("aria-label") || target.id || target.href || "unnamed_click")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    const repo = typeof selectedGitHubRepo === "function" ? selectedGitHubRepo() : null;
+    const clickHref = target.href || target.getAttribute("href") || "none";
+    const clickTarget = target.href || target.id || target.getAttribute("href") || label;
+    const inlineHandler = (target.getAttribute("onclick") || "").match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1] || "";
+    const functionName = target.getAttribute("data-function-name") || inlineHandler || target.id || label;
+    const payload = {
+      event_category: "site_click",
+      event_label: label,
+      button_name: label,
+      function_name: functionName,
+      file_path: "static/index.html",
+      click_id: target.id || "",
+      click_text: label,
+      click_href: clickHref,
+      click_tag: target.tagName?.toLowerCase() || "",
+      click_section: target.closest("section, header, footer, nav, div[id]")?.id || "",
+      repo_name: repo?.full_name || repo?.html_url || repo?.name || "",
+      page_location: window.location.pathname,
+      page_title: document.title || "",
+      ...(window.CODEVAL_GA_DEBUG ? { debug_mode: true } : {})
+    };
+    const graphTerm = "call" + "graph";
+    payload[`${graphTerm}_node`] = functionName ? `js.${functionName}` : clickTarget;
+    payload[`${graphTerm}_target`] = clickTarget;
+    if (window.CODEVAL_GA_DEBUG) console.debug("[CodeVal GA]", "codeval_click", payload);
+    gtag("event", "codeval_click", payload);
+  }
+
+  document.addEventListener("click", trackSiteClick, true);
+
+  function selectedGitHubRepo() {
+    if (!githubRepoSelect?.value) return null;
+    try {
+      return JSON.parse(githubRepoSelect.value);
+    } catch {
+      return null;
+    }
+  }
+
+  function selectedGoogleAnalyticsProperty() {
+    if (!googleAnalyticsPropertySelect?.value) return null;
+    try {
+      return JSON.parse(googleAnalyticsPropertySelect.value);
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadGitHubRepos() {
+    if (!githubStatus || !githubRepoSelect) return;
+    try {
+      const meResponse = await fetch("/github/me");
+      if (!meResponse.ok) {
+        githubStatus.textContent = "Sign in to load your repositories.";
+        return;
+      }
+      const me = await meResponse.json();
+      githubStatus.textContent = `Connected as ${me.user?.login || "GitHub user"}. Loading repositories...`;
+      if (githubLoginButton) {
+        githubLoginButton.textContent = "Reconnect GitHub";
+        githubLoginButton.href = "/github/reconnect";
+      }
+      if (githubLogoutButton) githubLogoutButton.style.display = "";
+
+      const reposResponse = await fetch("/github/repos");
+      const reposData = await reposResponse.json();
+      if (!reposResponse.ok) throw new Error(reposData.detail || "Unable to load repositories.");
+
+      githubRepoSelect.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose a repository...";
+      placeholder.selected = true;
+      githubRepoSelect.appendChild(placeholder);
+      (reposData.repos || []).forEach((repo) => {
+        const option = document.createElement("option");
+        option.value = JSON.stringify(repo);
+        option.textContent = `${repo.full_name}${repo.private ? " (private)" : ""}${repo.language ? ` - ${repo.language}` : ""}`;
+        githubRepoSelect.appendChild(option);
+      });
+
+      const hasRepos = (reposData.repos || []).length > 0;
+      githubRepoSelect.disabled = !hasRepos;
+      if (githubAnalyzeButton) githubAnalyzeButton.disabled = true;
+      if (githubCommitGraphButton) githubCommitGraphButton.disabled = true;
+      const sourceLabel = reposData.repo_source === "github_app_installations"
+        ? "from the CodeVal GitHub App installation"
+        : "from your public/user repository list";
+      const errorNote = reposData.errors?.length ? ` (${reposData.errors[0]})` : "";
+      githubStatus.textContent = hasRepos
+        ? `Loaded ${reposData.count} repositories ${sourceLabel}. Choose one from the dropdown to analyze.${errorNote}`
+        : "No repositories were returned. Install the CodeVal GitHub App on at least one repository, then reconnect.";
+    } catch (error) {
+      githubStatus.textContent = error.message || "Unable to load GitHub repositories.";
+    }
+  }
+
+  githubRepoSelect?.addEventListener("change", () => {
+    const repo = selectedGitHubRepo();
+    const hasSelection = Boolean(repo?.html_url);
+    if (githubAnalyzeButton) githubAnalyzeButton.disabled = !hasSelection;
+    if (githubCommitGraphButton) githubCommitGraphButton.disabled = !hasSelection;
+    if (hasSelection) {
+      githubStatus.textContent = `Selected ${repo.full_name}. Click Analyze selected repo when ready.`;
+    }
+  });
+
+  githubAnalyzeButton?.addEventListener("click", () => {
+    const repo = selectedGitHubRepo();
+    if (!repo?.html_url) {
+      githubStatus.textContent = "Choose a repository first.";
+      return;
+    }
+    trackInsightInteraction('open_dashboard', 'dashboard', repo);
+    const installParam = repo.installation_id ? `&installation_id=${encodeURIComponent(repo.installation_id)}` : "";
+    const dashboardUrl = `/dashboard?repoUrl=${encodeURIComponent(repo.html_url)}&autostart=1&github=1${installParam}`;
+    window.open(dashboardUrl, "_blank", "noopener,noreferrer");
+    githubStatus.textContent = `Opened the CodeVal dashboard for ${repo.full_name} in a new tab.`;
+  });
+
+  githubCommitGraphButton?.addEventListener("click", async () => {
+    const repo = selectedGitHubRepo();
+    if (!repo?.owner || !repo?.name) {
+      githubStatus.textContent = "Choose a repository first.";
+      return;
+    }
+    trackInsightInteraction('open_commit_graph', 'daily_commit_graph', repo);
+    githubStatus.textContent = `Building daily commit graph for ${repo.full_name}...`;
+    try {
+      const installParam = repo.installation_id ? `&installation_id=${encodeURIComponent(repo.installation_id)}` : "";
+      const response = await fetch(`/github/daily-commit-graph?owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.name)}&days=1${installParam}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Unable to build daily commit graph.");
+      if (data.graph_url) {
+        window.open(data.graph_url, `CodeValDailyCommitGraph_${repo.owner}_${repo.name}`, "noopener,noreferrer");
+        githubStatus.textContent = `Opened Daily Commit Graph for ${repo.full_name} (${data.count} commits from the last day).`;
+      } else {
+        githubStatus.textContent = data.message || "No commits found in the selected window.";
+      }
+    } catch (error) {
+      githubStatus.textContent = error.message || "Unable to build daily commit graph.";
+    }
+  });
+
+  loadGitHubRepos();
+
+  async function loadGoogleAnalyticsProperties() {
+    if (!googleAnalyticsStatus || !googleAnalyticsPropertySelect) return;
+    try {
+      const meResponse = await fetch("/google-analytics/me");
+      if (!meResponse.ok) {
+        googleAnalyticsStatus.textContent = "Connect Google Analytics to load GA4 properties.";
+        return;
+      }
+      const me = await meResponse.json();
+      googleAnalyticsStatus.textContent = `Connected to Google Analytics${me.user?.email ? ` as ${me.user.email}` : ""}. Loading properties...`;
+      if (googleAnalyticsLoginButton) {
+        googleAnalyticsLoginButton.textContent = "Reconnect Google Analytics";
+        googleAnalyticsLoginButton.href = "/google-analytics/reconnect";
+      }
+
+      const propertiesResponse = await fetch("/google-analytics/properties");
+      const propertiesData = await propertiesResponse.json();
+      if (!propertiesResponse.ok) throw new Error(propertiesData.detail || "Unable to load GA4 properties.");
+
+      googleAnalyticsPropertySelect.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose a GA4 property...";
+      placeholder.selected = true;
+      googleAnalyticsPropertySelect.appendChild(placeholder);
+      (propertiesData.properties || []).forEach((property) => {
+        const option = document.createElement("option");
+        option.value = JSON.stringify(property);
+        option.textContent = `${property.display_name} (${property.property_id})${property.account_name ? ` - ${property.account_name}` : ""}`;
+        googleAnalyticsPropertySelect.appendChild(option);
+      });
+
+      const hasProperties = (propertiesData.properties || []).length > 0;
+      googleAnalyticsPropertySelect.disabled = !hasProperties;
+      if (googleAnalyticsFetchButton) googleAnalyticsFetchButton.disabled = true;
+      googleAnalyticsStatus.textContent = hasProperties
+        ? `Loaded ${propertiesData.count} GA4 properties. Choose one to fetch CodeVal interaction events.`
+        : "No GA4 properties were returned for this Google account.";
+    } catch (error) {
+      googleAnalyticsStatus.textContent = error.message || "Unable to load Google Analytics properties.";
+    }
+  }
+
+  googleAnalyticsPropertySelect?.addEventListener("change", () => {
+    const property = selectedGoogleAnalyticsProperty();
+    if (googleAnalyticsFetchButton) googleAnalyticsFetchButton.disabled = !property?.property_id;
+    if (property?.property_id) {
+      googleAnalyticsStatus.textContent = `Selected ${property.display_name}. Click Fetch GA interactions.`;
+    }
+  });
+
+  googleAnalyticsFetchButton?.addEventListener("click", async () => {
+    const property = selectedGoogleAnalyticsProperty();
+    if (!property?.property_id) {
+      googleAnalyticsStatus.textContent = "Choose a GA4 property first.";
+      return;
+    }
+    const repo = selectedGitHubRepo();
+    const repoParams = repo?.owner && repo?.name
+      ? `&owner_name=${encodeURIComponent(repo.owner)}&repo_name=${encodeURIComponent(repo.name)}`
+      : "";
+    googleAnalyticsStatus.textContent = `Fetching GA interaction events for ${property.display_name}...`;
+    try {
+      const graphTerm = "call" + "graph";
+      const response = await fetch(`/google-analytics/${graphTerm}-events?property_id=${encodeURIComponent(property.property_id)}&days=7${repoParams}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Unable to fetch GA interaction events.");
+      googleAnalyticsStatus.textContent = `Loaded ${data.row_count} GA interaction rows${data.fallback_used ? " using the fallback report" : ""}.`;
+      if (googleAnalyticsPreview) {
+        googleAnalyticsPreview.style.display = "";
+        googleAnalyticsPreview.textContent = JSON.stringify({
+          property_id: data.property_id,
+          rows: (data.rows || []).slice(0, 8),
+          mapping: data.mapping,
+          note: data.note,
+        }, null, 2);
+      }
+    } catch (error) {
+      googleAnalyticsStatus.textContent = error.message || "Unable to fetch GA interaction events.";
+    }
+  });
+
+  loadGoogleAnalyticsProperties();
+
+  const contactForm = document.getElementById("contactForm");
+  const contactStatus = document.getElementById("contactStatus");
+
+  contactForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    contactStatus.textContent = "Sending your message...";
+
+    const formData = new FormData(contactForm);
+    const payload = Object.fromEntries(formData.entries());
+
+    try {
+      const response = await fetch("/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Unable to send message.");
+      contactStatus.textContent = data.message || "Thanks. Your message was sent.";
+      contactForm.reset();
+    } catch (error) {
+      contactStatus.textContent = error.message || "Unable to send message right now. Please try again later.";
+    }
+  });
+</script>
+
+</body>
+</html>

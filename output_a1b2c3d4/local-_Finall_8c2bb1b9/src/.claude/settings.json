@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(wc -l *.json architecture/*.json combined_callgraph/*.json file_graph/*.json html_ui/*.json python/*.json)",
+      "Bash(du -h *.json architecture/*.json combined_callgraph/*.json file_graph/*.json html_ui/*.json python/*.json)"
+    ]
+  }
+}

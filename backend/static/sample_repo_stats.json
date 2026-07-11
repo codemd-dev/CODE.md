@@ -1,0 +1,29 @@
+{
+  "repo_full_name": "apache/commons-lang",
+  "total_files_seen": 620,
+  "unique_extension_count": 9,
+  "language_counts": {
+    "Java": 430,
+    "XML": 34,
+    "Markdown": 21,
+    "Properties": 12,
+    "Text": 8
+  },
+  "extension_counts": {
+    ".java": 430,
+    ".xml": 34,
+    ".md": 21,
+    ".properties": 12,
+    ".txt": 8
+  },
+  "known_from_github_repo_metadata": {
+    "full_name": "apache/commons-lang",
+    "owner_login": "apache",
+    "default_branch": "main",
+    "html_url": "https://github.com/apache/commons-lang",
+    "created_at": "2012-07-06T00:00:00Z",
+    "updated_at": "2026-05-10T00:00:00Z",
+    "pushed_at": "2026-05-10T00:00:00Z",
+    "size_kb": 22400
+  }
+}

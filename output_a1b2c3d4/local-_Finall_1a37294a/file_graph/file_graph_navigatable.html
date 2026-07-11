@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Navigable File Call Graph</title>
+  <style>
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; font-family:Arial, sans-serif; background:#ffffff; color:#111827; }
+    #cy { position:absolute; inset:0; min-height:100%; background:#ffffff; }
+    #status { position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 16px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; }
+    #legend { position:absolute; right:8px; top:46px; z-index:10; max-width:300px; background:rgba(255,255,255,.94); border:1px solid #ddd; border-radius:6px; padding:8px 10px; font-size:12px; color:#334155; box-shadow:0 8px 24px rgba(15,23,42,.08); }
+    #legend strong { display:block; color:#111827; font-size:12px; margin-bottom:5px; }
+    #legend .legend-row { display:flex; gap:6px; align-items:flex-start; margin-top:4px; line-height:1.25; }
+    #legend .legend-key { min-width:78px; color:#dc2626; font-weight:700; }
+    #legend .legend-note { color:#64748b; }
+  </style>
+</head>
+<body>
+  <div id="status">Loading Navigable File Call Graph...</div>
+  <div id="legend"><strong>Edge legend</strong><div id="legendRows">Loading relationships...</div></div>
+  <div id="cy"></div>
+  <script>
+    const GRAPH_JSON = "/output_a1b2c3d4/local-_Finall_1a37294a/file_graph/file_graph_navigatable.json";
+    const CODEVAL_NAV_LAYOUT_VERSION = "staggered-fan-labels-v4";
+    const EMBEDDED_GRAPH_DATA = {"mode":"navigatable_ordered_ga_graph","title":"Navigable File Call Graph","nodes":["static/taskschat.html","tasksChat","tasksChat.py","tasksChat___urlsafe_b64decode","tasksChat__complete_task","tasksChat__create_signed_oauth_state","tasksChat__create_task","tasksChat__create_user_with_google_tokens","tasksChat__debug_pending_states","tasksChat__get_current_user","tasksChat__get_google_token_for_request","tasksChat__get_valid_google_token","tasksChat__list_task_lists","tasksChat__list_tasks","tasksChat__now_ts","tasksChat__oauth_callback","tasksChat__oauth_start","tasksChat__oauth_token","tasksChat__parse_signed_oauth_state","tasksChat__refresh_google_token","tasksChat__uncomplete_task","tasksChat__update_task"],"edges":[["static/taskschat.html","tasksChat.py",null,null]],"initial_roots":["static/taskschat.html"],"entry_points":["static/taskschat.html"],"initial_visible_nodes":["static/taskschat.html","tasksChat","tasksChat.py","tasksChat___urlsafe_b64decode","tasksChat__complete_task","tasksChat__create_signed_oauth_state","tasksChat__create_task","tasksChat__create_user_with_google_tokens","tasksChat__debug_pending_states","tasksChat__get_current_user"],"initial_visible_edges":[["static/taskschat.html","tasksChat.py",null,null]],"node_labels":{},"edge_labels":{"static/taskschat.html->tasksChat.py":"fetch/API"},"instructions":"Double-click a node to expand its immediate incoming and outgoing neighbors."};
+    const statusEl = document.getElementById("status");
+    function showGraphError(err) {
+      document.documentElement.style.background = "#ffffff";
+      document.body.style.background = "#ffffff";
+      const message = err && err.message ? err.message : String(err || "Unknown graph render error");
+      statusEl.textContent = `Graph render error: ${message}`;
+      console.error(err);
+    }
+    window.addEventListener("error", event => showGraphError(event.error || event.message));
+    window.addEventListener("unhandledrejection", event => showGraphError(event.reason));
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Failed to load script ${src}`));
+        document.head.appendChild(script);
+      });
+    }
+    function loadCytoscape() {
+      return loadScript("/lib/cytoscape/cytoscape.min.js")
+        .catch(() => loadScript("https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"));
+    }
+    let nodeLabels = {};
+      function compactLabel(raw) {
+        const label = String(raw || "");
+        function limit(value) {
+          value = String(value || "").replace(/_/g, "_");
+        return value.length > 76 ? `${value.slice(0, 34)}...${value.slice(-34)}` : value;
+        }
+        if (nodeLabels[label]) return limit(nodeLabels[label]);
+      const stepMatch = label.match(/^ga\.step_(\d+)\.(.+)$/);
+      if (stepMatch) {
+        return limit(`step ${Number(stepMatch[1])}: ${stepMatch[2].replace(/_/g, " ")}`);
+      }
+      if (label.startsWith("api.")) {
+        const route = label.slice(4);
+        if (route === "root" || route === "api" || route === "item") return "/";
+        return limit(`/${route.replace(/_/g, "/")}`);
+      }
+      if (label.startsWith("url.")) return limit(label.slice(4).replace(/_/g, "/"));
+      if (label.includes("/")) {
+        const parts = label.split("/").filter(Boolean);
+        if (parts.length > 3) {
+          return limit(`${parts.slice(0, -2).join("/")}/\n${parts.slice(-2).join("/")}`);
+        }
+      }
+      return limit(label);
+    }
+    function sanitize(raw) { return String(raw).replace(/[^a-zA-Z0-9_]/g, "_"); }
+    function loadGraphData() {
+      return fetch(GRAPH_JSON).then(r => r.ok ? r.json() : Promise.reject(new Error(`Failed to load ${GRAPH_JSON}`))).catch(() => EMBEDDED_GRAPH_DATA);
+    }
+    loadCytoscape().then(loadGraphData).then(data => {
+      const rawEdges = Array.isArray(data.edges) ? data.edges : [];
+      const rawNodes = Array.isArray(data.nodes) ? data.nodes : [];
+      nodeLabels = data.node_labels && typeof data.node_labels === "object" ? data.node_labels : {};
+      const edgeLabels = data.edge_labels && typeof data.edge_labels === "object" ? data.edge_labels : {};
+      const legendDefinitions = {
+        "defines": "file or module defines this symbol",
+        "imports": "module imports another symbol or module",
+        "renders component": "React/JSX component renders another component",
+        "inferred call": "static parser inferred a likely call edge",
+        "calls": "function or handler calls another code unit",
+        "reads": "code reads from this field, store, or source",
+        "writes": "code writes to this field, store, or sink",
+        "handles": "handler receives an event, route, or action",
+        "maps to": "analytics, UI, or search evidence maps to code",
+        "#n": "ordered call or sequence edge when no semantic label is available"
+      };
+      function normalizeLegendLabel(label) {
+        const text = String(label || "").trim().toLowerCase();
+        if (/^#\d+$/.test(text)) return "#n";
+        return text;
+      }
+      function renderLegend() {
+        const labels = new Set();
+        rawEdges.forEach(([srcRaw, dstRaw, order]) => {
+          const edgeLabel = edgeLabels[`${srcRaw}->${dstRaw}`] || edgeLabels[`${sanitize(srcRaw)}->${sanitize(dstRaw)}`] || (order ? `#${order}` : "");
+          const normalized = normalizeLegendLabel(edgeLabel);
+          if (normalized) labels.add(normalized);
+        });
+        const ordered = ["defines", "imports", "renders component", "inferred call", "calls", "reads", "writes", "handles", "maps to", "#n"]
+          .filter(label => labels.has(label));
+        const extra = [...labels].filter(label => !ordered.includes(label)).sort();
+        const rows = [...ordered, ...extra].slice(0, 10).map(label => {
+          const description = legendDefinitions[label] || "relationship label from parsed source evidence";
+          const display = label === "#n" ? "#n" : label;
+          return `<div class="legend-row"><span class="legend-key">${display}</span><span class="legend-note">${description}</span></div>`;
+        });
+        const legendRows = document.getElementById("legendRows");
+        if (legendRows) legendRows.innerHTML = rows.length ? rows.join("") : `<div class="legend-note">No labeled edges in this view.</div>`;
+      }
+      renderLegend();
+      const nodeById = new Map();
+      const outgoing = new Map();
+      const incoming = new Map();
+      rawNodes.forEach(raw => nodeById.set(sanitize(raw), raw));
+      function fallbackOrder(order, index) {
+        const value = Number(order);
+        return Number.isFinite(value) && value > 0 ? value : index + 1;
+      }
+      rawEdges.forEach(([srcRaw, dstRaw, order, line], index) => {
+        const src = sanitize(srcRaw);
+        const dst = sanitize(dstRaw);
+        nodeById.set(src, srcRaw);
+        nodeById.set(dst, dstRaw);
+        if (!outgoing.has(src)) outgoing.set(src, []);
+        if (!incoming.has(dst)) incoming.set(dst, []);
+        const edgeLabel = edgeLabels[`${srcRaw}->${dstRaw}`] || edgeLabels[`${src}->${dst}`] || "";
+        const effectiveOrder = fallbackOrder(order, index);
+        const sourceOrder = Number.isFinite(Number(order)) && Number(order) > 0 ? Number(order) : "";
+        outgoing.get(src).push({ src, dst, order: effectiveOrder, sourceOrder, line: line || "", label: edgeLabel });
+        incoming.get(dst).push({ src, dst, order: effectiveOrder, sourceOrder, line: line || "", label: edgeLabel });
+      });
+      function edgeOrderValue(edge) {
+        const value = Number(edge && edge.order);
+        return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+      }
+      function compareEdgesByOrder(a, b) {
+        return edgeOrderValue(a) - edgeOrderValue(b) ||
+          compactLabel(nodeById.get(a.dst) || a.dst).localeCompare(compactLabel(nodeById.get(b.dst) || b.dst)) ||
+          compactLabel(nodeById.get(a.src) || a.src).localeCompare(compactLabel(nodeById.get(b.src) || b.src));
+      }
+      outgoing.forEach(list => list.sort(compareEdgesByOrder));
+      incoming.forEach(list => list.sort(compareEdgesByOrder));
+      function nodeElement(id) {
+        const raw = nodeById.get(id) || id;
+        return { group:"nodes", data: { id, label: compactLabel(raw), fullLabel: String(raw) } };
+      }
+      function edgeElement(edge) {
+        const edgeId = `${edge.src}->${edge.dst}`;
+        const hasSourceOrder = Number.isFinite(Number(edge.sourceOrder)) && Number(edge.sourceOrder) > 0;
+        return { group:"edges", data: { id: edgeId, source: edge.src, target: edge.dst, order: Number(edge.order) || "", sourceOrder: hasSourceOrder ? Number(edge.sourceOrder) : "", line: edge.line || "", label: edge.label || (hasSourceOrder ? `#${edge.sourceOrder}` : "") } };
+      }
+      function explicitInitialElements() {
+        const elements = [];
+        const seenNodes = new Set();
+        const seenEdges = new Set();
+        const visibleNodes = Array.isArray(data.initial_visible_nodes) ? data.initial_visible_nodes : [];
+        const visibleEdges = Array.isArray(data.initial_visible_edges) ? data.initial_visible_edges : [];
+        visibleNodes.forEach(raw => {
+          const id = sanitize(raw);
+          if (!seenNodes.has(id)) {
+            seenNodes.add(id);
+            elements.push(nodeElement(id));
+          }
+        });
+        visibleEdges.forEach(([srcRaw, dstRaw, order, line], index) => {
+          const sourceOrder = Number.isFinite(Number(order)) && Number(order) > 0 ? Number(order) : "";
+          const edge = { src: sanitize(srcRaw), dst: sanitize(dstRaw), order: fallbackOrder(order, index), sourceOrder, line: line || "", label: edgeLabels[`${srcRaw}->${dstRaw}`] || "" };
+          [edge.src, edge.dst].forEach(id => {
+            if (!seenNodes.has(id)) {
+              seenNodes.add(id);
+              elements.push(nodeElement(id));
+            }
+          });
+          const edgeId = `${edge.src}->${edge.dst}`;
+          if (!seenEdges.has(edgeId)) {
+            seenEdges.add(edgeId);
+            elements.push(edgeElement(edge));
+          }
+        });
+        return elements;
+      }
+      function flowElementsFor(id, depth = 1, maxNodes = 80) {
+        const elements = [];
+        const seenNodes = new Set();
+        const seenEdges = new Set();
+        function addNode(idToAdd) {
+          if (seenNodes.has(idToAdd)) return;
+          seenNodes.add(idToAdd);
+          elements.push(nodeElement(idToAdd));
+        }
+        function addEdge(edge) {
+          const edgeId = `${edge.src}->${edge.dst}`;
+          addNode(edge.src);
+          addNode(edge.dst);
+          if (!seenEdges.has(edgeId)) {
+            seenEdges.add(edgeId);
+            elements.push(edgeElement(edge));
+          }
+        }
+        const queue = [{ id, distance: 0 }];
+        addNode(id);
+        while (queue.length && seenNodes.size < maxNodes) {
+          const current = queue.shift();
+          if (current.distance >= depth) continue;
+          const neighbors = [...(incoming.get(current.id) || []), ...(outgoing.get(current.id) || [])].sort(compareEdgesByOrder);
+          neighbors.forEach(edge => {
+            if (seenNodes.size >= maxNodes) return;
+            const nextIds = [edge.src, edge.dst].filter(nextId => nextId !== current.id && !seenNodes.has(nextId));
+            addEdge(edge);
+            if (seenNodes.size >= maxNodes) return;
+            nextIds.forEach(nextId => {
+              const alreadyQueued = queue.some(item => item.id === nextId);
+              if (!alreadyQueued && current.distance + 1 < depth) queue.push({ id: nextId, distance: current.distance + 1 });
+            });
+          });
+        }
+        return elements;
+      }
+      const expansionCursor = new Map();
+      function oneStepElementsFor(id) {
+        const incident = [...(outgoing.get(id) || []), ...(incoming.get(id) || [])].sort(compareEdgesByOrder);
+        if (!incident.length) return [];
+        const start = expansionCursor.get(id) || 0;
+        for (let offset = 0; offset < incident.length; offset += 1) {
+          const index = (start + offset) % incident.length;
+          const edge = incident[index];
+          const edgeId = `${edge.src}->${edge.dst}`;
+          const otherId = edge.src === id ? edge.dst : edge.src;
+          const isNewEdge = !cy.getElementById(edgeId).length;
+          const isNewNode = !cy.getElementById(otherId).length;
+          if (isNewEdge || isNewNode) {
+            expansionCursor.set(id, index + 1);
+            return [nodeElement(edge.src), nodeElement(edge.dst), edgeElement(edge)];
+          }
+        }
+        expansionCursor.set(id, incident.length);
+        return [];
+      }
+      const roots = Array.isArray(data.initial_roots) && data.initial_roots.length ? data.initial_roots : rawNodes.slice(0, 1);
+      const firstRoot = roots
+        .map(root => sanitize(root))
+        .find(root => (incoming.get(root) || []).length || (outgoing.get(root) || []).length)
+        || Array.from(nodeById.keys()).find(id => (incoming.get(id) || []).length || (outgoing.get(id) || []).length)
+        || sanitize(roots[0] || rawNodes[0] || "root");
+      const explicitElements = explicitInitialElements();
+      const initialElements = explicitElements.length ? explicitElements : flowElementsFor(firstRoot, 1, 80);
+      const cy = cytoscape({
+        container: document.getElementById("cy"),
+        elements: initialElements.length ? initialElements : [nodeElement(firstRoot)],
+        style: [
+          { selector: "node", style: { "label":"data(label)", "background-color":"#3267e3", "color":"#111827", "font-size":"11px", "text-valign":"bottom", "text-halign":"center", "text-margin-y":8, "text-max-width":148, "text-wrap":"wrap", "text-background-color":"#ffffff", "text-background-opacity":0.88, "text-background-padding":2, "width":16, "height":16, "border-width":1, "border-color":"#1d4ed8", "min-zoomed-font-size":7 } },
+          { selector: "node:selected", style: { "width":16, "height":16, "overlay-opacity":0.08, "border-width":2 } },
+          { selector: "node:active", style: { "width":16, "height":16, "overlay-opacity":0.05 } },
+          { selector: "edge", style: { "label":"data(label)", "width":1.7, "line-color":"#64748b", "target-arrow-color":"#64748b", "target-arrow-shape":"triangle", "arrow-scale":1.35, "curve-style":"bezier", "font-size":"10px", "color":"#dc2626", "font-weight":"600", "text-background-color":"#ffffff", "text-background-opacity":0.9, "text-background-padding":2, "text-margin-y":0, "min-zoomed-font-size":7 } },
+          { selector: "edge[curveDistance][curveWeight]", style: { "curve-style":"unbundled-bezier", "control-point-distances":"data(curveDistance)", "control-point-weights":"data(curveWeight)" } },
+          { selector: "edge[labelOffset]", style: { "text-margin-y":"data(labelOffset)" } }
+        ],
+        layout: { name:"preset", animate:false }
+      });
+      const expandedNodes = new Set([firstRoot]);
+      function addMissingElements(elements) {
+        const additions = [];
+        elements.forEach(element => {
+          const id = element.data && element.data.id;
+          if (!id || cy.getElementById(id).length) return;
+          additions.push(element);
+        });
+        if (additions.length) cy.add(additions);
+        return additions.length;
+      }
+      function placeRows(items, baseY, xSpacing = 280, ySpacing = 132) {
+        const count = items.length;
+        if (!count) return;
+        const columns = Math.max(1, Math.min(5, Math.ceil(Math.sqrt(count * 1.65))));
+        const rows = Math.ceil(count / columns);
+        items.forEach((item, index) => {
+          const row = Math.floor(index / columns);
+          const rowStart = row * columns;
+          const rowCount = Math.min(columns, count - rowStart);
+          const col = index - rowStart;
+          const x = (col - (rowCount - 1) / 2) * xSpacing;
+          const y = baseY + row * ySpacing;
+          item.node.position({ x, y });
+        });
+      }
+      function edgeOrder(edge) {
+        const raw = edge.data("order");
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+      }
+      function orderItems(items) {
+        return items.sort((a, b) => (
+          (Number.isFinite(a.order) ? 0 : 1) - (Number.isFinite(b.order) ? 0 : 1) ||
+          (Number.isFinite(a.order) && Number.isFinite(b.order) ? a.order - b.order : 0) ||
+          compactLabel(nodeById.get(a.node.id()) || a.node.id()).localeCompare(compactLabel(nodeById.get(b.node.id()) || b.node.id()))
+        ));
+      }
+      function visibleSources() {
+        const indegree = new Map();
+        cy.nodes().forEach(node => indegree.set(node.id(), 0));
+        cy.edges().forEach(edge => indegree.set(edge.target().id(), (indegree.get(edge.target().id()) || 0) + 1));
+        const sources = cy.nodes().filter(node => (indegree.get(node.id()) || 0) === 0);
+        return sources.length ? sources : cy.collection().union(cy.getElementById(firstRoot));
+      }
+      function sortIncidentEdges(edges, rootId, direction) {
+        return edges.map(edge => {
+          const other = direction === "incoming" ? edge.source() : edge.target();
+          return { edge, node: other, order: edgeOrder(edge) };
+        }).sort((a, b) => (
+          (Number.isFinite(a.order) ? 0 : 1) - (Number.isFinite(b.order) ? 0 : 1) ||
+          (Number.isFinite(a.order) && Number.isFinite(b.order) ? a.order - b.order : 0) ||
+          compactLabel(nodeById.get(a.node.id()) || a.node.id()).localeCompare(compactLabel(nodeById.get(b.node.id()) || b.node.id()))
+        ));
+      }
+      function placeOrderedFan(items, rootNode, side) {
+        const count = items.length;
+        if (!count) return;
+        const maxColumns = 10;
+        const columns = Math.max(1, Math.min(maxColumns, Math.ceil(Math.sqrt(count * 2.8))));
+        const xSpacing = 285;
+        const ySpacing = 168;
+        const baseY = rootNode.position("y") + (side === "incoming" ? -230 : 230);
+        items.forEach((item, index) => {
+          const row = Math.floor(index / columns);
+          const rowStart = row * columns;
+          const rowCount = Math.min(columns, count - rowStart);
+          const col = index - rowStart;
+          const centeredCol = col - (rowCount - 1) / 2;
+          const x = rootNode.position("x") + centeredCol * xSpacing;
+          const staggerDirection = index % 2 === 0 ? -1 : 1;
+          const stagger = staggerDirection * Math.min(58, 30 + Math.abs(centeredCol) * 8);
+          const y = baseY + (side === "incoming" ? -row * ySpacing : row * ySpacing) + stagger;
+          item.node.position({ x, y });
+          const spread = centeredCol * 24;
+          item.edge.data("curveDistance", spread);
+          item.edge.data("curveWeight", side === "incoming" ? 0.62 : 0.38);
+          item.edge.data("labelOffset", side === "incoming" ? -18 - staggerDirection * 7 : 18 + staggerDirection * 7);
+        });
+      }
+      function applyFocusedRootLayout(focusId) {
+        const root = cy.getElementById(focusId);
+        if (!root.length || cy.nodes().length < 3) return false;
+        const incomingEdges = sortIncidentEdges(root.incomers("edge"), focusId, "incoming");
+        const outgoingEdges = sortIncidentEdges(root.outgoers("edge"), focusId, "outgoing");
+        const incidentNodeIds = new Set([focusId]);
+        incomingEdges.forEach(item => incidentNodeIds.add(item.node.id()));
+        outgoingEdges.forEach(item => incidentNodeIds.add(item.node.id()));
+        if (incidentNodeIds.size < Math.min(cy.nodes().length, 3)) return false;
+        root.position({ x: 0, y: 0 });
+        placeOrderedFan(incomingEdges, root, "incoming");
+        placeOrderedFan(outgoingEdges, root, "outgoing");
+        const remaining = cy.nodes().filter(node => !incidentNodeIds.has(node.id())).map(node => ({ node, order: Number.NaN }));
+        if (remaining.length) placeRows(orderItems(remaining), 620, 280, 150);
+        return true;
+      }
+      function applyRoadLayout() {
+        if (!cy.nodes().length) return false;
+        if (applyFocusedRootLayout(firstRoot)) return true;
+        const levels = new Map();
+        const queue = [];
+        visibleSources().forEach(node => {
+          levels.set(node.id(), 0);
+          queue.push(node.id());
+        });
+        while (queue.length) {
+          const id = queue.shift();
+          const level = levels.get(id) || 0;
+          cy.edges(`[source = "${id}"]`).sort((a, b) => edgeOrder(a) - edgeOrder(b)).forEach(edge => {
+            const targetId = edge.target().id();
+            const nextLevel = level + 1;
+            if (!levels.has(targetId) || nextLevel > levels.get(targetId)) {
+              levels.set(targetId, nextLevel);
+              if (nextLevel < 24) queue.push(targetId);
+            }
+          });
+        }
+        cy.nodes().forEach(node => {
+          if (!levels.has(node.id())) levels.set(node.id(), 0);
+        });
+        const groups = new Map();
+        cy.nodes().forEach(node => node.removeData("incomingOrder"));
+        cy.edges().forEach(edge => {
+          edge.target().data("incomingOrder", Math.min(Number(edge.target().data("incomingOrder") || Number.MAX_SAFE_INTEGER), edgeOrder(edge)));
+        });
+        cy.nodes().forEach(node => {
+          const level = levels.get(node.id()) || 0;
+          if (!groups.has(level)) groups.set(level, []);
+          const rawOrder = Number(node.data("incomingOrder"));
+          groups.get(level).push({ node, order: Number.isFinite(rawOrder) && rawOrder < Number.MAX_SAFE_INTEGER ? rawOrder : Number.NaN });
+        });
+        let currentY = 0;
+        [...groups.keys()].sort((a, b) => a - b).forEach(level => {
+          const items = orderItems(groups.get(level));
+          placeRows(items, currentY);
+          const columns = Math.max(1, Math.min(5, Math.ceil(Math.sqrt(items.length * 1.65))));
+          const rows = Math.ceil(items.length / columns);
+          currentY += Math.max(170, rows * 132 + 82);
+        });
+        return true;
+      }
+      function relayout(shouldFit, focusId) {
+        cy.resize();
+        if (!applyRoadLayout()) {
+          cy.layout({ name:"breadthfirst", directed:true, padding:72, spacingFactor:1.4, animate:false }).run();
+        } else {
+          cy.layout({ name:"preset", animate:false, fit:false }).run();
+        }
+        setTimeout(() => {
+          if (shouldFit) {
+            cy.fit(undefined, 54);
+            cy.zoom(Math.min(cy.zoom(), 1.15));
+            cy.center();
+          } else if (focusId && cy.getElementById(focusId).length) {
+            cy.center(cy.getElementById(focusId));
+          }
+        }, 80);
+      }
+
+      // ----------------------------------------
+      // find next node to expand when current is exhausted
+      // ----------------------------------------
+      function findNextExpansionTarget(fromId) {
+        // BFS outward from fromId through the FULL graph data
+        // find first node that has unexpanded edges
+        const visited = new Set([fromId]);
+        const queue = [fromId];
+        while (queue.length) {
+          const current = queue.shift();
+          const neighbors = [
+            ...(outgoing.get(current) || []).map(e => e.dst),
+            ...(incoming.get(current) || []).map(e => e.src),
+          ];
+          for (const neighbor of neighbors) {
+            if (visited.has(neighbor)) continue;
+            visited.add(neighbor);
+            // does this neighbor have any edge not yet in the graph?
+            const incident = [
+              ...(outgoing.get(neighbor) || []),
+              ...(incoming.get(neighbor) || []),
+            ];
+            const hasHidden = incident.some(edge => {
+              const edgeId = `${edge.src}->${edge.dst}`;
+              const otherId = edge.src === neighbor ? edge.dst : edge.src;
+              return !cy.getElementById(edgeId).length || !cy.getElementById(otherId).length;
+            });
+            if (hasHidden) return neighbor;
+            queue.push(neighbor);
+          }
+        }
+        // fallback: any node in the full graph with hidden edges
+        for (const [nodeId] of nodeById) {
+          if (visited.has(nodeId)) continue;
+          const incident = [
+            ...(outgoing.get(nodeId) || []),
+            ...(incoming.get(nodeId) || []),
+          ];
+          const hasHidden = incident.some(edge => {
+            const edgeId = `${edge.src}->${edge.dst}`;
+            const otherId = edge.src === nodeId ? edge.dst : edge.src;
+            return !cy.getElementById(edgeId).length || !cy.getElementById(otherId).length;
+          });
+          if (hasHidden) return nodeId;
+        }
+        return null;
+      }
+
+      let lastTap = { id: "", time: 0 };
+      cy.on("tap", "node", evt => {
+        const id = evt.target.id();
+        const now = Date.now();
+        const isDoubleTap = lastTap.id === id && (now - lastTap.time) < 420;
+        lastTap = { id, time: now };
+        if (!isDoubleTap) {
+          statusEl.textContent = `${data.title}: selected ${compactLabel(nodeById.get(id) || id)}. Double-click a node to show its immediate incoming/outgoing links.`;
+          return;
+        }
+        
+        expandedNodes.add(id);
+        const added = addMissingElements(oneStepElementsFor(id));
+        if (added) {
+          relayout(true, id);
+          statusEl.textContent = `${data.title}: added the next linked node/edge from ${compactLabel(nodeById.get(id) || id)} (${cy.nodes().length} nodes, ${cy.edges().length} edges). Double-click again to reveal the next link.`;
+          return;
+        }
+        const next = findNextExpansionTarget(id);
+        if (next) {
+          expandedNodes.add(next);
+          addMissingElements(oneStepElementsFor(next));
+          relayout(true, next);
+          statusEl.textContent = `${data.title}: ${compactLabel(nodeById.get(id) || id)} fully expanded. Continuing from ${compactLabel(nodeById.get(next) || next)} (${cy.nodes().length} nodes, ${cy.edges().length} edges). Double-click to keep going.`;
+        } else {
+          statusEl.textContent = `${data.title}: all reachable nodes from ${compactLabel(nodeById.get(id) || id)} are now visible (${cy.nodes().length} nodes, ${cy.edges().length} edges).`;
+        }
+      });
+
+      statusEl.textContent = `${data.title}: showing immediate incoming/outgoing links for ${compactLabel(nodeById.get(firstRoot) || firstRoot)} (${cy.nodes().length} nodes, ${cy.edges().length} edges). Double-click a node to expand the road.`;
+      requestAnimationFrame(() => relayout(true, firstRoot));
+    
+    }).catch(err => {
+      showGraphError(err);
+    });
+  </script>
+</body>
+</html>

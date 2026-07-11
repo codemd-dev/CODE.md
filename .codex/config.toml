@@ -1,0 +1,8 @@
+# BEGIN CODE.md MCP
+[mcp_servers.codemd]
+command = "node"
+args = ["c:\\Users\\prana\\.vscode\\extensions\\codeval.codeval-codemd-graphs-0.0.31\\scripts\\codemd-mcp-server.js", "--workspace", "c:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs"]
+
+[mcp_servers.codemd.env]
+CODEMD_WORKSPACE = "c:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs"
+# END CODE.md MCP

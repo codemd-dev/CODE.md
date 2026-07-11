@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CODE.md API — CodeVal.ai</title>
+<meta name="description" content="CodeVal REST API: generate CODE.md for any GitHub repository. One endpoint, one file, instant code intelligence for AI agents.">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@600;800&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg: #0a0c10;
+  --surface: #111418;
+  --surface2: #161b22;
+  --border: #21262d;
+  --border2: #30363d;
+  --text: #e6edf3;
+  --muted: #7d8590;
+  --accent: #00d4aa;
+  --accent-dim: rgba(0,212,170,0.12);
+  --accent-border: rgba(0,212,170,0.3);
+  --blue: #58a6ff;
+  --blue-dim: rgba(88,166,255,0.1);
+  --orange: #f78166;
+  --yellow: #e3b341;
+  --purple: #bc8cff;
+  --green: #3fb950;
+  --radius: 8px;
+  --mono: 'JetBrains Mono', monospace;
+  --display: 'Syne', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--mono); font-size: 13px; line-height: 1.6; min-height: 100vh;
+}
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: 0;
+  background-image:
+    linear-gradient(rgba(0,212,170,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,170,0.03) 1px, transparent 1px);
+  background-size: 32px 32px; pointer-events: none;
+}
+.layout { position: relative; z-index: 1; display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+
+/* SIDEBAR */
+aside {
+  background: var(--surface); border-right: 1px solid var(--border);
+  padding: 1.5rem 0; position: sticky; top: 0; height: 100vh;
+  overflow-y: auto; display: flex; flex-direction: column;
+}
+.sidebar-logo { padding: 0 1.5rem 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+.sidebar-logo .wordmark { font-family: var(--display); font-size: 1.1rem; font-weight: 800; color: var(--accent); letter-spacing: -0.02em; }
+.sidebar-logo .tagline { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px; }
+.sidebar-section { padding: 0 1rem; margin-bottom: 1.5rem; }
+.sidebar-label { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 0 0.5rem; margin-bottom: 0.5rem; }
+.sidebar-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px;
+  cursor: pointer; transition: background 0.15s; font-size: 12px; color: var(--muted);
+  border: none; background: none; width: 100%; text-align: left;
+}
+.sidebar-item:hover { background: var(--surface2); color: var(--text); }
+.sidebar-item.active { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent-border); }
+.sidebar-item .method { font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px; letter-spacing: 0.05em; flex-shrink: 0; }
+.method.post { background: rgba(63,185,80,0.15); color: var(--green); }
+.method.get  { background: var(--blue-dim); color: var(--blue); }
+.sidebar-base-url { padding: 0 1.5rem; margin-top: auto; border-top: 1px solid var(--border); padding-top: 1rem; }
+.sidebar-base-url label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 6px; }
+.sidebar-base-url input {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 11px; color: var(--text); outline: none;
+}
+.sidebar-base-url input:focus { border-color: var(--accent); }
+
+/* MAIN */
+main { padding: 2rem; overflow-y: auto; }
+.endpoint-header {
+  display: flex; align-items: flex-start; gap: 1rem;
+  margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border);
+}
+.method-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.08em; flex-shrink: 0; margin-top: 3px; }
+.method-badge.post { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+.method-badge.get  { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+.endpoint-info h1 { font-family: var(--display); font-size: 1.4rem; font-weight: 800; color: var(--text); letter-spacing: -0.02em; line-height: 1.2; }
+.endpoint-info .path { font-size: 12px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+.endpoint-info .path span { color: var(--accent); }
+.endpoint-info p { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+
+.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.panel-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--surface2); }
+.panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.panel-body { padding: 1rem; }
+
+.url-bar {
+  display: flex; gap: 8px; align-items: center; background: var(--surface2);
+  border: 1px solid var(--border2); border-radius: var(--radius);
+  padding: 3px 3px 3px 12px; margin-bottom: 1rem;
+}
+.url-bar .full-url { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.url-bar .full-url span { color: var(--accent); }
+
+.field-group { margin-bottom: 1rem; }
+.field-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+.field-label .required { color: var(--orange); font-size: 10px; }
+.field-label .type-tag { font-size: 9px; padding: 2px 5px; border-radius: 4px; background: var(--blue-dim); color: var(--blue); letter-spacing: 0.05em; }
+.field-desc { font-size: 11px; color: var(--muted); margin-bottom: 6px; line-height: 1.5; }
+
+input[type="text"], textarea {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 8px 10px; font-family: var(--mono); font-size: 12px;
+  color: var(--text); outline: none; transition: border-color 0.2s;
+}
+input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
+
+.btn-send {
+  width: 100%; padding: 10px; background: var(--accent); color: #0a0c10;
+  font-family: var(--display); font-weight: 800; font-size: 13px; letter-spacing: 0.02em;
+  border: none; border-radius: 6px; cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-send:hover { opacity: 0.9; }
+.btn-send:active { transform: scale(0.98); }
+.btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-send .spinner {
+  width: 14px; height: 14px; border: 2px solid rgba(0,0,0,0.3);
+  border-top-color: #0a0c10; border-radius: 50%;
+  animation: spin 0.7s linear infinite; display: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.response-status { display: flex; align-items: center; gap: 8px; margin-bottom: 1rem; font-size: 12px; }
+.status-pill { padding: 2px 8px; border-radius: 999px; font-weight: 700; font-size: 11px; }
+.status-200 { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+.status-4xx, .status-5xx { background: rgba(247,129,102,0.15); color: var(--orange); border: 1px solid rgba(247,129,102,0.3); }
+.status-time { color: var(--muted); }
+
+pre {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem;
+  overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.7; max-height: 400px; color: var(--text);
+}
+
+.code-sample { position: relative; }
+.copy-btn {
+  position: absolute; top: 8px; right: 8px; background: var(--border2); border: none;
+  border-radius: 4px; padding: 4px 8px; font-size: 10px; color: var(--muted);
+  cursor: pointer; font-family: var(--mono); transition: background 0.15s, color 0.15s;
+}
+.copy-btn:hover { background: var(--accent); color: #0a0c10; }
+
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 200px; color: var(--muted); text-align: center; gap: 8px; }
+.empty-state .icon { font-size: 2rem; opacity: 0.3; }
+.empty-state p { font-size: 12px; }
+
+.section-divider {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+  margin: 1.25rem 0 0.75rem; display: flex; align-items: center; gap: 8px;
+}
+.section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+.error-banner {
+  background: rgba(247,129,102,0.1); border: 1px solid rgba(247,129,102,0.3);
+  border-radius: 6px; padding: 10px 14px; color: var(--orange); font-size: 12px; margin-bottom: 1rem;
+}
+
+.info-box {
+  background: var(--accent-dim); border: 1px solid var(--accent-border);
+  border-radius: 6px; padding: 10px 14px; font-size: 12px; color: var(--accent); margin-bottom: 1rem; line-height: 1.5;
+}
+
+.download-btn {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 0.75rem;
+  padding: 7px 14px; background: var(--accent); color: #0a0c10;
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  border: none; border-radius: 6px; cursor: pointer; text-decoration: none;
+}
+.download-btn:hover { opacity: 0.88; }
+
+.schema-row {
+  display: grid; grid-template-columns: 160px 80px 1fr; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface2); align-items: start; margin-bottom: 6px;
+}
+.schema-field { color: var(--blue); font-size: 11px; }
+.schema-type { color: var(--purple); font-size: 10px; }
+.schema-desc { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 999px; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; }
+  .panels { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- SIDEBAR -->
+<aside>
+  <div class="sidebar-logo">
+    <div class="wordmark">code.md/</div>
+    <div class="tagline">REST API</div>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Endpoints</div>
+    <button class="sidebar-item active" data-ep="codemd" onclick="showEndpoint('codemd')">
+      <span class="method post">POST</span>
+      /code-md
+    </button>
+    <button class="sidebar-item" data-ep="health" onclick="showEndpoint('health')">
+      <span class="method get">GET</span>
+      /health
+    </button>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Output</div>
+    <button class="sidebar-item" onclick="document.getElementById('responsePreview')?.scrollIntoView({behavior:'smooth'})">
+      <span style="font-size:11px;">📄</span>
+      code.md file
+    </button>
+  </div>
+  <div class="sidebar-base-url">
+    <label>Base URL</label>
+    <input type="text" id="baseUrl" value="https://codeval.ai" placeholder="https://codeval.ai"/>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main id="mainContent">
+
+  <!-- POST /code-md -->
+  <div id="ep-codemd">
+    <div class="endpoint-header">
+      <span class="method-badge post">POST</span>
+      <div class="endpoint-info">
+        <h1>Generate CODE.md</h1>
+        <div class="path"><span id="urlPreview">https://codeval.ai</span>/code-md</div>
+        <p>
+          Pass a public GitHub repository URL and receive a <code style="color:var(--accent)">code.md</code> file as a plain-text download.
+          The file contains the repository's callgraph entry points, top connected functions, file dependency graph,
+          UI element map, source inventory, TODO signals, and risk areas — all extracted from real parser evidence, no LLM guessing.
+          <br><br>
+          <strong style="color:var(--text)">Note:</strong> the repository must have been analyzed by CodeVal first.
+          If it hasn't, the API returns <code style="color:var(--orange)">404</code> with instructions to run the analysis from the
+          <a href="/dashboard" style="color:var(--accent)">CodeVal dashboard</a>.
+        </p>
+      </div>
+    </div>
+
+    <div class="panels">
+      <!-- LEFT: request -->
+      <div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Request</span></div>
+          <div class="panel-body">
+            <div class="url-bar">
+              <span class="full-url"><span id="urlPreview2">https://codeval.ai</span>/code-md</span>
+            </div>
+
+            <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
+            <div class="field-group">
+              <div class="field-label">
+                repo_url <span class="required">required</span>
+                <span class="type-tag">string</span>
+              </div>
+              <div class="field-desc">Public GitHub repository URL. Example: https://github.com/django/django</div>
+              <input type="text" id="repoUrl" placeholder="https://github.com/owner/repo" value="https://github.com/django/django"/>
+            </div>
+
+            <button class="btn-send" id="sendBtn" onclick="sendCodeMdRequest()">
+              <span class="spinner" id="spinner"></span>
+              <span id="sendLabel">Get CODE.md</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="section-divider">Code samples</div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">cURL</span>
+          </div>
+          <div class="panel-body code-sample">
+            <button class="copy-btn" onclick="copyCode('curlSample')">copy</button>
+            <pre id="curlSample">curl -X POST <span style="color:var(--green)">"https://codeval.ai/code-md"</span> \
+  -H <span style="color:var(--green)">"Content-Type: application/json"</span> \
+  -d <span style="color:var(--green)">'{"repo_url":"https://github.com/owner/repo"}'</span> \
+  --output code.md</pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header"><span class="panel-title">Python</span></div>
+          <div class="panel-body code-sample">
+            <button class="copy-btn" onclick="copyCode('pySample')">copy</button>
+            <pre id="pySample"><span style="color:var(--blue)">import</span> requests
+
+url  = <span style="color:var(--green)" id="pyUrl">"https://codeval.ai/code-md"</span>
+body = {<span style="color:var(--green)">"repo_url"</span>: <span style="color:var(--green)" id="pyRepoUrl">"https://github.com/owner/repo"</span>}
+
+resp = requests.post(url, json=body)
+resp.raise_for_status()
+
+<span style="color:var(--blue)">with</span> open(<span style="color:var(--green)">"code.md"</span>, <span style="color:var(--green)">"w"</span>) <span style="color:var(--blue)">as</span> f:
+    f.write(resp.text)
+
+<span style="color:var(--blue)">print</span>(<span style="color:var(--green)">"Saved code.md"</span>)</pre>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:1rem;">
+          <div class="panel-header"><span class="panel-title">JavaScript (fetch)</span></div>
+          <div class="panel-body code-sample">
+            <button class="copy-btn" onclick="copyCode('jsSample')">copy</button>
+            <pre id="jsSample"><span style="color:var(--blue)">const</span> resp = <span style="color:var(--blue)">await</span> fetch(<span style="color:var(--green)" id="jsUrl">"https://codeval.ai/code-md"</span>, {
+  method: <span style="color:var(--green)">"POST"</span>,
+  headers: { <span style="color:var(--green)">"Content-Type"</span>: <span style="color:var(--green)">"application/json"</span> },
+  body: JSON.stringify({ repo_url: <span style="color:var(--green)" id="jsRepoUrl">"https://github.com/owner/repo"</span> })
+});
+
+<span style="color:var(--blue)">const</span> text = <span style="color:var(--blue)">await</span> resp.text();
+<span style="color:var(--muted)">// text contains the full code.md content</span>
+console.log(text.slice(0, 200));</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: response -->
+      <div>
+        <div class="panel" id="responsePreview">
+          <div class="panel-header">
+            <span class="panel-title">Response</span>
+            <span id="responseStatus" style="font-size:10px;color:var(--muted);">awaiting…</span>
+          </div>
+          <div class="panel-body">
+            <div id="responseEmpty" class="empty-state">
+              <div class="icon">📄</div>
+              <p>Hit "Get CODE.md" to generate and preview<br>the code.md file for your repository.</p>
+            </div>
+            <div id="responseContent" style="display:none;">
+              <div class="response-status">
+                <span class="status-pill status-200" id="statusPill">200</span>
+                <span class="status-time" id="responseTime"></span>
+                <span style="color:var(--muted);font-size:11px;">text/plain</span>
+              </div>
+              <pre id="responseBody" style="max-height:360px;"></pre>
+              <a class="download-btn" id="downloadBtn" href="#" style="display:none;" download="code.md">⬇ Download code.md</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-divider">Response schema</div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Fields in code.md</span></div>
+          <div class="panel-body">
+            <div class="schema-row"><span class="schema-field">## system</span><span class="schema-type">section</span><span class="schema-desc">Repo name, primary languages, line count, generated_at timestamp.</span></div>
+            <div class="schema-row"><span class="schema-field">## repository_structure</span><span class="schema-type">section</span><span class="schema-desc">Folder layout, file counts, naming conventions detected from paths.</span></div>
+            <div class="schema-row"><span class="schema-field">## callgraph</span><span class="schema-type">section</span><span class="schema-desc">Entry points, top connected nodes, node + edge counts from the parser callgraph.</span></div>
+            <div class="schema-row"><span class="schema-field">## filegraph</span><span class="schema-type">section</span><span class="schema-desc">File-level dependency layers, core files ranked by degree.</span></div>
+            <div class="schema-row"><span class="schema-field">## behavior</span><span class="schema-type">section</span><span class="schema-desc">function_meaning for key features (when feature summaries exist), constraints, error rules.</span></div>
+            <div class="schema-row"><span class="schema-field">## commit_intent</span><span class="schema-type">section</span><span class="schema-desc">High-risk file paths from quality signals, recent change cache flag.</span></div>
+            <div class="schema-row"><span class="schema-field">## errors</span><span class="schema-type">section</span><span class="schema-desc">Static quality signal findings mapped by finding ID to file path.</span></div>
+            <div class="schema-row"><span class="schema-field">## validation</span><span class="schema-type">section</span><span class="schema-desc">Critical flows, invariants, and browser test names detected from analysis.</span></div>
+            <div class="schema-row"><span class="schema-field">## glossary</span><span class="schema-type">section</span><span class="schema-desc">Definitions for terms used in the file.</span></div>
+          </div>
+        </div>
+
+        <div class="section-divider">Error responses</div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Errors</span></div>
+          <div class="panel-body">
+            <div class="schema-row"><span class="schema-field status-pill" style="color:var(--orange)">400</span><span class="schema-type">Bad Request</span><span class="schema-desc">repo_url is missing or not a valid GitHub URL.</span></div>
+            <div class="schema-row" style="margin-top:6px;"><span class="schema-field status-pill" style="color:var(--orange)">404</span><span class="schema-type">Not Found</span><span class="schema-desc">Repository has not been analyzed yet. Analyze it first from the dashboard, then call /code-md again.</span></div>
+            <div class="schema-row" style="margin-top:6px;"><span class="schema-field status-pill" style="color:var(--orange)">500</span><span class="schema-type">Server Error</span><span class="schema-desc">CODE.md generation failed. Retry or re-analyze the repository.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GET /health -->
+  <div id="ep-health" style="display:none;">
+    <div class="endpoint-header">
+      <span class="method-badge get">GET</span>
+      <div class="endpoint-info">
+        <h1>Health Check</h1>
+        <div class="path"><span id="urlPreviewH">https://codeval.ai</span>/health</div>
+        <p>Verify the API server is running and reachable. No parameters required.</p>
+      </div>
+    </div>
+    <div class="panels">
+      <div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Request</span></div>
+          <div class="panel-body">
+            <p style="color:var(--muted);font-size:12px;margin-bottom:1rem;">No body or parameters required.</p>
+            <button class="btn-send" onclick="sendHealth()">Send Request</button>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Response</span>
+            <span id="healthStatus" style="font-size:10px;color:var(--muted);">awaiting…</span>
+          </div>
+          <div class="panel-body">
+            <pre id="healthBody" style="color:var(--muted);">— hit Send —</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<script>
+const baseUrlInput = document.getElementById('baseUrl');
+if (window.location.origin && window.location.origin !== 'null') {
+  baseUrlInput.value = window.location.origin;
+}
+
+function syncPreviews() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  document.querySelectorAll('#urlPreview,#urlPreview2,#urlPreviewH').forEach(el => el.textContent = base);
+  document.getElementById('pyUrl').textContent = `"${base}/code-md"`;
+  document.getElementById('jsUrl').textContent = `"${base}/code-md"`;
+  const curlEl = document.getElementById('curlSample');
+  curlEl.innerHTML = curlEl.innerHTML.replace(/https?:\/\/[^"]+\/code-md/g, `${base}/code-md`);
+}
+baseUrlInput.addEventListener('input', syncPreviews);
+syncPreviews();
+
+document.getElementById('repoUrl').addEventListener('input', () => {
+  const v = document.getElementById('repoUrl').value || 'https://github.com/owner/repo';
+  document.getElementById('pyRepoUrl').textContent = `"${v}"`;
+  document.getElementById('jsRepoUrl').textContent = `"${v}"`;
+});
+
+// Endpoint switcher
+function showEndpoint(ep) {
+  ['codemd','health'].forEach(id => {
+    const el = document.getElementById(`ep-${id}`);
+    if (el) el.style.display = ep === id ? '' : 'none';
+  });
+  document.querySelectorAll('.sidebar-item[data-ep]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.ep === ep);
+  });
+}
+
+// Copy code samples
+function copyCode(id) {
+  const text = document.getElementById(id).textContent;
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+// Send /code-md request
+async function sendCodeMdRequest() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  const repoUrl = document.getElementById('repoUrl').value.trim();
+  const errorBanner = document.getElementById('errorBanner');
+  errorBanner.style.display = 'none';
+
+  if (!repoUrl || !repoUrl.includes('github.com')) {
+    errorBanner.textContent = 'Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)';
+    errorBanner.style.display = '';
+    return;
+  }
+
+  const btn = document.getElementById('sendBtn');
+  const spinner = document.getElementById('spinner');
+  const label = document.getElementById('sendLabel');
+  btn.disabled = true;
+  spinner.style.display = 'block';
+  label.textContent = 'Generating…';
+
+  document.getElementById('responseEmpty').style.display = 'none';
+  document.getElementById('responseContent').style.display = 'none';
+  document.getElementById('downloadBtn').style.display = 'none';
+
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(`${base}/code-md`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: repoUrl })
+    });
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+    const text = await resp.text();
+
+    document.getElementById('responseContent').style.display = '';
+    document.getElementById('responseStatus').textContent = `${resp.status} · ${elapsed}s`;
+
+    const pill = document.getElementById('statusPill');
+    pill.textContent = resp.status;
+    pill.className = 'status-pill ' + (resp.ok ? 'status-200' : 'status-4xx');
+
+    document.getElementById('responseTime').textContent = `${elapsed}s`;
+
+    if (resp.ok) {
+      // Preview first 80 lines
+      const lines = text.split('\n');
+      const preview = lines.slice(0, 80).join('\n') + (lines.length > 80 ? `\n… (${lines.length} lines total)` : '');
+      document.getElementById('responseBody').textContent = preview;
+
+      // Download link via blob
+      const blob = new Blob([text], { type: 'text/plain' });
+      const dlUrl = URL.createObjectURL(blob);
+      const dlBtn = document.getElementById('downloadBtn');
+      dlBtn.href = dlUrl;
+      dlBtn.style.display = 'inline-flex';
+    } else {
+      let detail = text;
+      try { detail = JSON.parse(text).detail || text; } catch {}
+      document.getElementById('responseBody').textContent = detail;
+      if (resp.status === 404) {
+        errorBanner.innerHTML = `This repository hasn't been analyzed yet. <a href="/dashboard" style="color:var(--accent)">Run analysis in the dashboard</a> first, then try again.`;
+        errorBanner.style.display = '';
+      }
+    }
+  } catch (err) {
+    document.getElementById('responseContent').style.display = '';
+    document.getElementById('responseBody').textContent = `Request failed: ${err.message}`;
+    document.getElementById('statusPill').textContent = 'Error';
+    document.getElementById('statusPill').className = 'status-pill status-5xx';
+  } finally {
+    btn.disabled = false;
+    spinner.style.display = 'none';
+    label.textContent = 'Get CODE.md';
+  }
+}
+
+// Send /health
+async function sendHealth() {
+  const base = baseUrlInput.value.replace(/\/$/, '');
+  document.getElementById('healthStatus').textContent = 'loading…';
+  try {
+    const resp = await fetch(`${base}/health`);
+    const data = await resp.json();
+    document.getElementById('healthBody').textContent = JSON.stringify(data, null, 2);
+    document.getElementById('healthStatus').textContent = `${resp.status} OK`;
+  } catch (err) {
+    document.getElementById('healthBody').textContent = err.message;
+    document.getElementById('healthStatus').textContent = 'error';
+  }
+}
+</script>
+</body>
+</html>

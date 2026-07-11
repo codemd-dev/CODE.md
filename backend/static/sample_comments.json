@@ -1,0 +1,85 @@
+{
+  "supported_comment_forms": ["//", "#", "/* */", "<!-- -->"],
+  "todo_count": 4,
+  "text_item_count": 8,
+  "text_source_counts": {
+    "comment": 4,
+    "document": 4
+  },
+  "todos": [
+    {
+      "tag": "TODO",
+      "file": "src/main/java/org/apache/commons/lang3/StringUtils.java",
+      "line": 412,
+      "text": "Review edge cases around empty CharSequence inputs."
+    },
+    {
+      "tag": "TODO",
+      "file": "src/main/java/org/apache/commons/lang3/time/DurationFormatUtils.java",
+      "line": 189,
+      "text": "Consider simplifying duration token handling."
+    },
+    {
+      "tag": "FIXME",
+      "file": "src/test/java/org/apache/commons/lang3/RandomStringUtilsTest.java",
+      "line": 73,
+      "text": "Clarify expectations for random Unicode ranges."
+    },
+    {
+      "tag": "TODO",
+      "file": "src/main/java/org/apache/commons/lang3/reflect/MethodUtils.java",
+      "line": 521,
+      "text": "Document overload resolution behavior."
+    }
+  ],
+  "text_items": [
+    {
+      "kind": "document",
+      "file": "README.md",
+      "line": 1,
+      "text": "Apache Commons Lang provides helper utilities for the java.lang API."
+    },
+    {
+      "kind": "document",
+      "file": "README.md",
+      "line": 9,
+      "text": "The library includes utilities for strings, numbers, dates, concurrency, reflection, and object methods."
+    },
+    {
+      "kind": "document",
+      "file": "CONTRIBUTING.md",
+      "line": 4,
+      "text": "Contributions should include tests and follow the existing project style."
+    },
+    {
+      "kind": "document",
+      "file": "RELEASE-NOTES.txt",
+      "line": 1,
+      "text": "Release notes summarize changes, fixes, and compatibility notes for the library."
+    },
+    {
+      "kind": "comment",
+      "file": "src/main/java/org/apache/commons/lang3/StringUtils.java",
+      "line": 117,
+      "text": "Operations on String that are null safe."
+    },
+    {
+      "kind": "comment",
+      "file": "src/main/java/org/apache/commons/lang3/ArrayUtils.java",
+      "line": 83,
+      "text": "Operations on arrays, primitive arrays and primitive wrapper arrays."
+    },
+    {
+      "kind": "comment",
+      "file": "src/main/java/org/apache/commons/lang3/time/DateUtils.java",
+      "line": 52,
+      "text": "Date and time helpers for common calendar calculations."
+    },
+    {
+      "kind": "comment",
+      "file": "src/main/java/org/apache/commons/lang3/reflect/MethodUtils.java",
+      "line": 68,
+      "text": "Utility reflection methods focused on method lookup and invocation."
+    }
+  ]
+}

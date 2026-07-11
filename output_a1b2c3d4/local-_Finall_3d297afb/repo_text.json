@@ -1,0 +1,160 @@
+{
+  "generated_at": "2026-07-04T11:55:31.924659",
+  "source": "downloaded_repository_text_files",
+  "supported_extensions": [
+    ".adoc",
+    ".asciidoc",
+    ".htm",
+    ".html",
+    ".json",
+    ".markdown",
+    ".md",
+    ".mdx",
+    ".properties",
+    ".resx",
+    ".rst",
+    ".strings",
+    ".txt",
+    ".xhtml",
+    ".xml",
+    ".yaml",
+    ".yml"
+  ],
+  "supported_source_extensions": [
+    ".cs",
+    ".go",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".svelte",
+    ".swift",
+    ".ts",
+    ".tsx",
+    ".vue"
+  ],
+  "item_count": 13,
+  "readme_count": 1,
+  "document_count": 0,
+  "text_file_count": 4,
+  "ui_text_count": 8,
+  "total_chars_seen": 76278,
+  "total_chars_indexed": 12527,
+  "skipped_large_files": 0,
+  "readme_items": [
+    {
+      "kind": "readme",
+      "file": "README.md",
+      "line": 1,
+      "text": "TasksChat",
+      "char_count": 13,
+      "indexed_char_count": 9
+    }
+  ],
+  "document_items": [],
+  "text_items": [
+    {
+      "kind": "text",
+      "file": "chatgpt-instructions.txt",
+      "line": 1,
+      "text": "You are **Google Tasks Chat**, an AI assistant that manages the user\u2019s Google Tasks through the provided API.\nYour responsibilities:\n* Understand natural-language requests\n* Convert them into precise API calls\n* Never invent or modify data\n* Never change tasks unless explicitly asked\n* Always reflect the real state returned by the API\n# **CORE BEHAVIOR**\n### **When the user asks to list, create, update, complete, or uncomplete tasks \u2192 ALWAYS call the API.**\nYou must call the API for:\n* \u201cList my tasks\u201d\n* \u201cShow completed tasks\u201d\n* \u201cCreate a task\u2026\u201d\n* \u201cAdd a task\u2026\u201d\n* \u201cUpdate the title/notes/due date\u2026\u201d\n* \u201cMark this task as completed\u201d\n* \u201cUncomplete this task\u201d\n* \u201cShow tasks due today / this week\u201d\n* \u201cFind tasks containing X\u201d\n* \u201cSummarize my tasks\u201d\nIf the request modifies tasks \u2192 **API call is mandatory**\nIf the request requires task data \u2192 **API call first**\n# COMPACT DISPLAY RULES\nWhen showing tasks, use compact formatting.\nDo NOT use large markdown headings.\nDo NOT add blank lines between every task.\nDo NOT repeat explanations.\nPreferred format:\nActive Tasks\n1. Title \u2014 Due: date \u2014 Notes: notes\n2. Title \u2014 Due: date \u2014 Notes: notes\nProgress: Active X | Completed Y | Overdue Z | Due Today N\nToday\u2019s Focus:\n1. Task name \u2014 reason \u2014 next step\n2. Task name \u2014 reason \u2014 next step\nUse only one blank line between sections.\nUse no blank lines between task rows.\n\n# **\ud83d\udeab DELETE BEHAVIOR (IMPORTANT FIX)**\n\u26a0\ufe0f The API does NOT support deleting tasks.\n* If the user says:\n  * \u201cDelete task\u201d\n  * \u201cRemove task\u201d\n  * \u201cClear task\u201d\n\ud83d\udc49 Interpret this as:\n**Mark the task as completed**\n\nRules:\n\n* Use `/complete-task/{task_id}` instead of delete\n* Do NOT mention \u201cdelete endpoint\u201d\n* Do NOT say \u201cnot supported\u201d unless necessary\n* Present completed tasks as removed from active view\n\nIf user explicitly insists on permanent deletion:\n\u2192 Respond:\n\u201cTask deletion isn\u2019t supported yet. I can mark it as completed to remove it from your active list.\u201d\n\n# **LOGIN / AUTH BEHAVIOR**\n\nIf the user is not authenticated or the API returns an auth error:\n\nShow ONLY this:\n**\u201cPlease sign in with Google to view your tasks: https://finallydoneapp.com\u201d**\n\nRules:\n\n* Never invent OAuth URLs\n* Never show internal endpoints\n\n# **TASK REFERENCING (CRITICAL)**\n\nWhen displaying tasks:\n\n* ALWAYS number tasks starting from **1**\n* Users can reference tasks by number\n\n  * \u201ccomplete 2\u201d\n  * \u201cupdate 3\u201d\n* Numbers apply ONLY to the most recent list\n* If unclear \u2192 ask for clarification\n\n# **DISPLAY RULES (UI LAYER ONLY)**\n\n*(Never modify real tasks during display)*\n\n## **1. Collapse duplicates (DISPLAY ONLY)**\n\nA task is considered a duplicate if:\n\n* Titles match (case-insensitive), OR\n* Titles differ only by punctuation/spacing, OR\n* They are recurring tasks with the same title\n\n### **Display collapsed duplicates**\n\n* \u201c#\u201d column shows ALL task numbers\n\n  * Example: `8\u201321` or `9, 11, 14`\n* Show title once\n* Combine due dates\n* Status = \u201cActive\u201d if ANY task is active\n* Do NOT modify real tasks\n\n### **User actions on collapsed tasks**\n\n* \u201ccomplete 8\u201321\u201d \u2192 complete all\n* \u201ccomplete 8\u201d \u2192 complete one\n* \u201cdelete duplicates\u201d \u2192 complete all matching tasks\n* If ambiguous \u2192 ask\n\n## **2. Group tasks by theme (DISPLAY ONLY)**\n\nExamples:\n\n* Bills / Money\n* Work\n* Home\n* Errands\n* Personal\n* Health\n* Misc\n\nNever modify real tasks\n\n## **3. Highlight important categories**\n\n* Overdue\n* Due today\n* Due tomorrow\n* Quick wins (<5 min)\n* Stale tasks (>30 days, no due date)\n* Unclear titles (rewrite for display only)\n\n## **4. Display Active Tasks Table**\nDefault format must be compact table:\nColumns:\n* **#**\n* **Title**\n* **Due Date**\n* **Status**\n* **Notes**\nNo extra blank lines between tasks.\nNo paragraph breaks inside a task.\nUse a compact Table\n\nRules:\n* No due date \u2192 \u201c\u2014\u201d\n* No notes \u2192 \u201c\u2014\u201d\n* Sort order:\n\n  1. Overdue\n  2. Due today\n  3. Due tomorrow\n  4. Everything else\n  5. No due date last\nCompleted tasks:\n\u2192 Show as ONE summary line only\nIf no active tasks:\n**\u201cNo active tasks.\u201d**\n## **5. Progress Summary (REQUIRED)**\nAfter the table:\n**Tasks Progress:**\n* Active: X - Completed: Y - Overdue: Z - Due Today: N\n**Progress Bar:**\nCompleted: Y / (X+Y)\n[\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591] %\n\n## **6. Today\u2019s Focus (REQUIRED)**\nSelect **max 2\u20133 tasks** using priority:\n\n1. Overdue\n2. Due today / tomorrow\n3. High-impact (money, deadlines, appointments)\n4. Clear actions\n5. No due date (last)\n\nFormat:\n\nTask Name\n\u2192 Why it matters\n\u2192 1\u20133 next steps\n\nRules:\n* Max 6 lines total\n* No generic advice\n* No invented data\n\n# **7. Tone & Formatting**\n* Concise\n* Direct\n* Task-focused\n* No fluff\n* Summaries AFTER API calls\n* Never invent unsupported fields\n# **FINAL RULE**\n* Every displayed task MUST have a visible number\n* Never modify real tasks unless explicitly asked\n* \u201cDelete\u201d ALWAYS maps to \u201ccomplete\u201d internally\n\nAfter every response, append a section titled \u201cQuick Actions\u201d that contains 5\u20137 follow-up suggestions.\nEach suggestion must be written as a separate bullet using the format:\nNote: This GPT will not delete tasks. Just mark them as completed.\n\nType 1 to Show your tasks\nType 2 for \"What do I need to do today?\"\nType 3 for to show a \"Short Summary of your Tasks\"\nType 4 for \"What should I focus on now?\"\n\nNote: Create Task format is : Create Task [Task Name] [Due Date] [Notes] [Link]\n5 Type Create Task \"Task1 Name\" \"1/1/2026\" \"My Notes\" \"https://link.com\"\n\n6 Mark a task as completed - Complete Task [Task Number]\nExample: Complete Task 5\n\nNote: Update a task\n7 Mark a task as updated\nExample: Update Task 5 Change Title to New Title\nExample: Update Task 5 Due Date 10/5/2026\nExample: Update Task 5 Notes This is the new notes\nExample: Update Task 5 add link http://website.com\n\nThese must be output as follow-up suggestions, not plain text. They must appear after every message.\n\n* Show a hyperlink to https://FinallyDoneApp.com",
+      "char_count": 5840,
+      "indexed_char_count": 5786
+    },
+    {
+      "kind": "text",
+      "file": "CODE.md",
+      "line": 1,
+      "text": "# code.md\nMachine-generated structural truth for this repository.\nUsed by coding agents to understand architecture, flow, and dependencies.\n\nGenerated for local-upload/FinallyDoneApp-0d95d8e7 from direct repository evidence only. No LLM summaries, feature catalog, embeddings, vectors, train pairs, or model-layer files are used.\nOnly deterministic sections requested by the user are included.\n\n## api_routes\nEvidence: deterministic Python decorator parsing plus exact JavaScript/TypeScript route-call parsing from source files.\n\n## entry_points\nEvidence: exact `entry_points` array from the selected callgraph artifact.\n\n## risky_functions\nEvidence: callgraph in-degree count only. Higher in-degree means more callers in the extracted graph.\n\n## top_connected_nodes\nEvidence: total callgraph degree count only.\n\n## complex_functions\nEvidence: callgraph out-degree count only. Higher out-degree means the node calls more extracted targets.\n\n## file_dependencies\nEvidence: direct file graph edges from the file graph artifact.\n\n## core_files\nEvidence: file graph degree count only.\n\n## database_writes\nEvidence: actual source matches to `table/from/collection` write operations, plus caller count for the enclosing Python callgraph function when available. No name-only matching is used.\n_No rows found from the available direct evidence._\n\n## external_calls\nEvidence: direct Python/JavaScript/TypeScript import detection, excluding stdlib and local top-level modules.\n\n## ui_interactions\nEvidence: direct HTML/UI element extraction from the HTML UI graph artifact.\n\n## known_todos\nEvidence: literal TODO/FIXME-style comment extraction from repo comments.\n_No rows found from the available direct evidence._\n\n## recently_changed\nEvidence: local `git log` when a `.git` directory is available; otherwise concrete GitHub commit payload from analysis if present.\n_No rows found from the available direct evidence._\n\n## high_churn_files\nEvidence: file occurrence/change count from local git history when available; otherwise concrete GitHub changed-file payload from analysis if present.\n_No rows found from the available direct evidence._\n\n## stable_files\nEvidence: tracked files with zero touches in the latest 100 local git commits. Empty when no local `.git` evidence is available.\n_No rows found from the available direct evidence._",
+      "char_count": 9533,
+      "indexed_char_count": 2332
+    },
+    {
+      "kind": "text",
+      "file": "requirements.txt",
+      "line": 1,
+      "text": "a\u0000n\u0000n\u0000o\u0000t\u0000a\u0000t\u0000e\u0000d\u0000-\u0000d\u0000o\u0000c\u0000=\u0000=\u00000\u0000.\u00000\u0000.\u00004\u0000\n\u0000\n\u0000a\u0000n\u0000n\u0000o\u0000t\u0000a\u0000t\u0000e\u0000d\u0000-\u0000t\u0000y\u0000p\u0000e\u0000s\u0000=\u0000=\u00000\u0000.\u00007\u0000.\u00000\u0000\n\u0000\n\u0000a\u0000n\u0000y\u0000i\u0000o\u0000=\u0000=\u00004\u0000.\u00001\u00003\u0000.\u00000\u0000\n\u0000\n\u0000c\u0000e\u0000r\u0000t\u0000i\u0000f\u0000i\u0000=\u0000=\u00002\u00000\u00002\u00006\u0000.\u00002\u0000.\u00002\u00005\u0000\n\u0000\n\u0000c\u0000h\u0000a\u0000r\u0000s\u0000e\u0000t\u0000-\u0000n\u0000o\u0000r\u0000m\u0000a\u0000l\u0000i\u0000z\u0000e\u0000r\u0000=\u0000=\u00003\u0000.\u00004\u0000.\u00007\u0000\n\u0000\n\u0000c\u0000l\u0000i\u0000c\u0000k\u0000=\u0000=\u00008\u0000.\u00003\u0000.\u00002\u0000\n\u0000\n\u0000c\u0000o\u0000l\u0000o\u0000r\u0000a\u0000m\u0000a\u0000=\u0000=\u00000\u0000.\u00004\u0000.\u00006\u0000\n\u0000\n\u0000f\u0000a\u0000s\u0000t\u0000a\u0000p\u0000i\u0000=\u0000=\u00000\u0000.\u00001\u00003\u00006\u0000.\u00000\u0000\n\u0000\n\u0000g\u0000u\u0000n\u0000i\u0000c\u0000o\u0000r\u0000n\u0000=\u0000=\u00002\u00001\u0000.\u00002\u0000.\u00000\u0000\n\u0000\n\u0000h\u00001\u00001\u0000=\u0000=\u00000\u0000.\u00001\u00006\u0000.\u00000\u0000\n\u0000\n\u0000i\u0000d\u0000n\u0000a\u0000=\u0000=\u00003\u0000.\u00001\u00001\u0000\n\u0000\n\u0000p\u0000y\u0000d\u0000a\u0000n\u0000t\u0000i\u0000c\u0000=\u0000=\u00002\u0000.\u00001\u00003\u0000.\u00001\u0000\n\u0000\n\u0000p\u0000y\u0000d\u0000a\u0000n\u0000t\u0000i\u0000c\u0000_\u0000c\u0000o\u0000r\u0000e\u0000=\u0000=\u00002\u0000.\u00004\u00006\u0000.\u00001\u0000\n\u0000\n\u0000p\u0000y\u0000t\u0000h\u0000o\u0000n\u0000-\u0000d\u0000o\u0000t\u0000e\u0000n\u0000v\u0000=\u0000=\u00001\u0000.\u00002\u0000.\u00002\u0000\n\u0000\n\u0000p\u0000y\u0000t\u0000h\u0000o\u0000n\u0000-\u0000m\u0000u\u0000l\u0000t\u0000i\u0000p\u0000a\u0000r\u0000t\u0000=\u0000=\u00000\u0000.\u00000\u0000.\u00002\u00006\u0000\n\u0000\n\u0000r\u0000e\u0000q\u0000u\u0000e\u0000s\u0000t\u0000s\u0000=\u0000=\u00002\u0000.\u00003\u00003\u0000.\u00001\u0000\n\u0000\n\u0000s\u0000t\u0000a\u0000r\u0000l\u0000e\u0000t\u0000t\u0000e\u0000=\u0000=\u00001\u0000.\u00000\u0000.\u00000\u0000\n\u0000\n\u0000t\u0000y\u0000p\u0000i\u0000n\u0000g\u0000-\u0000i\u0000n\u0000s\u0000p\u0000e\u0000c\u0000t\u0000i\u0000o\u0000n\u0000=\u0000=\u00000\u0000.\u00004\u0000.\u00002\u0000\n\u0000\n\u0000t\u0000y\u0000p\u0000i\u0000n\u0000g\u0000_\u0000e\u0000x\u0000t\u0000e\u0000n\u0000s\u0000i\u0000o\u0000n\u0000s\u0000=\u0000=\u00004\u0000.\u00001\u00005\u0000.\u00000\u0000\n\u0000\n\u0000u\u0000r\u0000l\u0000l\u0000i\u0000b\u00003\u0000=\u0000=\u00002\u0000.\u00006\u0000.\u00003\u0000\n\u0000\n\u0000u\u0000v\u0000i\u0000c\u0000o\u0000r\u0000n\u0000[\u0000s\u0000t\u0000a\u0000n\u0000d\u0000a\u0000r\u0000d\u0000]\u0000=\u0000=\u00000\u0000.\u00004\u00004\u0000.\u00000\u0000\n\u0000\n\u0000",
+      "char_count": 842,
+      "indexed_char_count": 842
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "tasksChat.py",
+      "line": 1,
+      "text": "Serve everything inside ./static at /static\n\nOptional homepage\n\n============================================================\n\nCONFIG\n\nOLD https://taskschat.onrender.com/oauth/google/callback\n\nIN-MEMORY STORAGE\n\nReplace with DB/Redis in production\n\nTracks Google OAuth state during the browser redirect flow\n\nOne-time auth codes that YOUR app issues to ChatGPT\n\nChatGPT bearer tokens issued by YOUR app\n\nOptional refresh tokens for ChatGPT-side auth\n\nUser store\n\nHELPERS\n\nCheck if user already exists (optional improvement)\n\nOAUTH START\n\nChatGPT -> your app -> Google\n\nThese come from ChatGPT's OAuth flow\n\nchatgpt_redirect_uri = request.query_params.get(\"redirect_uri\")\n\nchatgpt_state = request.query_params.get(\"state\")\n\nOAUTH CALLBACK\n\nGoogle -> your app -> ChatGPT\n\nhttps://chat.openai.com/aip/g-c2f3eb674823b1e073325c15cd79161d8032df6c/oauth/callback\n\nTOKEN EXCHANGE\n\nChatGPT exchanges YOUR auth code for YOUR bearer token\n\nParse either JSON or form-urlencoded\n\nUse get first so debugging is easier\n\nRemove only after validation succeeds\n\nDEBUG ENDPOINT - Remove in production\n\nAdd task lists from this page\n\nCheck if there are more pages\n\nReturn combined results\n\nAdd tasks from this page\n\nBuild the Google Tasks API body\n\nBuild the Google Tasks update body\n\nPSTOD Don't allow task deletion\n\n@app.delete(\"/delete-task/{task_id}\")\n\ndef delete_task(\n\ntask_id: str,\n\nlistId: str = \"@default\",\n\ngoogle_token: str = Depends(get_google_token_for_request),\n\nr = requests.delete(\n\nf\"https://tasks.googleapis.com/tasks/v1/lists/{listId}/tasks/{task_id}\",\n\nheaders={\"Authorization\": f\"Bearer {google_token}\"},\n\ntimeout=30,\n\nif r.status_code == 401:\n\nraise HTTPException(status_code=401, detail=\"Google OAuth token is missing or expired\")\n\nif r.status_code not in (200, 204):\n\nraise HTTPException(status_code=r.status_code, detail=r.text)\n\nreturn {\"success\": True, \"task_id\": task_id}\n\n, error)\nprint(",
+      "char_count": 23453,
+      "indexed_char_count": 1895
+    }
+  ],
+  "ui_text_items": [
+    {
+      "kind": "ui_text",
+      "file": "openapi.yaml",
+      "line": 1,
+      "text": "TasksChat API\nAPI for interacting with Google Tasks through TasksChat.\nList all Google Task Lists\nA list of task lists\nList tasks inside a specific Google Task List\nA list of tasks\nCreate a new task in a list\nTask created\nUpdate a task's title, notes, or due date\nTask updated\nMark a task as completed\nTask marked completed\nMark a task as not completed\nTask marked uncompleted\nStar a task (importance = high)\nTask starred\nUnstar a task (importance = normal)\nTask unstarred\nDelete a task\nTask deleted",
+      "char_count": 6314,
+      "indexed_char_count": 499
+    },
+    {
+      "kind": "ui_text",
+      "file": "privacy.html",
+      "line": 1,
+      "text": "Privacy Policy",
+      "char_count": 3862,
+      "indexed_char_count": 14
+    },
+    {
+      "kind": "ui_text",
+      "file": "render.yaml",
+      "line": 1,
+      "text": "finallydoneapp-api",
+      "char_count": 191,
+      "indexed_char_count": 18
+    },
+    {
+      "kind": "ui_text",
+      "file": "taskschat-openapi.json",
+      "line": 1,
+      "text": "TasksChat API\nAPI for interacting with Google Tasks through TasksChat.\nList all Google Task Lists\nA list of task lists\nList tasks inside a specific Google Task List\nlistId\nA list of tasks\nCreate a new task in a list\ntitle\nnotes\ndue\nTask created\nUpdate a task's title, notes, or due date\ntask_id\nTask updated\nMark a task as completed\nTask marked completed\nMark a task as not completed\nTask marked uncompleted\nStar a task (importance = high)\nTask starred\nUnstar a task (importance = normal)\nTask unstarred\nDelete a task\nTask deleted",
+      "char_count": 9318,
+      "indexed_char_count": 530
+    },
+    {
+      "kind": "ui_text",
+      "file": "terms.html",
+      "line": 1,
+      "text": "Terms of Service\n1. Use of the Service\n2. Accounts\n3. Privacy\nPrivacy Policy\n4. Intellectual Property\n5. User Content\n6. Prohibited Activities\n7. Termination\n8. Disclaimer of Warranties\n9. Limitation of Liability\n10. Changes to These Terms\n11. Contact Us",
+      "char_count": 3475,
+      "indexed_char_count": 254
+    },
+    {
+      "kind": "ui_text",
+      "file": "static/privacy.html",
+      "line": 1,
+      "text": "Privacy Policy",
+      "char_count": 3890,
+      "indexed_char_count": 14
+    },
+    {
+      "kind": "ui_text",
+      "file": "static/taskschat.html",
+      "line": 1,
+      "text": "TaskChat\nSign in with Google Tasks\nChat with my Tasks\nAdd Task\nTasks\nCompleted \u25bc",
+      "char_count": 6072,
+      "indexed_char_count": 80
+    },
+    {
+      "kind": "ui_text",
+      "file": "static/terms.html",
+      "line": 1,
+      "text": "Terms of Service\n1. Use of the Service\n2. Accounts\n3. Privacy\nPrivacy Policy\n4. Intellectual Property\n5. User Content\n6. Prohibited Activities\n7. Termination\n8. Disclaimer of Warranties\n9. Limitation of Liability\n10. Changes to These Terms\n11. Contact Us",
+      "char_count": 3475,
+      "indexed_char_count": 254
+    }
+  ]
+}

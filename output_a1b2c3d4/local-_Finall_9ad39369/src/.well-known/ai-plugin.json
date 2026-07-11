@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Google Tasks Chat",
+  "name_for_model": "google_tasks_chat",
+  "description_for_human": "Chat with your Google Tasks. Create, update, complete, and organize tasks using natural language.",
+  "description_for_model": "Manage Google Tasks using natural language. Supports listing, creating, updating, completing, and deleting tasks through the provided API.",
+  "auth": {
+    "type": "oauth",
+    "client_url": "https://taskschat.onrender.com/oauth/google/start",
+    "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "scope": "https://www.googleapis.com/auth/tasks",
+    "authorization_content_type": "application/x-www-form-urlencoded"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://taskschat.onrender.com/taskschat-openapi.json"
+  },
+  "logo_url": "https://taskschat.onrender.com/logo.png",
+  "contact_email": "pranaysaani@gmail.com",
+  "legal_info_url": "https://taskschat.onrender.com/legal"
+}

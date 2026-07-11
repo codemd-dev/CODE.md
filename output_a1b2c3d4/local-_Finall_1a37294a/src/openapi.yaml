@@ -1,0 +1,272 @@
+openapi: 3.0.1
+info:
+  title: TasksChat API
+  description: API for interacting with Google Tasks through TasksChat.
+  version: "1.0.0"
+
+servers:
+  - url: https://chatapi.progduct.com
+
+paths:
+
+  /list-task-lists:
+    get:
+      summary: List all Google Task Lists
+      operationId: listTaskLists
+      responses:
+        "200":
+          description: A list of task lists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskList"
+
+  /list-tasks:
+    get:
+      summary: List tasks inside a specific Google Task List
+      operationId: listTasks
+      parameters:
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: A list of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+
+  /create-task:
+    post:
+      summary: Create a new task in a list
+      operationId: createTask
+      parameters:
+        - name: title
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+        - name: notes
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: due
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /update-task/{task_id}:
+    post:
+      summary: Update a task's title, notes, or due date
+      operationId: updateTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: notes
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: due
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /complete-task/{task_id}:
+    post:
+      summary: Mark a task as completed
+      operationId: completeTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: Task marked completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /uncomplete-task/{task_id}:
+    post:
+      summary: Mark a task as not completed
+      operationId: uncompleteTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: Task marked uncompleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /star-task/{task_id}:
+    post:
+      summary: Star a task (importance = high)
+      operationId: starTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: Task starred
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /unstar-task/{task_id}:
+    post:
+      summary: Unstar a task (importance = normal)
+      operationId: unstarTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: Task unstarred
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /delete-task/{task_id}:
+    delete:
+      summary: Delete a task
+      operationId: deleteTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: listId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "@default"
+      responses:
+        "200":
+          description: Task deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+
+components:
+  schemas:
+
+    TaskList:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+        due:
+          type: string
+        status:
+          type: string
+          enum: ["needsAction", "completed"]
+        importance:
+          type: string
+          enum: ["normal", "high"]
+        updated:
+          type: string

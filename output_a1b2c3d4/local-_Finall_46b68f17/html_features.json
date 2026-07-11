@@ -1,0 +1,418 @@
+{
+  "features": [
+    {
+      "name": "Privacy Policy",
+      "file": "privacy.html",
+      "context": [
+        "Information We Access",
+        "How We Use Information",
+        "Google User Data",
+        "AI Processing",
+        "Data Storage",
+        "Data Sharing",
+        "Security",
+        "User Control",
+        "Data Retention",
+        "Children’s Privacy",
+        "Changes to This Policy",
+        "Contact Us",
+        "finally-done-group@googlegroups.com"
+      ],
+      "tag": "main",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Terms of Service",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h1",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "1. Use of the Service",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "2. Accounts",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "3. Privacy",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Privacy Policy",
+      "file": "terms.html",
+      "context": [],
+      "tag": "a",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "4. Intellectual Property",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "5. User Content",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "6. Prohibited Activities",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "7. Termination",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "8. Disclaimer of Warranties",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "9. Limitation of Liability",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "10. Changes to These Terms",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "11. Contact Us",
+      "file": "terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Privacy Policy",
+      "file": "static/privacy.html",
+      "context": [
+        "Information We Access",
+        "How We Use Information",
+        "Google User Data",
+        "AI Processing",
+        "Data Storage",
+        "Data Sharing",
+        "Security",
+        "User Control",
+        "Data Retention",
+        "Children’s Privacy",
+        "Changes to This Policy",
+        "Contact Us",
+        "finally-done-group@googlegroups.com"
+      ],
+      "tag": "main",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "TaskChat",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "h1",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Sign in with Google Tasks",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "button",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Chat with my Tasks",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "button",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Add Task",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "button",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Tasks",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "h2",
+      "id": "currentListTitle",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Completed ▼",
+      "file": "static/taskschat.html",
+      "context": [],
+      "tag": "h3",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Terms of Service",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h1",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "1. Use of the Service",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "2. Accounts",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "3. Privacy",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "Privacy Policy",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "a",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "4. Intellectual Property",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "5. User Content",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "6. Prohibited Activities",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "7. Termination",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "8. Disclaimer of Warranties",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "9. Limitation of Liability",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "10. Changes to These Terms",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    },
+    {
+      "name": "11. Contact Us",
+      "file": "static/terms.html",
+      "context": [],
+      "tag": "h2",
+      "id": "",
+      "role": "",
+      "source": "html_section"
+    }
+  ],
+  "buttons": [
+    {
+      "label": "finally-done-group@googlegroups.com",
+      "file": "privacy.html",
+      "tag": "a",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "Privacy Policy",
+      "file": "terms.html",
+      "tag": "a",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "finally-done-group@googlegroups.com",
+      "file": "static/privacy.html",
+      "tag": "a",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "Sign in with Google Tasks",
+      "file": "static/taskschat.html",
+      "tag": "button",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "Chat with my Tasks",
+      "file": "static/taskschat.html",
+      "tag": "button",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "New task title",
+      "file": "static/taskschat.html",
+      "tag": "input",
+      "id": "addTaskInput",
+      "role": ""
+    },
+    {
+      "label": "Add Task",
+      "file": "static/taskschat.html",
+      "tag": "button",
+      "id": "",
+      "role": ""
+    },
+    {
+      "label": "Privacy Policy",
+      "file": "static/terms.html",
+      "tag": "a",
+      "id": "",
+      "role": ""
+    }
+  ],
+  "routes": [
+    {
+      "endpoint": "https://finallydoneapp.com/privacy",
+      "file": "terms.html",
+      "source": "a"
+    },
+    {
+      "endpoint": "https://finallydoneapp.com/privacy",
+      "file": "static/terms.html",
+      "source": "a"
+    }
+  ],
+  "files": [
+    "privacy.html",
+    "terms.html",
+    "static/privacy.html",
+    "static/taskschat.html",
+    "static/terms.html"
+  ],
+  "feature_count": 34,
+  "button_count": 8,
+  "route_count": 2
+}

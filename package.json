@@ -1,0 +1,170 @@
+{
+  "name": "codeval-codemd-graphs",
+  "displayName": "CODE.md",
+  "description": "Search this workspace with local CODE.md analysis and interactive graph browsing.",
+  "version": "0.0.31",
+  "publisher": "codeval",
+  "homepage": "https://www.codemd.dev",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pranaysaani/CODE.md.vscode.git",
+    "directory": "vscode-extension-graphs"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codemd",
+    "onCommand:codemdGraphs.open",
+    "onCommand:codemdGraphs.openEditor",
+    "onCommand:codemdGraphs.generate",
+    "onCommand:codemdGraphs.setupMcp",
+    "onCommand:codemdGraphs.stopServer",
+    "onCommand:codemdlocal.generate",
+    "onCommand:codemdLocal.generate",
+    "onView:codemdGraphs.panel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codemdGraphs",
+          "title": "CODE.md",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codemdGraphs": [
+        {
+          "id": "codemdGraphs.panel",
+          "name": "CODE.md",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codemd",
+        "title": "Open CODE.md"
+      },
+      {
+        "command": "codemdGraphs.open",
+        "title": "Open CODE.md"
+      },
+      {
+        "command": "codemdGraphs.openEditor",
+        "title": "Open CODE.md in Editor"
+      },
+      {
+        "command": "codemdGraphs.generate",
+        "title": "Generate CODE.md",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codemdGraphs.setupMcp",
+        "title": "CODE.md: Set Up MCP"
+      },
+      {
+        "command": "codemdlocal.generate",
+        "title": "Generate CODE.md"
+      },
+      {
+        "command": "codemdLocal.generate",
+        "title": "Generate CODE.md"
+      },
+      {
+        "command": "codemdGraphs.stopServer",
+        "title": "CODE.md: Stop Local Server"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codemdGraphs.generate",
+          "when": "view == codemdGraphs.panel",
+          "group": "navigation"
+        }
+      ]
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "codemdGraphs.mcp",
+        "label": "CODE.md MCP"
+      }
+    ],
+    "configuration": {
+      "title": "CODE.md",
+      "properties": {
+        "codemdGraphs.autoWriteProjectMcpConfig": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write the project-scoped .mcp.json file when a workspace opens."
+        },
+        "codemdGraphs.autoReveal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the CODE.md panel when a workspace loads, so the callgraph appears without needing to click the CODE.md activity bar icon first."
+        },
+        "codemdGraphs.backendDir": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the folder containing the CodeVal FastAPI app (main.py). Leave empty to use the backend bundled with this extension (backend/), or, if that's not present, the open workspace if it is the CodeVal repo itself; otherwise you'll be prompted to pick the folder once, and the choice is saved here."
+        },
+        "codemdGraphs.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to launch the local FastAPI server. Leave unset (default) to have the extension auto-create and manage an isolated virtual environment with the required dependencies in global storage. Set this explicitly to use a specific interpreter instead — in that case it must already have backend/requirements.txt installed."
+        },
+        "codemdGraphs.analysisMode": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "server"
+          ],
+          "default": "cli",
+          "description": "How Generate CODE.md runs local analysis. Use cli for the default local subprocess path; use server to force the FastAPI workflow."
+        },
+        "codemdGraphs.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host the local FastAPI server binds to."
+        },
+        "codemdGraphs.port": {
+          "type": "number",
+          "default": 8100,
+          "description": "Port the local FastAPI server binds to."
+        },
+        "codemdGraphs.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional glob patterns to exclude when zipping the workspace for analysis, on top of the built-in defaults (.git, node_modules, venvs, build output)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "copy-backend": "node scripts/copy-backend.js",
+    "compile": "npm run copy-backend && tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "undici": "^8.7.0"
+  }
+}
