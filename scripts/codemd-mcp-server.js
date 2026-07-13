@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SERVER_NAME = 'codemd';
+const SERVER_NAME = 'CODE.md MCP';
 const SERVER_VERSION = '0.0.24';
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -16,6 +16,7 @@ function argValue(name) {
 const workspaceRoot = path.resolve(argValue('--workspace') || process.env.CODEMD_WORKSPACE || process.cwd());
 const artifactRoot = path.join(workspaceRoot, 'codemd.dev');
 const usagePath = path.join(artifactRoot, '.mcp-usage.json');
+const RESOURCE_SCHEME = 'codemd';
 
 function safeJoin(root, relPath) {
   const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
@@ -47,6 +48,19 @@ function textResult(text) {
   return { content: [{ type: 'text', text: String(text || '') }] };
 }
 
+function resourceUriForPath(relPath) {
+  return `${RESOURCE_SCHEME}://artifact/${encodeURIComponent(String(relPath || 'CODE.md'))}`;
+}
+
+function relPathFromResourceUri(uri) {
+  const text = String(uri || '');
+  const prefix = `${RESOURCE_SCHEME}://artifact/`;
+  if (!text.startsWith(prefix)) {
+    throw new Error(`Unsupported CODE.md resource URI: ${uri}`);
+  }
+  return decodeURIComponent(text.slice(prefix.length)) || 'CODE.md';
+}
+
 // Populated from the MCP `initialize` handshake's `clientInfo` field (see
 // handleRequest below). Each stdio MCP client (Claude Code, Codex, etc.)
 // spawns its own instance of this script per session, so this is stable for
@@ -57,7 +71,7 @@ let currentClient = { name: 'unknown', version: '' };
 function readUsage() {
   try {
     if (!fs.existsSync(usagePath)) {
-      return { total_calls: 0, tools: {}, clients: {}, tools_by_client: {}, updated_at: '' };
+      return { total_calls: 0, tools: {}, clients: {}, tools_by_client: {}, resources: {}, updated_at: '' };
     }
     const usage = JSON.parse(fs.readFileSync(usagePath, 'utf8'));
     return {
@@ -65,23 +79,27 @@ function readUsage() {
       tools: usage.tools && typeof usage.tools === 'object' ? usage.tools : {},
       clients: usage.clients && typeof usage.clients === 'object' ? usage.clients : {},
       tools_by_client: usage.tools_by_client && typeof usage.tools_by_client === 'object' ? usage.tools_by_client : {},
+      resources: usage.resources && typeof usage.resources === 'object' ? usage.resources : {},
       updated_at: String(usage.updated_at || ''),
     };
   } catch {
-    return { total_calls: 0, tools: {}, clients: {}, tools_by_client: {}, updated_at: '' };
+    return { total_calls: 0, tools: {}, clients: {}, tools_by_client: {}, resources: {}, updated_at: '' };
   }
 }
 
-function recordUsage(toolName) {
+function recordUsage(kind, name) {
   fs.mkdirSync(artifactRoot, { recursive: true });
   const usage = readUsage();
   usage.total_calls += 1;
-  usage.tools[toolName] = Number(usage.tools[toolName] || 0) + 1;
+  const bucketName = kind === 'resource' ? 'resources' : 'tools';
+  usage[bucketName] = usage[bucketName] && typeof usage[bucketName] === 'object' ? usage[bucketName] : {};
+  usage[bucketName][name] = Number(usage[bucketName][name] || 0) + 1;
 
   const clientKey = currentClient.name || 'unknown';
   usage.clients[clientKey] = Number(usage.clients[clientKey] || 0) + 1;
   usage.tools_by_client[clientKey] = usage.tools_by_client[clientKey] || {};
-  usage.tools_by_client[clientKey][toolName] = Number(usage.tools_by_client[clientKey][toolName] || 0) + 1;
+  const clientUsageKey = kind === 'resource' ? `resource:${name}` : name;
+  usage.tools_by_client[clientKey][clientUsageKey] = Number(usage.tools_by_client[clientKey][clientUsageKey] || 0) + 1;
 
   usage.updated_at = new Date().toISOString();
   fs.writeFileSync(usagePath, `${JSON.stringify(usage, null, 2)}\n`, 'utf8');
@@ -123,6 +141,47 @@ function readArtifact(args) {
     return `Artifact not found: ${relPath}\nWorkspace: ${workspaceRoot}`;
   }
   return text;
+}
+
+function listArtifactResources() {
+  const candidates = [
+    { path: 'CODE.md', name: 'CODE.md', mimeType: 'text/markdown', description: 'Compact generated repository overview.' },
+    { path: 'repo_stats.json', name: 'Repository Stats', mimeType: 'application/json', description: 'Lightweight repository facts.' },
+    { path: 'repo_text.json', name: 'Repository Text', mimeType: 'application/json', description: 'Extracted README, docs, and UI text.' },
+    { path: 'combined_callgraph/combined_callgraph.json', name: 'Combined Callgraph', mimeType: 'application/json', description: 'Merged graph of repository entry points, calls, routes, and UI structure.' },
+    { path: 'python/python_callgraph.json', name: 'Python Callgraph', mimeType: 'application/json', description: 'Function-level Python callgraph, when Python was present.' },
+    { path: 'javascript/javascript_callgraph.json', name: 'JavaScript Callgraph', mimeType: 'application/json', description: 'Function-level JavaScript/TypeScript callgraph, when JavaScript was present.' },
+    { path: 'file_graph/file_graph.json', name: 'File Dependency Graph', mimeType: 'application/json', description: 'File dependency and navigation graph.' },
+    { path: 'html_ui/html_ui_graph.json', name: 'HTML UI Graph', mimeType: 'application/json', description: 'DOM and UI element graph for buttons, links, inputs, and forms.' },
+  ];
+  return candidates
+    .filter((entry) => fs.existsSync(path.join(artifactRoot, entry.path)))
+    .map((entry) => ({
+      uri: resourceUriForPath(entry.path),
+      name: entry.name,
+      description: entry.description,
+      mimeType: entry.mimeType,
+    }));
+}
+
+function readArtifactResource(uri) {
+  const relPath = relPathFromResourceUri(uri);
+  const filePath = safeJoin(artifactRoot, relPath);
+  const text = readTextIfExists(filePath, 2_000_000);
+  if (!text) {
+    throw new Error(`Artifact not found: ${relPath}`);
+  }
+  recordUsage('resource', relPath);
+  const mimeType = relPath.endsWith('.json') ? 'application/json' : relPath.endsWith('.md') ? 'text/markdown' : 'text/plain';
+  return {
+    contents: [
+      {
+        uri: resourceUriForPath(relPath),
+        mimeType,
+        text,
+      },
+    ],
+  };
 }
 
 function flattenTextEntries(value, prefix = '') {
@@ -842,10 +901,20 @@ function handleRequest(message) {
       id,
       result: {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       },
     };
+  }
+  if (method === 'resources/list') {
+    return { jsonrpc: '2.0', id, result: { resources: listArtifactResources() } };
+  }
+  if (method === 'resources/read') {
+    try {
+      return { jsonrpc: '2.0', id, result: readArtifactResource(params.uri) };
+    } catch (err) {
+      return { jsonrpc: '2.0', id, error: { code: -32602, message: err?.message || String(err) } };
+    }
   }
   if (method === 'tools/list') {
     return { jsonrpc: '2.0', id, result: { tools } };
@@ -854,31 +923,31 @@ function handleRequest(message) {
     const name = params.name;
     const args = params.arguments || {};
     if (name === 'codemd_status') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(JSON.stringify(artifactStatus(), null, 2)) };
     }
     if (name === 'codemd_read_artifact') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(readArtifact(args)) };
     }
     if (name === 'codemd_search_artifacts') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(searchArtifacts(args)) };
     }
     if (name === 'codemd_get_call_paths') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(findCallPaths(args)) };
     }
     if (name === 'codemd_get_impact_radius') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(impactRadius(args)) };
     }
     if (name === 'codemd_get_callers') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(callersOrCallees(args, 'backward')) };
     }
     if (name === 'codemd_get_callees') {
-      recordUsage(name);
+      recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(callersOrCallees(args, 'forward')) };
     }
     return { jsonrpc: '2.0', id, error: { code: -32601, message: `Unknown tool: ${name}` } };

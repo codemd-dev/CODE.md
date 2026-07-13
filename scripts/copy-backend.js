@@ -1,17 +1,18 @@
-// Bundles the CodeVal FastAPI backend into vscode-extension-graphs/backend/ so the
-// packaged extension is self-contained and does not depend on the CodeVal repo
-// existing at some other path on disk. The repo root (one level up) remains the
-// single source of truth; this script just mirrors it before compile/package.
+// Bundles the analyzer backend into this extension so packaged installs do not
+// depend on a development checkout at a particular path. Set
+// CODEMD_BACKEND_SOURCE_DIR to refresh backend/ from an explicit source tree.
 const fs = require('fs');
 const path = require('path');
 
-const repoRoot = path.resolve(__dirname, '..', '..');
+const repoRoot = process.env.CODEMD_BACKEND_SOURCE_DIR
+  ? path.resolve(process.env.CODEMD_BACKEND_SOURCE_DIR)
+  : '';
 const backendDir = path.resolve(__dirname, '..', 'backend');
 
 const ENTRIES = ['main.py', 'scim.py', 'supabase_client.py', 'requirements.txt', 'features', 'parsers', 'static', 'templates', 'lib'];
 
-if (!fs.existsSync(path.join(repoRoot, 'main.py'))) {
-  console.error(`copy-backend: could not find main.py in "${repoRoot}". Skipping backend bundling.`);
+if (!repoRoot || !fs.existsSync(path.join(repoRoot, 'main.py'))) {
+  console.error('copy-backend: CODEMD_BACKEND_SOURCE_DIR was not set to a backend containing main.py. Keeping existing bundled backend.');
   process.exit(0);
 }
 
@@ -22,7 +23,7 @@ try {
 } catch (err) {
   console.error(
     `copy-backend: could not clear "${backendDir}" (${err.message}). ` +
-      'Stop any running "codemd.dev (Graphs)" server (or Extension Development Host) and try again.',
+      'Stop any running CODE.md analyzer server (or Extension Development Host) and try again.',
   );
   process.exit(1);
 }

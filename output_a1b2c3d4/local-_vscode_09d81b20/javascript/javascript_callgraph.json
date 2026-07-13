@@ -1,0 +1,739 @@
+{
+  "mode": "javascript_regex_static",
+  "parser": "javascript-regex",
+  "nodes": [
+    "backend.static.autotrack.codevalAutoTrackConfig",
+    "backend.static.autotrack.codevalCleanText",
+    "backend.static.autotrack.codevalClickContextPayload",
+    "backend.static.autotrack.codevalElementFunctionName",
+    "backend.static.autotrack.codevalEndpointName",
+    "backend.static.autotrack.codevalErrorNode",
+    "backend.static.autotrack.codevalGtagEvent",
+    "backend.static.autotrack.codevalInlineHandlerName",
+    "backend.static.autotrack.codevalInputValue",
+    "backend.static.autotrack.codevalLastTrigger",
+    "backend.static.autotrack.codevalLooksLikeUiError",
+    "backend.static.autotrack.codevalMixpanelEvent",
+    "backend.static.autotrack.codevalRecentClick",
+    "backend.static.autotrack.codevalRepositoryContext",
+    "backend.static.autotrack.codevalSafeRequestUrl",
+    "backend.static.autotrack.codevalShouldIgnoreFetch",
+    "backend.static.autotrack.codevalStackContextPayload",
+    "backend.static.autotrack.codevalStackHash",
+    "backend.static.autotrack.codevalStackTopFrame",
+    "backend.static.autotrack.codevalTrackErrorEvent",
+    "backend.static.autotrack.codevalUrlInfo",
+    "backend.static.autotrack.gtag",
+    "backend.static.autotrack.inspectNode",
+    "backend.static.autotrack_core.cleanProperties",
+    "backend.static.autotrack_core.cleanText",
+    "backend.static.autotrack_core.clickContextPayload",
+    "backend.static.autotrack_core.domPath",
+    "backend.static.autotrack_core.elementFunctionName",
+    "backend.static.autotrack_core.elementName",
+    "backend.static.autotrack_core.endpointName",
+    "backend.static.autotrack_core.inlineHandlerName",
+    "backend.static.autotrack_core.inputValue",
+    "backend.static.autotrack_core.inspectUiMessageNode",
+    "backend.static.autotrack_core.looksLikeUiError",
+    "backend.static.autotrack_core.recentClick",
+    "backend.static.autotrack_core.repositoryContext",
+    "backend.static.autotrack_core.safeRequestUrl",
+    "backend.static.autotrack_core.shouldIgnoreFetch",
+    "backend.static.autotrack_core.sourceName",
+    "backend.static.autotrack_core.stackContextPayload",
+    "backend.static.autotrack_core.stackHash",
+    "backend.static.autotrack_core.stackTopFrame",
+    "backend.static.autotrack_core.urlInfo",
+    "backend.static.autotrack_ga.ensureGtag",
+    "backend.static.autotrack_ga.install",
+    "backend.static.autotrack_ga.track",
+    "backend.static.autotrack_mixpanel.cleanProperties",
+    "backend.static.autotrack_mixpanel.initMixpanel",
+    "backend.static.autotrack_mixpanel.install",
+    "backend.static.autotrack_mixpanel.track",
+    "backend.static.autotrack_sentry.initSentry",
+    "backend.static.autotrack_sentry.install",
+    "backend.static.autotrack_sentry.setContext",
+    "backend.static.autotrack_sentry.track",
+    "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+    "backend.static.mixpanel-integration.connectMixpanel",
+    "backend.static.mixpanel-integration.createMixpanelEventGraph",
+    "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+    "backend.static.mixpanel-integration.mixpanelCurrentAnalysisRunId",
+    "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+    "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+    "backend.static.mixpanel-integration.mixpanelFindingId",
+    "backend.static.mixpanel-integration.mixpanelHashText",
+    "backend.static.mixpanel-integration.mixpanelRowIsBugCandidate",
+    "backend.static.mixpanel-integration.parseGitHubRepo",
+    "backend.static.mixpanel-integration.renderMixpanelEventsTable",
+    "backend.static.mixpanel-integration.resolveMixpanelBug",
+    "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus",
+    "backend.static.mixpanel-integration.setMixpanelBugReview",
+    "backend.static.mixpanel-integration.setMixpanelBugStatus",
+    "backend.static.mixpanel-integration.setMixpanelPreview",
+    "backend.static.mixpanel-integration.setMixpanelStatus",
+    "backend.static.mixpanel-integration.setupMixpanelActivityTracking",
+    "backend.static.mixpanel-integration.validateMixpanelBug",
+    "backend.static.mixpanel.cleanProperties",
+    "backend.static.mixpanel.cleanValue",
+    "backend.static.mixpanel.identifyGitHubUser",
+    "backend.static.mixpanel.init",
+    "backend.static.mixpanel.installLogoutReset",
+    "backend.static.mixpanel.reset",
+    "backend.static.mixpanel.track",
+    "backend.static.mixpanel.trackSearchAnswerGenerated",
+    "backend.static.mixpanel.trackSignUpCompleted",
+    "backend.static.mixpanel.urlPath",
+    "backend.static.mixpanel.userId",
+    "scripts.codemd-mcp-server.addEdge",
+    "scripts.codemd-mcp-server.addEdgesFromGraph",
+    "scripts.codemd-mcp-server.addMatch",
+    "scripts.codemd-mcp-server.argValue",
+    "scripts.codemd-mcp-server.arraysEqual",
+    "scripts.codemd-mcp-server.artifactStatus",
+    "scripts.codemd-mcp-server.bfsFrom",
+    "scripts.codemd-mcp-server.callersOrCallees",
+    "scripts.codemd-mcp-server.classifyParserTier",
+    "scripts.codemd-mcp-server.edgeConfidence",
+    "scripts.codemd-mcp-server.edgeKey",
+    "scripts.codemd-mcp-server.findCallPaths",
+    "scripts.codemd-mcp-server.flattenTextEntries",
+    "scripts.codemd-mcp-server.functionTail",
+    "scripts.codemd-mcp-server.handleRequest",
+    "scripts.codemd-mcp-server.impactRadius",
+    "scripts.codemd-mcp-server.kShortestPaths",
+    "scripts.codemd-mcp-server.loadImpactGraph",
+    "scripts.codemd-mcp-server.mergeLocationIndex",
+    "scripts.codemd-mcp-server.nodeConfidenceMap",
+    "scripts.codemd-mcp-server.nodeRows",
+    "scripts.codemd-mcp-server.pathDepth",
+    "scripts.codemd-mcp-server.processBuffer",
+    "scripts.codemd-mcp-server.readArtifact",
+    "scripts.codemd-mcp-server.readJsonIfExists",
+    "scripts.codemd-mcp-server.readTextIfExists",
+    "scripts.codemd-mcp-server.readUsage",
+    "scripts.codemd-mcp-server.recordEdgeInfo",
+    "scripts.codemd-mcp-server.recordUsage",
+    "scripts.codemd-mcp-server.resolveNodes",
+    "scripts.codemd-mcp-server.safeJoin",
+    "scripts.codemd-mcp-server.searchArtifacts",
+    "scripts.codemd-mcp-server.send",
+    "scripts.codemd-mcp-server.summarizeConfidence",
+    "scripts.codemd-mcp-server.textResult",
+    "scripts.codemd-mcp-server.traverse",
+    "src.extension.activate",
+    "src.extension.check",
+    "src.extension.deactivate",
+    "src.extension.stopServer"
+  ],
+  "edges": [
+    [
+      "backend.static.autotrack.codevalClickContextPayload",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalClickContextPayload",
+      "backend.static.autotrack.codevalRecentClick"
+    ],
+    [
+      "backend.static.autotrack.codevalElementFunctionName",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalElementFunctionName",
+      "backend.static.autotrack.codevalInlineHandlerName"
+    ],
+    [
+      "backend.static.autotrack.codevalEndpointName",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalEndpointName",
+      "backend.static.autotrack.codevalUrlInfo"
+    ],
+    [
+      "backend.static.autotrack.codevalErrorNode",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalInlineHandlerName",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalInputValue",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalLastTrigger",
+      "backend.static.autotrack.codevalRecentClick"
+    ],
+    [
+      "backend.static.autotrack.codevalMixpanelEvent",
+      "backend.static.mixpanel.track"
+    ],
+    [
+      "backend.static.autotrack.codevalRepositoryContext",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalSafeRequestUrl",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalSafeRequestUrl",
+      "backend.static.autotrack.codevalUrlInfo"
+    ],
+    [
+      "backend.static.autotrack.codevalShouldIgnoreFetch",
+      "backend.static.autotrack.codevalUrlInfo"
+    ],
+    [
+      "backend.static.autotrack.codevalStackTopFrame",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack.codevalTrackErrorEvent",
+      "backend.static.autotrack.codevalErrorNode"
+    ],
+    [
+      "backend.static.autotrack.codevalTrackErrorEvent",
+      "backend.static.autotrack.codevalGtagEvent"
+    ],
+    [
+      "backend.static.autotrack.codevalTrackErrorEvent",
+      "backend.static.autotrack.codevalMixpanelEvent"
+    ],
+    [
+      "backend.static.autotrack.codevalTrackErrorEvent",
+      "backend.static.autotrack.codevalRepositoryContext"
+    ],
+    [
+      "backend.static.autotrack.inspectNode",
+      "backend.static.autotrack.codevalCleanText"
+    ],
+    [
+      "backend.static.autotrack_core.clickContextPayload",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.clickContextPayload",
+      "backend.static.autotrack_core.recentClick"
+    ],
+    [
+      "backend.static.autotrack_core.domPath",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.elementFunctionName",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.elementFunctionName",
+      "backend.static.autotrack_core.inlineHandlerName"
+    ],
+    [
+      "backend.static.autotrack_core.elementName",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.endpointName",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.endpointName",
+      "backend.static.autotrack_core.urlInfo"
+    ],
+    [
+      "backend.static.autotrack_core.inlineHandlerName",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.inputValue",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.inspectUiMessageNode",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.inspectUiMessageNode",
+      "backend.static.autotrack_core.looksLikeUiError"
+    ],
+    [
+      "backend.static.autotrack_core.inspectUiMessageNode",
+      "backend.static.autotrack_core.recentClick"
+    ],
+    [
+      "backend.static.autotrack_core.inspectUiMessageNode",
+      "backend.static.autotrack_core.sourceName"
+    ],
+    [
+      "backend.static.autotrack_core.repositoryContext",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.safeRequestUrl",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.safeRequestUrl",
+      "backend.static.autotrack_core.urlInfo"
+    ],
+    [
+      "backend.static.autotrack_core.shouldIgnoreFetch",
+      "backend.static.autotrack_core.urlInfo"
+    ],
+    [
+      "backend.static.autotrack_core.sourceName",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_core.stackTopFrame",
+      "backend.static.autotrack_core.cleanText"
+    ],
+    [
+      "backend.static.autotrack_mixpanel.initMixpanel",
+      "backend.static.mixpanel.init"
+    ],
+    [
+      "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "backend.static.mixpanel-integration.mixpanelFindingFromRow"
+    ],
+    [
+      "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "backend.static.mixpanel-integration.setMixpanelBugReview"
+    ],
+    [
+      "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "backend.static.mixpanel-integration.setMixpanelBugStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.connectMixpanel",
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.connectMixpanel",
+      "backend.static.mixpanel-integration.setMixpanelPreview"
+    ],
+    [
+      "backend.static.mixpanel-integration.connectMixpanel",
+      "backend.static.mixpanel-integration.setMixpanelStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.createMixpanelEventGraph",
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "backend.static.mixpanel-integration.renderMixpanelEventsTable"
+    ],
+    [
+      "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "backend.static.mixpanel-integration.setMixpanelPreview"
+    ],
+    [
+      "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "backend.static.mixpanel-integration.setMixpanelStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "backend.static.mixpanel-integration.parseGitHubRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+      "backend.static.mixpanel-integration.mixpanelFindingId"
+    ],
+    [
+      "backend.static.mixpanel-integration.renderMixpanelEventsTable",
+      "backend.static.mixpanel-integration.mixpanelRowIsBugCandidate"
+    ],
+    [
+      "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "backend.static.mixpanel-integration.mixpanelCurrentAnalysisRunId"
+    ],
+    [
+      "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "backend.static.mixpanel-integration.mixpanelFindingFromRow"
+    ],
+    [
+      "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "backend.static.mixpanel-integration.renderMixpanelEventsTable"
+    ],
+    [
+      "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "backend.static.mixpanel-integration.setMixpanelBugReview"
+    ],
+    [
+      "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "backend.static.mixpanel-integration.setMixpanelBugStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus",
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus",
+      "backend.static.mixpanel-integration.setMixpanelStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.setupMixpanelActivityTracking",
+      "backend.static.mixpanel-integration.mixpanelCurrentRepo"
+    ],
+    [
+      "backend.static.mixpanel-integration.setupMixpanelActivityTracking",
+      "backend.static.mixpanel-integration.setMixpanelStatus"
+    ],
+    [
+      "backend.static.mixpanel-integration.validateMixpanelBug",
+      "backend.static.mixpanel-integration.mixpanelFindingFromRow"
+    ],
+    [
+      "backend.static.mixpanel-integration.validateMixpanelBug",
+      "backend.static.mixpanel-integration.setMixpanelBugReview"
+    ],
+    [
+      "backend.static.mixpanel-integration.validateMixpanelBug",
+      "backend.static.mixpanel-integration.setMixpanelBugStatus"
+    ],
+    [
+      "backend.static.mixpanel.installLogoutReset",
+      "backend.static.mixpanel.reset"
+    ],
+    [
+      "backend.static.mixpanel.installLogoutReset",
+      "backend.static.mixpanel.urlPath"
+    ],
+    [
+      "backend.static.mixpanel.reset",
+      "backend.static.mixpanel.init"
+    ],
+    [
+      "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "scripts.codemd-mcp-server.addEdge"
+    ],
+    [
+      "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "scripts.codemd-mcp-server.classifyParserTier"
+    ],
+    [
+      "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "scripts.codemd-mcp-server.recordEdgeInfo"
+    ],
+    [
+      "scripts.codemd-mcp-server.bfsFrom",
+      "scripts.codemd-mcp-server.edgeKey"
+    ],
+    [
+      "scripts.codemd-mcp-server.bfsFrom",
+      "scripts.codemd-mcp-server.pathDepth"
+    ],
+    [
+      "scripts.codemd-mcp-server.callersOrCallees",
+      "scripts.codemd-mcp-server.impactRadius"
+    ],
+    [
+      "scripts.codemd-mcp-server.edgeConfidence",
+      "scripts.codemd-mcp-server.edgeKey"
+    ],
+    [
+      "scripts.codemd-mcp-server.findCallPaths",
+      "scripts.codemd-mcp-server.edgeConfidence"
+    ],
+    [
+      "scripts.codemd-mcp-server.findCallPaths",
+      "scripts.codemd-mcp-server.kShortestPaths"
+    ],
+    [
+      "scripts.codemd-mcp-server.findCallPaths",
+      "scripts.codemd-mcp-server.loadImpactGraph"
+    ],
+    [
+      "scripts.codemd-mcp-server.findCallPaths",
+      "scripts.codemd-mcp-server.resolveNodes"
+    ],
+    [
+      "scripts.codemd-mcp-server.findCallPaths",
+      "scripts.codemd-mcp-server.summarizeConfidence"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.artifactStatus"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.callersOrCallees"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.findCallPaths"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.impactRadius"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.readArtifact"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.recordUsage"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.searchArtifacts"
+    ],
+    [
+      "scripts.codemd-mcp-server.handleRequest",
+      "scripts.codemd-mcp-server.textResult"
+    ],
+    [
+      "scripts.codemd-mcp-server.impactRadius",
+      "scripts.codemd-mcp-server.loadImpactGraph"
+    ],
+    [
+      "scripts.codemd-mcp-server.impactRadius",
+      "scripts.codemd-mcp-server.nodeRows"
+    ],
+    [
+      "scripts.codemd-mcp-server.impactRadius",
+      "scripts.codemd-mcp-server.resolveNodes"
+    ],
+    [
+      "scripts.codemd-mcp-server.impactRadius",
+      "scripts.codemd-mcp-server.summarizeConfidence"
+    ],
+    [
+      "scripts.codemd-mcp-server.impactRadius",
+      "scripts.codemd-mcp-server.traverse"
+    ],
+    [
+      "scripts.codemd-mcp-server.kShortestPaths",
+      "scripts.codemd-mcp-server.arraysEqual"
+    ],
+    [
+      "scripts.codemd-mcp-server.kShortestPaths",
+      "scripts.codemd-mcp-server.bfsFrom"
+    ],
+    [
+      "scripts.codemd-mcp-server.kShortestPaths",
+      "scripts.codemd-mcp-server.edgeKey"
+    ],
+    [
+      "scripts.codemd-mcp-server.kShortestPaths",
+      "scripts.codemd-mcp-server.pathDepth"
+    ],
+    [
+      "scripts.codemd-mcp-server.loadImpactGraph",
+      "scripts.codemd-mcp-server.addEdgesFromGraph"
+    ],
+    [
+      "scripts.codemd-mcp-server.loadImpactGraph",
+      "scripts.codemd-mcp-server.mergeLocationIndex"
+    ],
+    [
+      "scripts.codemd-mcp-server.loadImpactGraph",
+      "scripts.codemd-mcp-server.readJsonIfExists"
+    ],
+    [
+      "scripts.codemd-mcp-server.nodeRows",
+      "scripts.codemd-mcp-server.nodeConfidenceMap"
+    ],
+    [
+      "scripts.codemd-mcp-server.processBuffer",
+      "scripts.codemd-mcp-server.handleRequest"
+    ],
+    [
+      "scripts.codemd-mcp-server.processBuffer",
+      "scripts.codemd-mcp-server.send"
+    ],
+    [
+      "scripts.codemd-mcp-server.readArtifact",
+      "scripts.codemd-mcp-server.readTextIfExists"
+    ],
+    [
+      "scripts.codemd-mcp-server.readArtifact",
+      "scripts.codemd-mcp-server.safeJoin"
+    ],
+    [
+      "scripts.codemd-mcp-server.readJsonIfExists",
+      "scripts.codemd-mcp-server.readTextIfExists"
+    ],
+    [
+      "scripts.codemd-mcp-server.recordEdgeInfo",
+      "scripts.codemd-mcp-server.edgeKey"
+    ],
+    [
+      "scripts.codemd-mcp-server.recordUsage",
+      "scripts.codemd-mcp-server.readUsage"
+    ],
+    [
+      "scripts.codemd-mcp-server.resolveNodes",
+      "scripts.codemd-mcp-server.functionTail"
+    ],
+    [
+      "scripts.codemd-mcp-server.searchArtifacts",
+      "scripts.codemd-mcp-server.addMatch"
+    ],
+    [
+      "scripts.codemd-mcp-server.searchArtifacts",
+      "scripts.codemd-mcp-server.flattenTextEntries"
+    ],
+    [
+      "scripts.codemd-mcp-server.searchArtifacts",
+      "scripts.codemd-mcp-server.readJsonIfExists"
+    ],
+    [
+      "scripts.codemd-mcp-server.searchArtifacts",
+      "scripts.codemd-mcp-server.readTextIfExists"
+    ],
+    [
+      "scripts.codemd-mcp-server.traverse",
+      "scripts.codemd-mcp-server.edgeConfidence"
+    ],
+    [
+      "src.extension.deactivate",
+      "src.extension.stopServer"
+    ]
+  ],
+  "function_files": {
+    "backend.static.autotrack.codevalGtagEvent": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalMixpanelEvent": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalUrlInfo": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalEndpointName": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalSafeRequestUrl": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalRepositoryContext": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalShouldIgnoreFetch": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalErrorNode": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalTrackErrorEvent": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalCleanText": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalStackTopFrame": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalStackHash": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalStackContextPayload": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalRecentClick": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalLastTrigger": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalClickContextPayload": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalInputValue": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalInlineHandlerName": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalElementFunctionName": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalLooksLikeUiError": "backend/static/autotrack.js",
+    "backend.static.autotrack.inspectNode": "backend/static/autotrack.js",
+    "backend.static.autotrack.codevalAutoTrackConfig": "backend/static/autotrack.js",
+    "backend.static.autotrack.gtag": "backend/static/autotrack.js",
+    "backend.static.autotrack_core.cleanText": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.cleanProperties": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.urlInfo": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.endpointName": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.safeRequestUrl": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.shouldIgnoreFetch": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.repositoryContext": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.stackTopFrame": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.stackHash": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.stackContextPayload": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.recentClick": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.clickContextPayload": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.inputValue": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.inlineHandlerName": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.elementName": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.elementFunctionName": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.domPath": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.sourceName": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.looksLikeUiError": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_core.inspectUiMessageNode": "backend/static/autotrack_core.js",
+    "backend.static.autotrack_ga.ensureGtag": "backend/static/autotrack_ga.js",
+    "backend.static.autotrack_ga.track": "backend/static/autotrack_ga.js",
+    "backend.static.autotrack_ga.install": "backend/static/autotrack_ga.js",
+    "backend.static.autotrack_mixpanel.cleanProperties": "backend/static/autotrack_mixpanel.js",
+    "backend.static.autotrack_mixpanel.initMixpanel": "backend/static/autotrack_mixpanel.js",
+    "backend.static.autotrack_mixpanel.track": "backend/static/autotrack_mixpanel.js",
+    "backend.static.autotrack_mixpanel.install": "backend/static/autotrack_mixpanel.js",
+    "backend.static.autotrack_sentry.initSentry": "backend/static/autotrack_sentry.js",
+    "backend.static.autotrack_sentry.setContext": "backend/static/autotrack_sentry.js",
+    "backend.static.autotrack_sentry.track": "backend/static/autotrack_sentry.js",
+    "backend.static.autotrack_sentry.install": "backend/static/autotrack_sentry.js",
+    "backend.static.mixpanel-integration.parseGitHubRepo": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelCurrentRepo": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.setMixpanelStatus": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.setMixpanelPreview": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.connectMixpanel": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.setupMixpanelActivityTracking": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.renderMixpanelEventsTable": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelHashText": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelFindingId": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelRowIsBugCandidate": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelFindingFromRow": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.setMixpanelBugReview": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.setMixpanelBugStatus": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.mixpanelCurrentAnalysisRunId": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.validateMixpanelBug": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.analyzeMixpanelBugFix": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.resolveMixpanelBug": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.createMixpanelEventGraph": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.loadMixpanelUserActivity": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus": "backend/static/mixpanel-integration.js",
+    "backend.static.mixpanel.cleanValue": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.cleanProperties": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.userId": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.init": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.track": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.identifyGitHubUser": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.trackSignUpCompleted": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.trackSearchAnswerGenerated": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.reset": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.urlPath": "backend/static/mixpanel.js",
+    "backend.static.mixpanel.installLogoutReset": "backend/static/mixpanel.js",
+    "scripts.codemd-mcp-server.argValue": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.safeJoin": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.readTextIfExists": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.readJsonIfExists": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.textResult": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.readUsage": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.recordUsage": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.artifactStatus": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.readArtifact": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.flattenTextEntries": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.searchArtifacts": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.addEdge": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.classifyParserTier": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.edgeKey": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.recordEdgeInfo": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.addEdgesFromGraph": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.mergeLocationIndex": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.loadImpactGraph": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.edgeConfidence": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.summarizeConfidence": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.functionTail": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.resolveNodes": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.traverse": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.nodeConfidenceMap": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.nodeRows": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.impactRadius": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.callersOrCallees": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.pathDepth": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.arraysEqual": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.kShortestPaths": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.bfsFrom": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.findCallPaths": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.handleRequest": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.send": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.processBuffer": "scripts/codemd-mcp-server.js",
+    "scripts.codemd-mcp-server.addMatch": "scripts/codemd-mcp-server.js",
+    "src.extension.activate": "src/extension.ts",
+    "src.extension.deactivate": "src/extension.ts",
+    "src.extension.stopServer": "src/extension.ts",
+    "src.extension.check": "src/extension.ts"
+  },
+  "node_labels": {},
+  "edge_labels": {},
+  "entry_points": [],
+  "imports": {},
+  "framework": {},
+  "parse_errors": [],
+  "parse_error_count": 0
+}

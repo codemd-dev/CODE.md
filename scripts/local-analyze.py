@@ -44,6 +44,10 @@ def rewrite_html_artifact_for_webview(target, rel_path):
     prefix = html_relative_prefix(rel_path)
     rewritten = text.replace('"/lib/cytoscape/cytoscape.min.js"', f'"{prefix}lib/cytoscape/cytoscape.min.js"')
     rewritten = rewritten.replace("'/lib/cytoscape/cytoscape.min.js'", f"'{prefix}lib/cytoscape/cytoscape.min.js'")
+    rewritten = rewritten.replace(
+        "const initialElements = explicitElements.length ? explicitElements : [nodeElement(firstRoot)];",
+        "const initialElements = explicitElements.length ? explicitElements : flowElementsFor(firstRoot, 1, 16);",
+    )
     if rewritten != text:
         target.write_text(rewritten, encoding="utf-8")
 

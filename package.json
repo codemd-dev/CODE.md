@@ -2,7 +2,7 @@
   "name": "codeval-codemd-graphs",
   "displayName": "CODE.md",
   "description": "Search this workspace with local CODE.md analysis and interactive graph browsing.",
-  "version": "0.0.31",
+  "version": "0.0.40",
   "publisher": "codeval",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -116,7 +116,7 @@
         "codemdGraphs.backendDir": {
           "type": "string",
           "default": "",
-          "description": "Path to the folder containing the CodeVal FastAPI app (main.py). Leave empty to use the backend bundled with this extension (backend/), or, if that's not present, the open workspace if it is the CodeVal repo itself; otherwise you'll be prompted to pick the folder once, and the choice is saved here."
+          "description": "Path to the folder containing the CODE.md analyzer backend (main.py). Leave empty to use the backend bundled with this extension. If no bundled backend is available, Generate CODE.md will prompt for an explicit backend folder."
         },
         "codemdGraphs.pythonPath": {
           "type": "string",

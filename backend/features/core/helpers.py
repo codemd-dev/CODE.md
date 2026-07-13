@@ -59,9 +59,26 @@ def first_existing_path(*paths):
     return Path(paths[0]) if paths else Path()
 
 
+def first_valid_json_path(*paths):
+    for path in paths:
+        candidate = Path(path)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            if candidate.stat().st_size <= 0:
+                logger.warning("Skipping empty JSON artifact: %s", candidate)
+                continue
+            json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            logger.warning("Skipping invalid JSON artifact %s: %s", candidate, e)
+            continue
+        return candidate
+    return Path(paths[0]) if paths else Path()
+
+
 def feature_catalog_path_for_output(output_repo_dir):
     artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
+    return first_valid_json_path(
         artifact_root / "architecture" / "feature_catalog.json",
         artifact_root / "scim" / "feature_catalog.json",
     )
@@ -207,7 +224,7 @@ def scim_evidence_record(symbol: str, source_type: str, title: str, path: str, t
 def load_json_file(path: Path, default=None):
     try:
         if Path(path).exists():
-            return json.loads(Path(path).read_text(encoding="utf-8"))
+            return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except Exception as e:
         logger.warning("Unable to load JSON file %s: %s", path, e)
     return {} if default is None else default
@@ -881,7 +898,7 @@ def get_impact_radius(node, callgraph, max_nodes: int = 200):
 # exactly like "every function in this file got deleted."
 # ---------------------------------------------------------------------------
 
-SUPPORTED_SPAN_EXTENSIONS = {".py"}
+SUPPORTED_SPAN_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
 def _python_module_name_for(rel_path: str) -> str:
     """Mirrors module_name_for() in build_python_callgraph (main.py): turn a
@@ -896,6 +913,89 @@ def _python_module_name_for(rel_path: str) -> str:
     return ".".join(parts) if parts else "__init__"
 
 
+def _script_module_name_for(rel_path: str) -> str:
+    rel = rel_path.replace("\\", "/")
+    suffix = Path(rel).suffix
+    if suffix:
+        rel = rel[: -len(suffix)]
+    return ".".join(part for part in rel.split("/") if part)
+
+
+def _line_number_at(source: str, index: int) -> int:
+    return source.count("\n", 0, index) + 1
+
+
+def _brace_span_end_line(source: str, start_index: int, fallback_line: int) -> int:
+    brace_index = source.find("{", start_index)
+    if brace_index < 0:
+        return fallback_line
+    depth = 0
+    in_string = ""
+    escaped = False
+    in_line_comment = False
+    in_block_comment = False
+    for index in range(brace_index, len(source)):
+        ch = source[index]
+        nxt = source[index + 1] if index + 1 < len(source) else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            continue
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = ""
+            continue
+        if ch in {"'", '"', "`"}:
+            in_string = ch
+            continue
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth <= 0:
+                return _line_number_at(source, index)
+    return source.count("\n") + 1
+
+
+def _javascript_function_spans(file_path: str, repo_root: str, source: str):
+    rel_path = os.path.relpath(file_path, repo_root).replace("\\", "/") if repo_root else file_path.replace("\\", "/")
+    module_name = _script_module_name_for(rel_path)
+    patterns = [
+        re.compile(r"\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", re.MULTILINE),
+        re.compile(r"\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)", re.MULTILINE),
+    ]
+    spans = []
+    seen = set()
+    for pattern in patterns:
+        for match in pattern.finditer(source):
+            name = match.group(1)
+            symbol = ".".join(part for part in (module_name, name) if part)
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            start_line = _line_number_at(source, match.start())
+            spans.append({
+                "symbol": symbol,
+                "start_line": start_line,
+                "end_line": _brace_span_end_line(source, match.end(), start_line),
+            })
+    return sorted(spans, key=lambda item: (item["start_line"], item["symbol"]))
+
+
 def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str] = None):
     """Return [{"symbol", "start_line", "end_line"}] for every function/method
     defined in file_path, using the same dotted module.Class.func naming
@@ -908,7 +1008,8 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
     yet (only .py today), and [] when it's a supported language with zero
     functions or a parse error — callers must not conflate the two."""
     file_path = str(file_path)
-    if not file_path.endswith(".py"):
+    ext = Path(file_path).suffix.lower()
+    if ext not in SUPPORTED_SPAN_EXTENSIONS:
         return None
 
     if source is None:
@@ -917,6 +1018,9 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
                 source = f.read()
         except OSError:
             return []
+
+    if ext in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        return _javascript_function_spans(file_path, repo_root, source)
 
     try:
         tree = ast.parse(source, filename=file_path)

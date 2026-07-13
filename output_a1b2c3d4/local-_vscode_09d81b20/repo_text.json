@@ -1,0 +1,328 @@
+{
+  "generated_at": "2026-07-11T14:02:14.669351",
+  "source": "downloaded_repository_text_files",
+  "supported_extensions": [
+    ".adoc",
+    ".asciidoc",
+    ".htm",
+    ".html",
+    ".json",
+    ".markdown",
+    ".md",
+    ".mdx",
+    ".properties",
+    ".resx",
+    ".rst",
+    ".strings",
+    ".txt",
+    ".xhtml",
+    ".xml",
+    ".yaml",
+    ".yml"
+  ],
+  "supported_source_extensions": [
+    ".cs",
+    ".go",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".svelte",
+    ".swift",
+    ".ts",
+    ".tsx",
+    ".vue"
+  ],
+  "item_count": 34,
+  "readme_count": 1,
+  "document_count": 0,
+  "text_file_count": 22,
+  "ui_text_count": 11,
+  "total_chars_seen": 1524019,
+  "total_chars_indexed": 34050,
+  "skipped_large_files": 6,
+  "readme_items": [
+    {
+      "kind": "readme",
+      "file": "README.md",
+      "line": 1,
+      "text": "# CODE.md\n\nInstall the extension and your coding agent (Claude, Codex, Cursor, etc.) gets smarter \u2014 and you save tokens, time, and $.\n\nEstimate only \u2014 save up to 15% or 20% of your token size and budget per month\n\nEstimate only - High Impact teams that use agents heavily, use large models (GPT4, Claude 3.5, etc.), have long reasoning chains, generate multi-file changes could potentially save 15% to 20% of their monthly token budget. This can potentially translate to hundreds of dollars per month from this single CODE.md vscode extension!\n\nCODE.md analyzes your workspace locally and generates a compact, structured map of your codebase: call graphs, file dependencies, UI element graphs, and repo stats. Point your coding agent at the generated `CODE.md` and it can answer \"where is X\" or \"what calls Y\" from a few KB of structured facts instead of grepping and reading through your entire repo.\n\n## Features\n\n### \ud83d\udd0d Search\nSearch your codebase from the sidebar panel \u2014 results are pulled from the local structural analysis, not just plain text grep, so you get matches with file, line, and context.\n\n### \ud83d\udd78\ufe0f Search Graphs\nBrowse interactive, navigable graphs of your codebase directly inside VS Code:\n\n- **Call graph** \u2014 who calls what, across languages\n- **File graph** \u2014 file-to-file dependencies\n- **HTML UI graph** \u2014 buttons, links, inputs, and forms in your frontend\n\nOpen a graph in the side panel, expand it to fill the window, or pop it out into a full editor tab.\n\n![Search graphs](media/search-graphs-demo.jpg)\n\n## Getting Started\n\n1. Install the extension.\n2. Click the CODE.md icon in the Activity Bar.\n3. Run **Generate CODE.md** to analyze the current workspace.\n4. Use the **Search** box to query your codebase, or open the generated graphs to explore visually.\n5. Point your coding agent's context (e.g. `AGENTS.md` / `CLAUDE.md`) at the generated `codemd.dev/` folder so it can use the structured graphs instead of re-reading the whole repo.\n\n## Requirements\n\n- Python 3 (the extension manages an isolated virtual environment automatically; you can also set `codemdGraphs.pythonPath` to use your own interpreter).\n\n## Learn More\n\nVisit [codemd.dev](https://www.codemd.dev) for more details.",
+      "char_count": 2213,
+      "indexed_char_count": 2212
+    }
+  ],
+  "document_items": [],
+  "text_items": [
+    {
+      "kind": "text",
+      "file": "AGENTS.md",
+      "line": 1,
+      "text": "## Repo Map\n\nGenerated structural documentation lives in `codemd.dev/`.\n\nStart with:\n- `codemd.dev/CODE.md` for a compact repository overview.\n- `codemd.dev/combined_callgraph/combined_callgraph.json` for general callgraph, entry point, and connected-node analysis.\n- `codemd.dev/python/python_callgraph.json`, `codemd.dev/javascript/javascript_callgraph.json` for detailed per-language function-level impact analysis. Only the languages actually present in the analyzed repo get a folder \u2014 check which of `python/`, `javascript/`, `csharp/`, `javalang/` exist before assuming one.\n- `codemd.dev/file_graph/file_graph.json` for file dependency and navigation questions.\n- `codemd.dev/html_ui/html_ui_graph.json` for DOM/UI element (buttons, links, inputs, forms) questions.\n- `codemd.dev/repo_stats.json` for lightweight repository facts.\n- `codemd.dev/repo_text.json` for extracted README, docs, and UI text.\n\nTreat these as generated static-analysis artifacts:\n- They may be stale if source changed after generation.\n- They are hints and evidence indexes, not runtime proof.\n- Prefer source files as the final authority before making code changes.\n- Avoid relying on `codemd.dev/repo_comments.json` unless comment extraction has been cleaned up.\n\nThe HTML files under `codemd.dev/` are mainly human visualizations of the JSON graphs. Use them only when a visual graph helps.",
+      "char_count": 1377,
+      "indexed_char_count": 1376
+    },
+    {
+      "kind": "text",
+      "file": "backend/requirements.txt",
+      "line": 1,
+      "text": "\ufefffastapi\nuvicorn\npydantic\npython-multipart\n\nrequests\nopenai\nsupabase\nnumpy\nPyJWT[crypto]\ncryptography\nsentry-sdk[fastapi]\n\nbeautifulsoup4\n\nlibcst\npyan3\njavalang\ntree-sitter\ntree-sitter-java\ntree-sitter-javascript\ntree-sitter-typescript\n\nnetworkx\npydot\npyvis\ngraphviz\n\nplaywright\n\nPyCG @ git+https://github.com/vitsalis/PyCG.git@8d5dc40837803beef1d8d379fbf2cdad6cd94641",
+      "char_count": 369,
+      "indexed_char_count": 368
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/scim.py",
+      "line": 1,
+      "text": "!/usr/bin/env python3\n\nTODO Show neighors for a node only when the user clicks on the node.\n\nAt first just show the most important nodes and maybe <20 nodes and then\n\nWhen the user clicks on any of these nodes you show the links and neighbors for that node. This way you can explore the graph without getting overwhelmed by the complexity. You can also show some summary statistics for each node when the user clicks on it, like its degree, pagerank, component, etc.\n\nThat way even if you don't have space the graph can grow slowly. Low Priority\n\nFocus on fixing Search first and then maybe add this as a nice to have.\n\nCode body is useful, but keep it lower influence than identifiers.\n\nPrefer concrete product-action nouns over generic wrappers.\n\nUse terms that are actually present in the SCIM index. These suffixes\n\nare descriptive only when supported by detected tokens.\n\nAvoid names that are only the repo/product/file token.\n\n1) Group around real entrypoints first: API routes, UI pages/components, and UI logic.\n\n2) If there are too few entry-derived groups, use embedding clusters from the SCIM model index.\n\nOne strong UI/API anchor or a file anchor is enough; otherwise require at least two records to avoid file-name noise.\n\nRequired key keeps evidence tied to the cluster. Other terms improve recall.\n\nFeature names must come from the built SCIM index, not from hardcoded\n\nproduct-type catalogs. If the index cannot produce a feature, return no\n\nfeature rather than inventing one.\n\n\"\nif heading_match:\nheading = re.sub(r\n,\nvisible[:1800],\n])\nchunks.append(\nCodeChunk(\nrepo_id=repo_id,\nchunk_id=f\n\".join(\nstr(record.get(key,\nBuild a fused code + callgraph dataset from extracted repos.\nBuild JSONL/CSV model artifacts.\nOutput root or a single extracted repo folder.\nDataset output folder.\nStore raw code inside JSONL records.\nEmbedding backend.\nSentenceTransformer model for --backend sbert.\nEmbedding batch size for transformer backends.\nSkip writing vectors.sqlite.\nSkip writing vectors.faiss.\nBuild a broader multi-repo fitted embedding model.\nOutput root containing extracted repo folders.\nGeneric dataset output folder.\nSearch the fused embedding dataset.\nNatural language or code-ish query.\nDataset folder created by build.\nNumber of results to print.\nCluster functions into likely feature areas.\nRepo id to analyze. Omit to cluster all repos together.\nFeature catalog or raw embedding clusters.\nNumber of feature clusters to produce.\nRepresentative functions per cluster.\nHide subfeature breakdowns in catalog mode.\nShow representative functions and file locations.\nShow measurable static feature health signals. This is explicitly an estimate, not a correctness proof.\nTrain a graph-aware link predictor from fused embeddings.\nTraining epochs.\nNegative samples per positive edge.\nGradient descent learning rate.\nScore whether one function likely calls/depends on another.\nSource symbol, e.g. Dungeon.resetLevel.\nTarget symbol, e.g. Dungeon.switchLevel.\nTrain a PyTorch MLP on fused embeddings and graph edges.\nAdamW learning rate.\nTraining batch size.",
+      "char_count": 199011,
+      "indexed_char_count": 3071
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 1,
+      "text": "Populated from the MCP `initialize` handshake's `clientInfo` field (see\n\nhandleRequest below). Each stdio MCP client (Claude Code, Codex, etc.)\n\nspawns its own instance of this script per session, so this is stable for\n\nthe lifetime of the process \u2014 every recordUsage() call in that process\n\nreally did come from this one client.\n\nConfidence tiers reflect how the edge was produced, not just whether it\n\nexists. An AST-resolved call (python-ast, joern) is strong evidence a call\n\nreally happens; a regex-matched one (javascript-regex) can be a same-named\n\nmethod false positive; a structural graph (renders/imports) isn't a call\n\nat all. Ranked so the strongest evidence for a given edge wins when the\n\nsame edge shows up in more than one source (e.g. combined + per-language).\n\nPer-language sources are loaded before the merged combined_callgraph so\n\ntheir precise parser tier (see classifyParserTier) wins recordEdgeInfo's\n\n\"keep the strongest evidence\" tie-break for any edge duplicated in both.\n\nSummarizes confidence across a set of edges: the weakest tier present sets\n\nthe honest overall bound (a path/radius is only as trustworthy as its\n\nleast-certain hop), plus a note about analysis coverage gaps so results\n\nread as \"best evidence found\" rather than \"the complete truth\".\n\n`isBackward` flags that `adjacency` is the reversed (callee -> caller) map,\n\nso the real call direction for confidence lookup is (next -> node) rather\n\nthan (node -> next).\n\nPer-node confidence: a node can be reached by more than one edge in the\n\ntraversal, so its tier is the strongest evidence among the edges leading\n\ninto it (not just whichever edge BFS happened to visit first). Root nodes\n\nhave no incoming edge and are the query itself, so they're tagged 'root'\n\nrather than 'unknown'.\n\nCheap, single-hop convenience wrapper: same traversal machinery as\n\ncodemd_get_impact_radius, just pinned to backward direction and a shallow\n\ndefault depth so it reads like a direct \"who calls this\" lookup.\n\nLoopless k-shortest paths (Yen's algorithm) from `start` to any node in\n\n`targetSet`, over an unweighted graph \u2014 so each \"shortest path\" sub-search\n\nis a plain BFS rather than Dijkstra. This is what lets codemd_get_call_paths\n\nsurface a route one hop longer than the absolute shortest (e.g. the one\n\nthat bypasses a generic error handler), not just the single shallowest\n\nchain, without needing a real shortest-path library.\n\nBan whichever next-hop edge each previously found path used out of\n\nthis same root prefix, so the spur search is forced to diverge.\n\nBan the earlier root-path nodes (not the spur node itself) so the\n\nspliced path can't loop back through its own prefix.\n\nFinds the top-K distinct loopless paths of calls from a source symbol to a\n\ntarget symbol through the forward callgraph \u2014 e.g. \"how does clicking\n\nGenerate end up calling analyze_local_path?\". Paths are ranked shortest\n\nfirst but are NOT limited to ties for the single shortest length: a path\n\none hop longer than the shortest (e.g.\n\nregex/heuristic static match (${parser}) \u2014 can include same-named-method false positives\nAST-resolved static call (${parser})\nstructural render/import graph \u2014 not a resolved function call\nmerged cross-language graph; original parser for this edge is unavailable\nstatic analysis (parser unspecified)\nedge provenance unavailable\nstarting node\nNo matching callgraph node found.\nReport whether CODE.md analysis artifacts exist for this workspace.\nRead a generated CODE.md artifact such as CODE.md, repo_stats.json, or combined_callgraph/combined_callgraph.json.\nPath under codemd.dev. Defaults to CODE.md.\nMaximum characters to return.\nSearch CODE.md, repo text, comments, and callgraph node names for a query. Use this to find likely symbols before reading many files.\nFuzzy symbol/route to start from, e.g. GenerateButton.onClick or api.analyze_local_path.\nFuzzy symbol/route to reach, e.g. backend.main.analyze_local_path.\nMaximum hops to search before giving up. Defaults to 12, capped at 60.\nMaximum distinct paths to return, ranked shortest-first across all matched from-candidates (not just one path per candidate). Defaults to 3, capped at 10.\nMaximum fuzzy candidates to try for from_query/to_query.\nFuzzy symbol or route name, such as analyzeLocalPath or backend.main.analyze_local_path.\nbackward finds callers/dependents; forward finds callees/dependencies; both returns both.\nMaximum BFS depth. Defaults high enough for broad blast-radius search.\nMaximum nodes to return. Defaults to 500, capped at 2000.\nMaximum fuzzy root matches to traverse.\nCheap shortcut for codemd_get_impact_radius(direction=backward, max_depth=1) \u2014 just the direct callers of a symbol, nothing further upstream.\nDefaults to 1 (direct callers only).\nCheap shortcut for codemd_get_impact_radius(direction=forward, max_depth=1) \u2014 just what a symbol directly calls, nothing further downstream.\nDefaults to 1 (direct callees only).\nUnknown tool: ${name}\nUnknown method: ${method}",
+      "char_count": 35768,
+      "indexed_char_count": 4959
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "scripts/copy-backend.js",
+      "line": 1,
+      "text": "Bundles the CodeVal FastAPI backend into vscode-extension-graphs/backend/ so the\n\npackaged extension is self-contained and does not depend on the CodeVal repo\n\nexisting at some other path on disk. The repo root (one level up) remains the\n\nsingle source of truth; this script just mirrors it before compile/package.\n\nmaxRetries/retryDelay ride out transient Windows file locks (e.g. a\n\npreviously started local server still holding backend/ as its cwd).\n\nKeep extension-local backend fixes in place even though this script mirrors\n\nthe upstream backend before every compile/package.",
+      "char_count": 5615,
+      "indexed_char_count": 581
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "scripts/deletion-report.py",
+      "line": 1,
+      "text": "Pure insertion: nothing removed, but the insertion point can\n\nstill fall inside a symbol's old span (e.g. a line added in\n\nthe middle of a function body).\n\nget_function_spans derives the dotted module name via\n\nos.path.relpath(file_path, repo_root), so file_path must be an absolute\n\n(or at least repo_root-anchored) path here \u2014 passing the already\n\nrepo-relative path together with an absolute repo_root would make\n\nrelpath resolve against cwd instead and produce garbage symbol names.\n\n\"Still referenced\" must only look at DIRECT callers: those are the ones\n\nwith an actual call edge to this now-deleted symbol, i.e. a real\n\ndangling reference. A caller two hops away calls some other, still\n\nexisting function \u2014 it never called `symbol` directly \u2014 so checking\n\nit here would be meaningless and (as caught by testing against this\n\nrepo's real callgraph) wrongly reports CRITICAL even when every real\n\ncaller was deleted in the same batch.\n\nWorkspace folder to diff (must be a git repo).\nGit ref to compare the working tree against.\nFolder containing features/core/helpers.py.\n\",\n}\n\ntry:\nentries = changed_files(repo_root, args.base)\nexcept RuntimeError as e:\nreport[",
+      "char_count": 14460,
+      "indexed_char_count": 1168
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "scripts/local-analyze.py",
+      "line": 1,
+      "text": "Run CODE.md local analysis without starting FastAPI.\nWorkspace folder to analyze.\nDisplay name for the workspace.\nDirectory where VS Code should read mirrored artifacts.\nPath to write the API-compatible analysis result JSON.",
+      "char_count": 5945,
+      "indexed_char_count": 224
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "src/extension.ts",
+      "line": 1,
+      "text": "',\n'*\n\n',\n];\n\nconst ARTIFACT_OUTPUT_DIR = 'codemd.dev';\nconst WORKSPACE_MCP_CONFIG_FILE = '.mcp.json';\nconst WORKSPACE_CODEX_DIR = '.codex';\nconst WORKSPACE_CODEX_CONFIG_FILE = '.codex/config.toml';\nconst WEBVIEW_SUPPORT_ARTIFACTS = [\n'lib/cytoscape/cytoscape.min.js',\n];\nconst MCP_PROVIDER_ID = 'codemdGraphs.mcp';\nconst MCP_SERVER_NAME = 'codemd';\nlet managedVenvSetupPromise: Promise<string> | null = null;\nKeys whose artifacts are large, binary, or interpretive rather than direct\nanalysis output (vector DBs, embeddings, training pairs) \u2014 not useful to\nmirror into the workspace.\nconst SKIPPED_ARTIFACT_KEY_PATTERN = /vector_db|embedding|train_pairs|download_zip/i;\nconst MIRRORED_HTML_ARTIFACTS = new Set([\n'combined_callgraph/combined_navigatable_callgraph.html',\n'file_graph/file_graph_cytoscape.htm\n\nCandidate ways to invoke a system Python 3, tried in order until one reports a working --version.\n\nEnsures an isolated venv with the backend's requirements.txt installed exists in the\nextension's global storage (persists across reloads, isolated per-user, unaffected by\nextension updates replacing the bundled backend/ folder). Used whenever the user hasn't\nexplicitly overridden codemdGraphs.pythonPath, so a fresh install on any machine works\nwithout the user manually installing Python packages first.\n\nHigher is a better match; null means the query doesn't match this node at all.\n\nCheap proxy for \"the workspace changed since the last analysis\": the\ncurrent commit plus tracked/untracked file status, excluding our own\ngenerated codemd.dev/ output (which changes on every run and would\notherwise make this always report \"changed\"). Returns null when the\nworkspace isn't a git repo (or has no commits yet) \u2014 callers should treat\nthat as \"can't tell, so don't skip.\"\n\n`],\n{ cwd: workspaceRoot, encoding: 'utf8' },\n);\nconst statusText = status.status === 0 ? status.stdout : '';\nreturn crypto.createHash('sha256').update(head.stdout.trim() + '\\n' + statusText).digest('hex');\n}\n\nfunction readStoredGitStateHash(outDirUri: vscode.Uri): string | null {\ntry {\nconst raw = fs.readFileSync(path.join(outDirUri.fsPath, ANALYSIS_STATE_FILE), 'utf8');\nreturn JSON.parse(raw)?.gitStateHash || null;\n} catch {\nreturn null;\n}\n}\n\nasync function writeStoredGitStateHash(outDirUri: vscode.Uri, hash: string): Promise<void> {\nconst content = Buffer.from(\nJSON.stringify({ gitStateHash: hash, updatedAt: new Date().toISOString() }, null, 2),\n'utf8',\n);\nawait safeWorkspaceWriteFile(vscode.Uri.joinPath(outDirUri, ANALYSIS_STATE_FILE), content);\n}\n--------------------------------------\n\nIf a graph from a previous session already exists on disk, adopt it\nwithout waiting for a fresh analysis. The repair (copying\ncytoscape.min.js into the workspace and rewriting the mirrored HTML's\nscript path) must finish before lastGraphFileUri/displayedGraphFileUri\nare set or anything is posted \u2014 otherwise a webview that's already ready\ncan be handed a graph that can't render yet, and since posting the same\nwebvie\n\nCODE.md: MCP setup had ${failures.length} issue(s). ${failures.join(' ')}\nCODE.md: Updated ${WORKSPACE_MCP_CONFIG_FILE} and ${WORKSPACE_CODEX_CONFIG_FILE} for MCP access in ${changedFolders.join(', ')}.\n$(circle-outline) CODE.md\nSelect the folder containing the CodeVal FastAPI app (main.py)\n$(sync~spin) CODE.md: preparing existing callgraph\nCODE.md: preparing existing callgraph for display\n$(check) CODE.md: graph ready\nCODE.md: showing existing callgraph\n$(check) CODE.md: up to date\n$(sync~spin) CODE.md: analyzing\u2026\n$(error) CODE.md: analysis failed\nCODE.md: ${messageText}\nGenerate CODE.md\nNo local callgraph found yet \u2014 click Regenerate to build one, then search again.\nStarting local search companion...\nBuilding graph for \"${label}\"\u2026\nError: ${messageText}\nAlready checking changes \u2014 please wait.\nChecking what changed since this session started\u2026\nError checking changes: ${report.error}\n[${d.severity}] Removed ${symbol}\nModified ${symbol} \u2014 impact radius ${fileCount} file(s)\nChanged ${file} \u2014 file type not analyzed yet\nShowing latest change in the graph: ${latest.symbol || latest.name || latest.label}\nError checking changes: ${err?.message || String(err)}\nAlready checking latest commits - please wait.\nChecking latest commits...\nError checking latest commits: ${(result.stderr || '').trim() || result.status}\n${commit.hash} ${commit.subject} (${commit.date}, ${commit.author}; ${commit.files.length} file(s)${more ?\nError checking latest commits: ${err?.message || String(err)}\n';\nconst possible =\nCODE.md callgraph\nOpen the graph in a full editor tab\nMake the graph fill this side window\nCheck local file edits that have not been committed yet.\nShow the latest commits in this Git repository.\nClaude/Codex calls observed by the CODE.md MCP wrapper.\nSearch this codebase\u2026",
+      "char_count": 97623,
+      "indexed_char_count": 4787
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/autotrack.js",
+      "line": 1,
+      "text": "===============================\n\nGeneric AutoTrack\n\nCaptures: clicks, JS errors, backend failures\n\nNever break the user's site\n\n1. CLICK TRACKING ----------\n\nFail silently - never break the user's site\n\n2. FRONTEND ERROR TRACKING ----------\n\nscript/img/link failed to load\n\nsend to GA/Mixpanel\n\n2B. UI STATUS / ERROR MESSAGE TRACKING ----------\n\n3. BACKEND ERROR TRACKING (fetch wrapper) ----------",
+      "char_count": 21364,
+      "indexed_char_count": 398
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/autotrack_core.js",
+      "line": 1,
+      "text": "===============================\n\nCodeVal AutoTrack Core\n\nCaptures browser evidence once and lets provider adapters send it onward.\n\nOlder browsers can skip the local event.\n\nAnalytics must never break the product.\n\nNever break the user's site.",
+      "char_count": 20579,
+      "indexed_char_count": 243
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/autotrack_ga.js",
+      "line": 1,
+      "text": "===============================\n\nCodeVal AutoTrack GA4 Adapter\n\nRequires autotrack_core.js and either an existing gtag or data-measurement-id.\n\nAnalytics must never break the product.",
+      "char_count": 2003,
+      "indexed_char_count": 183
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/autotrack_mixpanel.js",
+      "line": 1,
+      "text": "===============================\n\nCodeVal AutoTrack Mixpanel Adapter\n\nRequires autotrack_core.js. Optionally initializes Mixpanel when data-project-token is provided.\n\nAnalytics must never break the product.",
+      "char_count": 2187,
+      "indexed_char_count": 206
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/autotrack_sentry.js",
+      "line": 1,
+      "text": "===============================\n\nCodeVal AutoTrack Sentry Adapter\n\nRequires autotrack_core.js. Optionally initializes Sentry when data-dsn is provided.\n\nObservability must never break the product.",
+      "char_count": 2705,
+      "indexed_char_count": 196
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 1,
+      "text": "Mixpanel activity integration: a parallel workflow to the Google Analytics\n\nsection. GA uses OAuth (per-browser session); Mixpanel uses a static\n\nproject token + service account, so the connection is saved server-side\n\n(Supabase) instead of a session cookie. Works for any analyzed GitHub repo,\n\nnot just CodeVal itself.\n\nNon-fatal: just leave the default \"not connected\" status in place.\n\nNo Mixpanel rows returned for this selection.\nMapped Mixpanel error: ${row.event_name || endpoint || symbol || \"user activity\"}\nMixpanel captured an error event that maps to code. ${message}\n\",\nmappedNodes.length ? `Mapped callgraph nodes: ${mappedNodes.join(\n\", isPending = false) {\nconst output = document.getElementById(\nThis Mixpanel row is no longer available. Reload user activity and try again.\nAnalyze or restore a repository first so this Mixpanel row can be mapped to the callgraph.\nSelected row: ${label}\nCreating a callgraph map for ${label}...\nMapped ${data.label || label} to ${(data.root_nodes || []).join(\", \") || \"the callgraph\"}.\nShowing the latest mapped Mixpanel event. Use Create graph below to inspect another row.",
+      "char_count": 20306,
+      "indexed_char_count": 1126
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/static/mixpanel.js",
+      "line": 1,
+      "text": "Mixpanel Quick Start tracking for CodeVal.\n\nKeep event names and identity behavior centralized so future tracking stays consistent.\n\nAnalytics must never break the product.\n\nlocalStorage may be unavailable; identity remains wired even if dedupe fails.\n\nIgnore analytics reset failures.",
+      "char_count": 4642,
+      "indexed_char_count": 285
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/features/core/helpers.py",
+      "line": 1,
+      "text": "Replace invalid Windows filename characters with underscore\n\nCallgraph traversal primitives.\n\nDeliberately kept in this lightweight module (not backend/main.py, which\n\nalso pulls in FastAPI/Joern/ML deps and takes ~2.5s just to import) so\n\nshort-lived, frequent callers \u2014 like the on-demand deletion/blast-radius\n\nreport the VS Code extension runs from a sidebar button \u2014 can use them\n\nwithout that cost. main.py re-exports these names for its own call sites.\n\nresult[\"edges\"] comes from a BACKWARD traversal, so each pair here is\n\n(callee, caller) \u2014 the reverse of edge_meta's (caller, callee) keys.\n\nFunction span map \u2014 used to diff which functions a file's edit added,\n\ndeleted, or touched (see scripts/deletion-report.py). Python only for now;\n\nget_function_spans returns None (not []) for unsupported languages so\n\ncallers can tell \"nothing to compare\" apart from \"this file has no\n\nfunctions,\" which matters because an empty list would otherwise look\n\nexactly like \"every function in this file got deleted.\"\n\n\\n\".join(str(text or\n\".join(str(feature.get(\nSource Code Intelligence Model layers for this repository.",
+      "char_count": 43889,
+      "indexed_char_count": 1118
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/features/feature_detection/feature_detection.py",
+      "line": 1,
+      "text": "=============================================================================\n\nCodeVal.AI \u2014 UI-First Feature Detection Update\n\nDrop these into main.py, replacing the existing versions of these functions.\n\nFlow:\n\n1. extract_ui_feature_seeds() \u2014 pulls real feature names from UI/HTML\n\n2. build_scim_artifacts() \u2014 drives the pipeline, now UI-seed-first\n\n3. generate_feature_descriptions() \u2014 LLM anchors to UI names, not fn names\n\nfrom main import (\n\nfind_cached_source_dir,\n\nartifact_root_for_output,\n\nbuild_repo_context,\n\nload_repo_text_artifact,\n\nwrite_dataset,\n\nfeature_catalog_payload,\n\ngenerate_feature_descriptions as _generate_feature_descriptions_scim,\n\nindex_typed_scim_evidence,\n\nwrite_scim_layer_manifest,\n\nPROJECT_ROOT,\n\nSTEP 1 \u2014 Extract real feature names from UI/HTML text\n\nPatterns that disqualify a line as a feature name ---\n\n1. UI text items \u2014 highest priority: these ARE the feature names\n\nTypical shape: [{\"text\": \"Graph Overview\\nSearch Model\\n...\"}, ...]\n\n2. README headings (## Feature Name)\n\n3. Document / spec items \u2014 first few lines of each\n\n4. Fallback: repo_context product_features list if populated upstream\n\nSTEP 2 \u2014 build_scim_artifacts: drive the full pipeline, UI-seed-first\n\n1. Resolve source root \u2014 where the repo's source code was cached\n\nLast resort: look inside artifact root for a src/ directory\n\n2. Safety guard \u2014 never index the server's own files\n\n3. Build compact repo_context, then extract UI seeds (feature catalog only)\n\nPull real feature names from the analyzed repo's UI/HTML. If the caller\n\nalready extracted them, reuse that list so this stage does not repeat work.\n\nInject seeds into repo_context so feature_catalog_payload can use them\n\n4. Index source files into SCIM vector store\n\n5. Build feature catalog \u2014 now seeded from UI, not fn-name heuristics\n\n6. Do not generate LLM feature descriptions during analysis.\n\nGenerated Feature Summaries are paid/user-triggered output. They are\n\ncreated only by the /feature-summary endpoint after the user presses the\n\ndashboard button, not during the base analysis run.\n\n7. Write architecture evidence files, but do not add them to vectors.sqlite.\n\nSTEP 3 \u2014 generate_feature_descriptions: LLM uses UI names as anchors\n\nKnown Features (from the product's UI, dashboard, and README)\n\nBuild per-feature evidence blocks\n\nFeature {i+1}: {feat.get('feature', '(unnamed)')}\n\nTask\n\nDetected Features + Callgraph Evidence\n\nOutput Format\n\nCall OpenAI (or your LLM wrapper) ---\n\nStrip markdown fences if present\n\nGraceful fallback \u2014 keep existing name/summary, mark description missing\n\nHOW THE THREE PIECES FIT TOGETHER (reference, not executable)\n\nbuild_scim_artifacts()\n\n\u251c\u2500\u2500 find_cached_source_dir() [existing \u2014 locates repo source dir]\n\n\u251c\u2500\u2500 artifact_root_for_output() [existing \u2014 resolves artifact root]\n\n\u251c\u2500\u2500 [SAFETY GUARD] [NEW \u2014 refuses to index PROJECT_ROOT]\n\n\u251c\u2500\u2500 build_repo_context() [existing \u2014 builds context dict]\n\n\u251c\u2500\u2500 extract_ui_feature_seeds() [NEW \u2014 pulls real names from HTML/README]\n\n\u2502 \u251c\u2500\u2500 repo_text[\"ui\n\nGraph Overview\\nSearch Model\\n...\n\"):\nif not callable(progress_callback):\nreturn\ntry:\nprogress_callback(message, current_file=current_file or\nRenders an interactive call graph for the analyzed repository, showing how functions call each other across the codebase.\n1-2 sentences describing what is implemented now\n\".join(str(row.get(",
+      "char_count": 44427,
+      "indexed_char_count": 3334
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/parsers/python/ast_indexer.py",
+      "line": 1,
+      "text": "classes\n\nfunctions",
+      "char_count": 1811,
+      "indexed_char_count": 18
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/parsers/python/pyan3_parser.py",
+      "line": 1,
+      "text": "discover files\n\ngenerate graph\n\ndraw_defines=False,\n\ndraw_calls=True,\n\ncolored=False,\n\ngrouped=False,\n\npyan returns a GraphViz dot string \u2014 parse edges from it\n\nskip empty, graph declarations, attributes\n\nskip dashed nodes (unresolved/external references) \u2190 HERE\n\nstrip ALL bracket attributes e.g. [style=\"solid\", color=\"#000000\"]\n\nlines look like: \"module_func1\" -> \"module_func2\"",
+      "char_count": 3303,
+      "indexed_char_count": 381
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/parsers/python/pycg_parser.py",
+      "line": 1,
+      "text": "PyCG compatibility shim for Python 3.9+\n\nUnparser was moved out of _ast_unparse in newer versions\n\ndiscover files\n\ngenerate graph",
+      "char_count": 2716,
+      "indexed_char_count": 129
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/parsers/python/python_analyzer.py",
+      "line": 1,
+      "text": "from .pycg_parser import PyCGParser\n\nfilepath -> module\n\nrelative = Path(filepath).relative_to(self.repo_root)\n\nparts[-1] = parts[-1].replace(\".py\", \"\")\n\ndrop leading 'src' if present, matching pycg's package rooting\n\nAST metadata indexing\n\npy_files = list(\n\nself.repo_root.rglob(\"*.py\")\n\ndiscover_python_files() vs build_symbol_index() use different file lists\n\nPyCGParser.discover_python_files() filters aggressively (skips venv, build, etc.),\n\nbut build_symbol_index() in PythonAnalyzer does a raw rglob(\"*.py\") with no filtering.\n\nThis means: The symbol index has nodes named like venv.requests.models.Response\n\nPyCG never saw those files, so those nodes never appear in the call graph\n\nenrich_graph_nodes() finds no metadata matches \u2192 build_file_graph() skips those edges\n\nFix: Extract the skip logic into a shared utility, or have PythonAnalyzer.build_symbol_index() use PyCGParser.discover_python_files() directly:\n\nPyCG callgraph\n\nfind entry point\n\nfallback: nodes with no incoming edges\n\nfind the entry point node \u2014 look for main.py's top-level calls\n\nentry_nodes = [\n\nnode for node in self.function_graph.nodes()\n\nif node.startswith(\"main.\")\n\nBFS/DFS from all main.py nodes to find reachable nodes\n\nremove unreachable nodes\n\nenrich nodes\n\nbuild file graph\n\nextract module from node name e.g.\n\nentities__Mario__Mario____init__ \u2192 entities/Mario.py\n\npyan3 uses double underscores as separators\n\nentities__Mario__Mario____init__ \u2192 entities.Mario\n\nfirst two parts are module path e.g. ['entities', 'Mario', 'Mario', '', 'init', '']\n\nreconstruct file path from first two parts\n\ntry just first part as directory + second as file\n\nbuild per-file graphs\n\nanalyze repo\n\nPASS 1\n\nAST METADATA\n\nPASS 2\n\nPYCG CALLGRAPH\n\nYour filepath_to_module produces src.myapp.utils but pycg might produce\n\nmyapp.utils depending on where it roots from.\n\nThis causes enrich_graph_nodes() to find zero matches even when both graphs are populated.\n\nTODO - Added new entry point main.py?\n\nMERGE\n\n\"py_file_count\": len(py_files), # \u2190 add this",
+      "char_count": 8800,
+      "indexed_char_count": 2018
+    },
+    {
+      "kind": "comments_ui_text",
+      "file": "backend/features/feature_detection/ui/html_extractor.py",
+      "line": 1,
+      "text": "Responsibilities:\n\nParse HTML/HTM/XHTML for user-facing UI feature labels\n\nWalk UI containers in document order\n\nReturn candidate feature names, not implementation notes\n\n\".join(id_text.get(part,",
+      "char_count": 18893,
+      "indexed_char_count": 195
+    }
+  ],
+  "ui_text_items": [
+    {
+      "kind": "ui_text",
+      "file": "package-lock.json",
+      "line": 1,
+      "text": "codeval-codemd-graphs\nstring-width\nstrip-ansi\nwrap-ansi",
+      "char_count": 40480,
+      "indexed_char_count": 55
+    },
+    {
+      "kind": "ui_text",
+      "file": "package.json",
+      "line": 1,
+      "text": "codeval-codemd-graphs\nSearch this workspace with local CODE.md analysis and interactive graph browsing.\nCODE.md\nOpen CODE.md\nOpen CODE.md in Editor\nGenerate CODE.md\nCODE.md: Set Up MCP\nCODE.md: Stop Local Server\nCODE.md MCP\nWrite the project-scoped .mcp.json file when a workspace opens.\nAutomatically open the CODE.md panel when a workspace loads, so the callgraph appears without needing to click the CODE.md activity bar icon first.\nPath to the folder containing the CodeVal FastAPI app (main.py). Leave empty to use the backend bundled with this extension (backend/), or, if that's not present, the open workspace if it is the CodeVal repo itself; otherwise you'll be prompted to pick the folder once, and the choice is saved here.\nPython executable used to launch the local FastAPI server. Leave unset (default) to have the extension auto-create and manage an isolated virtual environment with the required dependencies in global storage. Set this explicitly to use a specific interpreter instead \u2014 in that case it must already have backend/requirements.txt installed.\nHow Generate CODE.md runs local analysis. Use cli for the default local subprocess path; use server to force the FastAPI workflow.\nHost the local FastAPI server binds to.\nPort the local FastAPI server binds to.\nAdditional glob patterns to exclude when zipping the workspace for analysis, on top of the built-in defaults (.git, node_modules, venvs, build output).",
+      "char_count": 5321,
+      "indexed_char_count": 1436
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/api.codemd.html",
+      "line": 1,
+      "text": "POST /code-md\nGET /health\ncode.md file\nEndpoints\nOutput\nRequest\nrepo_url required string\ncURL\nPython\nResponse\nFields in code.md\nErrors",
+      "char_count": 27626,
+      "indexed_char_count": 134
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/api.codeval.html",
+      "line": 1,
+      "text": "POST /analyze\nPOST /search\nGET /health\ncallgraph_html\ncallgraph_json\njoern_callgraph_html\nsearch_graph_url\nBody\nSchema\nResults table\nEndpoints\nResponse assets\nRequest\nrepoUrl * required string\ncURL\nPython\nResponse\nGraphs & files\nDetails\nowner_name string\nVisualization",
+      "char_count": 55124,
+      "indexed_char_count": 268
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/codemd.html",
+      "line": 1,
+      "text": "The Format\nGetting Started\nCode Tokens\nExample Front Matter\nCode Token Schema\nThe Specification",
+      "char_count": 5616,
+      "indexed_char_count": 95
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/homepage.html",
+      "line": 1,
+      "text": "CV CodeVal.AI\nFeatures\nWorkflow\nSample\nDashboard\nView sample\nAnalyze a repo\nPrimary\nProduct highlights\ncheckout/page\ncart-actions\npayment-button\norder-summary\nanalytics\nwebhook\nEngineering time impact\nSCIM code search\nDaily commit summaries\nNavigable graphs",
+      "char_count": 22610,
+      "indexed_char_count": 257
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/index.html",
+      "line": 1,
+      "text": "CM codemd.dev\nWhy CODE.md\nHow it works\nCodex proof\nAPI\nGenerate CODE.md\nPrimary navigation\nWithout CODE.md\nWith CODE.md\nConnect or upload\ncodemd.dev maps the repo\nYou get CODE.md\nDrop it into the repo\nWhat CODE.md contains",
+      "char_count": 18835,
+      "indexed_char_count": 222
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/sample_comments.json",
+      "line": 1,
+      "text": "Review edge cases around empty CharSequence inputs.\nConsider simplifying duration token handling.\nClarify expectations for random Unicode ranges.\nDocument overload resolution behavior.\nApache Commons Lang provides helper utilities for the java.lang API.\nThe library includes utilities for strings, numbers, dates, concurrency, reflection, and object methods.\nContributions should include tests and follow the existing project style.\nRelease notes summarize changes, fixes, and compatibility notes for the library.\nOperations on String that are null safe.\nOperations on arrays, primitive arrays and primitive wrapper arrays.\nDate and time helpers for common calendar calculations.\nUtility reflection methods focused on method lookup and invocation.",
+      "char_count": 2563,
+      "indexed_char_count": 747
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/BACKUP/dash.html",
+      "line": 1,
+      "text": "Collapse navigation\nHome\nSnapshot\nRecent Changes\nCode Map\nStatic Checks\nUser Activity\nSearch Graphs\nAsk CodeVal\nSuggested Fixes\nGenerated Files\nConnect Your Product\nAnalytics Connect\nAPI\nFeedback\nCodeVal Developer API\nConnect Google Analytics\nProduct Snapshot\nTop Function Summaries\nDaily Product Changes\nUser Activity Map\nProduct Description\nFeature List\nStatic Quality Signals\nCode Comments\nContact / Feedback\nConnect GitHub\nSign in with GitHub\nNavigatable file connections graph\nNavigatable function callgraph\nSearch graph\nScoped file/function callgraph\nAnswer details\nRelevant Code Areas\nSupporting Context\nDocs and Notes\nFeature Implementation Graph\nCurrent Feature Completeness Descriptions\nLanguage Mix\nTop Extensions\nRepository Details\nTODO Work Items",
+      "char_count": 360288,
+      "indexed_char_count": 759
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/BACKUP/dashboardv1.html",
+      "line": 1,
+      "text": "Collapse navigation\nHome\nSnapshot\nRecent Changes\nCode Map\nStatic Checks\nUser Activity\nSearch Graphs\nAsk CodeVal\nSuggested Fixes\nGenerated Files\nConnect Your Product\nAnalytics Connect\nAPI\nFeedback\nCodeVal Developer API\nConnect Google Analytics\nProduct Snapshot\nFunction Summaries\nDaily Product Changes\nUser Activity Map\nProduct Description\nFeature List\nStatic Quality Signals\nCode Comments\nContact / Feedback\nConnect GitHub\nSign in with GitHub\nNavigatable file connections graph\nNavigatable function callgraph\nSearch graph\nScoped file/function callgraph\nAnswer details\nRelevant Code Areas\nSupporting Context\nDocs and Notes\nFeature Implementation Graph\nCurrent Feature Completeness Descriptions\nLanguage Mix\nTop Extensions\nRepository Details\nTODO Work Items",
+      "char_count": 362301,
+      "indexed_char_count": 755
+    },
+    {
+      "kind": "ui_text",
+      "file": "backend/static/BACKUP/indexMAIN.html",
+      "line": 1,
+      "text": "CodeVal .AI\nProducts\nSolutions\nFor CTOs Engineering leadership\nFor Ops teams Scale operations faster\nFinance\nHealthcare\nManufacturing\nCustomers\nContact\nResources\nBlog\nCase studies\nWebinars & events\nPricing\nPlatform\nDashboard\nCore product\nCapabilities\nBy role\nTurn Software Complexity Into Business Clarity\nPortfolio decision dashboard\nTurn existing software into boardroom-ready insight\nBusiness-ready intelligence for software leaders\nSee your software portfolio at a glance\nAnswer planning questions faster\nSpot risk before it becomes a crisis\nAlign leadership around facts\nMove roadmap work with confidence\nfaster delivery decisions\nExplore the CodeVal decision dashboard\nTrusted by leaders who need certainty\nMia Lewis\nRavi Kapoor\nCarmen Soto",
+      "char_count": 63249,
+      "indexed_char_count": 746
+    }
+  ]
+}

@@ -1,0 +1,3177 @@
+{
+  "comment_count": 500,
+  "todo_count": 27,
+  "files_with_comments_count": 37,
+  "supported_comment_forms": [
+    "//",
+    "#",
+    "/* */",
+    "<!-- -->"
+  ],
+  "comments": [
+    {
+      "file": "AGENTS.md",
+      "line": 1,
+      "kind": "line",
+      "text": "# Repo Map"
+    },
+    {
+      "file": "README.md",
+      "line": 1,
+      "kind": "line",
+      "text": "CODE.md"
+    },
+    {
+      "file": "README.md",
+      "line": 11,
+      "kind": "line",
+      "text": "# Features"
+    },
+    {
+      "file": "README.md",
+      "line": 13,
+      "kind": "line",
+      "text": "## \ud83d\udd0d Search"
+    },
+    {
+      "file": "README.md",
+      "line": 16,
+      "kind": "line",
+      "text": "## \ud83d\udd78\ufe0f Search Graphs"
+    },
+    {
+      "file": "README.md",
+      "line": 27,
+      "kind": "line",
+      "text": "# Getting Started"
+    },
+    {
+      "file": "README.md",
+      "line": 35,
+      "kind": "line",
+      "text": "# Requirements"
+    },
+    {
+      "file": "README.md",
+      "line": 39,
+      "kind": "line",
+      "text": "# Learn More"
+    },
+    {
+      "file": "README.md",
+      "line": 41,
+      "kind": "line",
+      "text": "www.codemd.dev) for more details."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 117,
+      "kind": "line",
+      "text": "PythonAnalyzer now internally owns PyCG."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 118,
+      "kind": "line",
+      "text": "from pycg.pycg import CallGraphGenerator"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 120,
+      "kind": "line",
+      "text": "Added new Import for PythonAnalyzer"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 131,
+      "kind": "line",
+      "text": "from pyan import analyse, graph  # pip install pyan3"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 132,
+      "kind": "line",
+      "text": "you need to run pyan from command line"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 150,
+      "kind": "line",
+      "text": "TODO - Fix joern callgrah - fix render environment JOERN_BIN=/path/to/joern"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 151,
+      "kind": "line",
+      "text": "TODO - Will need to install joern on render"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 153,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 154,
+      "kind": "line",
+      "text": "TODO Function"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 155,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 156,
+      "kind": "line",
+      "text": "In the TODO section can you allow the user to add a TODO."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 157,
+      "kind": "line",
+      "text": "The user can create a TODO at the Product Level."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 158,
+      "kind": "line",
+      "text": "Or he can select a file and then add a TODO."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 159,
+      "kind": "line",
+      "text": "Or he can select a file and then we can give him a list of functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 160,
+      "kind": "line",
+      "text": "in that file and he can add a TODO at the function level"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 161,
+      "kind": "line",
+      "text": "since we already have the list of files and functions per file?"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 162,
+      "kind": "line",
+      "text": "Once he adds a TODO you simply the relevant functions, text and"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 163,
+      "kind": "line",
+      "text": "all relevant data from SCIM and then you can send that to the LLM to suggest a fix"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 164,
+      "kind": "line",
+      "text": "Show the fix to user and he can decide if he wants to implement the fix or not"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 166,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 167,
+      "kind": "line",
+      "text": "PATH ENUM REGISTRY"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 168,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 171,
+      "kind": "line",
+      "text": "Input"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 174,
+      "kind": "line",
+      "text": "Joern"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 179,
+      "kind": "line",
+      "text": "Reduced outputs"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 183,
+      "kind": "line",
+      "text": "Web output"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 187,
+      "kind": "line",
+      "text": "Temp"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 199,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 200,
+      "kind": "line",
+      "text": "TRACE LOGGING"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 201,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 214,
+      "kind": "line",
+      "text": "sys.settrace(trace_lines)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 217,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 218,
+      "kind": "line",
+      "text": "PATHS (Pathlib only \u2014 clean + correct)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 219,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 345,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 346,
+      "kind": "line",
+      "text": "CONSTANTS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 347,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 437,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 438,
+      "kind": "line",
+      "text": "FASTAPI APP"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 439,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 448,
+      "kind": "line",
+      "text": "ba5abeade297a1de3b5a59d2741ddc01@o4511610456637440.ingest.us.sentry.io/4511611643559936\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 593,
+      "kind": "line",
+      "text": "cdn.jsdelivr.net/npm/axe-core@4/axe.min.js\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 891,
+      "kind": "line",
+      "text": "---------------------------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 892,
+      "kind": "line",
+      "text": "Generated Test Suite \u2014 extraction + chunked LLM generation only."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 894,
+      "kind": "line",
+      "text": "This builds steps 1-2 of the feature: pull real, already-analyzed evidence"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 895,
+      "kind": "line",
+      "text": "for a repo (routes, UI elements, UI->backend flows, missing-error-handling"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 896,
+      "kind": "line",
+      "text": "signals) and turn it into a downloadable pytest+Playwright test file via"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 897,
+      "kind": "line",
+      "text": "OpenAI. It deliberately does NOT execute the generated file \u2014 running"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 898,
+      "kind": "line",
+      "text": "LLM-generated code automatically is a separate, sandboxed step to be added"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 899,
+      "kind": "line",
+      "text": "later once generation itself is reviewed and stable."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 900,
+      "kind": "line",
+      "text": "---------------------------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 907,
+      "kind": "line",
+      "text": "Flask's most common pattern: @app.route(\"/path\", methods=[\"POST\"]) \u2014 defaults to"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 908,
+      "kind": "line",
+      "text": "GET when `methods=` is absent, and can declare several methods on one decorator,"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 909,
+      "kind": "line",
+      "text": "which is why this is handled separately from the single-method patterns above."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 910,
+      "kind": "line",
+      "text": "Deliberately does not try to regex-capture the full `(...)` call up to its closing"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 911,
+      "kind": "line",
+      "text": "paren: methods=(\"GET\", \"POST\") has its own closing paren before the call's, so a"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 912,
+      "kind": "line",
+      "text": "naive [^)]* group truncates there. Instead this only anchors on the path string;"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 913,
+      "kind": "line",
+      "text": "the methods=(...) lookup runs separately against a plain text window after the match."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1273,
+      "kind": "line",
+      "text": "api.openai.com/v1/chat/completions\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1294,
+      "kind": "line",
+      "text": "CodeVal: this batch failed to generate ({str(e)[:200]}). Re-run test suite generation to retry this batch.\\n\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1304,
+      "kind": "line",
+      "text": "--- Always-included generic checks (not LLM-generated) -------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1330,
+      "kind": "line",
+      "text": "Generated by CodeVal.AI. Target deployment URL: {target_url}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1349,
+      "kind": "line",
+      "text": "Generated by CodeVal.AI for {owner_name}/{repo_name} targeting {target_url}\\n\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1439,
+      "kind": "line",
+      "text": "www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/analytics.edit\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1598,
+      "kind": "line",
+      "text": "{host}\".rstrip(\"/\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1603,
+      "kind": "line",
+      "text": "\") or \"://\" in value:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1752,
+      "kind": "line",
+      "text": "oauth2.googleapis.com/token\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1788,
+      "kind": "line",
+      "text": "analyticsadmin.googleapis.com/v1beta/accountSummaries\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1867,
+      "kind": "line",
+      "text": "noqa: F401"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 1939,
+      "kind": "line",
+      "text": "github.com/{owner}/{repo}\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4064,
+      "kind": "line",
+      "text": "api.github.com/app/installations/{installation_id}/access_tokens\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4123,
+      "kind": "line",
+      "text": "Optional mount: only if the folder exists"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4128,
+      "kind": "line",
+      "text": "Static mounts"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4135,
+      "kind": "line",
+      "text": "Root routes"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4156,
+      "kind": "line",
+      "text": "codeval.ai/sitemap.xml\\n\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4165,
+      "kind": "line",
+      "text": "codeval.ai/\", \"1.0\"),"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4166,
+      "kind": "line",
+      "text": "codeval.ai/dashboard\", \"0.8\"),"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4167,
+      "kind": "line",
+      "text": "codeval.ai/api\", \"0.6\"),"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4176,
+      "kind": "line",
+      "text": "www.sitemaps.org/schemas/sitemap/0.9\">\\n'"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4331,
+      "kind": "line",
+      "text": "github.com/login/oauth/authorize?{urlencode(params)}\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4357,
+      "kind": "line",
+      "text": "setup-workflow\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4358,
+      "kind": "line",
+      "text": "setup-workflow\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4359,
+      "kind": "line",
+      "text": "setup-workflow\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4406,
+      "kind": "line",
+      "text": "github-repos\"))"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4422,
+      "kind": "line",
+      "text": "github.com/login/oauth/access_token\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4439,
+      "kind": "line",
+      "text": "api.github.com/user\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4461,
+      "kind": "line",
+      "text": "github-repos\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4506,
+      "kind": "line",
+      "text": "api.github.com/user/installations\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4517,
+      "kind": "line",
+      "text": "api.github.com/user/installations/{installation_id}/repositories\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4531,
+      "kind": "line",
+      "text": "api.github.com/user/repos\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4742,
+      "kind": "line",
+      "text": "api.github.com/repos/{owner}/{repo}/commits\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4919,
+      "kind": "line",
+      "text": "Deleted lines have no new-file line number. Use the next surviving"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4920,
+      "kind": "line",
+      "text": "line as an approximate anchor so deletions inside a function still"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 4921,
+      "kind": "line",
+      "text": "map to that function range."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5009,
+      "kind": "line",
+      "text": "][A-Za-z_][A-Za-z0-9_-]*|\\b[A-Za-z_][A-Za-z0-9_-]*(?=\\s*\\{)\", text)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5108,
+      "kind": "line",
+      "text": "HTML/SCIM symbols can carry generated repo prefixes such as"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5109,
+      "kind": "line",
+      "text": "owner_repo_sha_static_dashboard_html.button. Keep the useful file/function tail."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5114,
+      "kind": "line",
+      "text": "Drop long hash-like prefixes from generated symbols."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5615,
+      "kind": "line",
+      "text": "api.openai.com/v1/chat/completions\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 5747,
+      "kind": "line",
+      "text": "api.github.com/repos/{owner}/{repo}/commits/{sha}\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6139,
+      "kind": "line",
+      "text": "github.com/{owner}/{repo}\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6191,
+      "kind": "line",
+      "text": "accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6242,
+      "kind": "line",
+      "text": "analytics-connect\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6255,
+      "kind": "line",
+      "text": "oauth2.googleapis.com/token\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6274,
+      "kind": "line",
+      "text": "openidconnect.googleapis.com/v1/userinfo\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6295,
+      "kind": "line",
+      "text": "analytics-connect\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6348,
+      "kind": "line",
+      "text": "www.googleapis.com/auth/analytics.edit\" not in scope:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6375,
+      "kind": "line",
+      "text": "analyticsadmin.googleapis.com/v1beta/properties/{property_id}/customDimensions\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6550,
+      "kind": "line",
+      "text": "\"})"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 6811,
+      "kind": "line",
+      "text": "\", \"https://\", \"/\")):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7355,
+      "kind": "line",
+      "text": "ffffff; color:#111827; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7356,
+      "kind": "line",
+      "text": "cy {{ position:absolute; inset:0; min-height:100%; background:#ffffff; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7357,
+      "kind": "line",
+      "text": "status {{ position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 16px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7358,
+      "kind": "line",
+      "text": "legend {{ position:absolute; right:8px; top:46px; z-index:10; max-width:300px; background:rgba(255,255,255,.94); border:1px solid #ddd; border-radius:6px; padding:8px 10px; font-size:12px; color:#334155; box-shadow:0 8px 24px rgba(15,23,42,.08); }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7359,
+      "kind": "line",
+      "text": "legend strong {{ display:block; color:#111827; font-size:12px; margin-bottom:5px; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7360,
+      "kind": "line",
+      "text": "legend .legend-row {{ display:flex; gap:6px; align-items:flex-start; margin-top:4px; line-height:1.25; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7361,
+      "kind": "line",
+      "text": "legend .legend-key {{ min-width:78px; color:#dc2626; font-weight:700; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7362,
+      "kind": "line",
+      "text": "legend .legend-note {{ color:#64748b; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7375,
+      "kind": "line",
+      "text": "ffffff\\\";"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7376,
+      "kind": "line",
+      "text": "ffffff\\\";"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7394,
+      "kind": "line",
+      "text": "unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js\\\"));"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7441,
+      "kind": "line",
+      "text": "n\\\": \\\"ordered call or sequence edge when no semantic label is available\\\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7445,
+      "kind": "line",
+      "text": "\\\\d+$/.test(text)) return \\\"#n\\\";"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7451,
+      "kind": "line",
+      "text": "${{order}}` : \\\"\\\");"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7455,
+      "kind": "line",
+      "text": "n\\\"]"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7460,
+      "kind": "line",
+      "text": "n\\\" ? \\\"#n\\\" : label;"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7506,
+      "kind": "line",
+      "text": "${{edge.sourceOrder}}` : \\\"\\\") }} }};"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7607,
+      "kind": "line",
+      "text": "3267e3\\\", \\\"color\\\":\\\"#111827\\\", \\\"font-size\\\":\\\"11px\\\", \\\"text-valign\\\":\\\"bottom\\\", \\\"text-halign\\\":\\\"center\\\", \\\"text-margin-y\\\":8, \\\"text-max-width\\\":148, \\\"text-wrap\\\":\\\"wrap\\\", \\\"text-background-color\\\":\\\"#ffffff\\\", \\\"text-background-opacity\\\":0.88, \\\"text-background-padding\\\":2, \\\"width\\\":16, \\\"height\\\":16, \\\"border-width\\\":1, \\\"border-color\\\":\\\"#1d4ed8\\\", \\\"min-zoomed-font-size\\\":7 }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7610,
+      "kind": "line",
+      "text": "64748b\\\", \\\"target-arrow-color\\\":\\\"#64748b\\\", \\\"target-arrow-shape\\\":\\\"triangle\\\", \\\"arrow-scale\\\":1.35, \\\"curve-style\\\":\\\"bezier\\\", \\\"font-size\\\":\\\"10px\\\", \\\"color\\\":\\\"#dc2626\\\", \\\"font-weight\\\":\\\"600\\\", \\\"text-background-color\\\":\\\"#ffffff\\\", \\\"text-background-opacity\\\":0.9, \\\"text-background-padding\\\":2, \\\"text-margin-y\\\":0, \\\"min-zoomed-font-size\\\":7 }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7775,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7776,
+      "kind": "line",
+      "text": "find next node to expand when current is exhausted"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7777,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7779,
+      "kind": "line",
+      "text": "BFS outward from fromId through the FULL graph data"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7780,
+      "kind": "line",
+      "text": "find first node that has unexpanded edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7792,
+      "kind": "line",
+      "text": "does this neighbor have any edge not yet in the graph?"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7806,
+      "kind": "line",
+      "text": "fallback: any node in the full graph with hidden edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7889,
+      "kind": "line",
+      "text": "fff; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7890,
+      "kind": "line",
+      "text": "cy {{ position:absolute; inset:0; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7891,
+      "kind": "line",
+      "text": "status {{ position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 16px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 7912,
+      "kind": "line",
+      "text": "unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js\"));"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8001,
+      "kind": "line",
+      "text": "${{edge.order}}${{edge.line ? \" L\" + edge.line : \"\"}}`,"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8010,
+      "kind": "line",
+      "text": "3267e3\", \"border-color\":\"#1d4ed8\", \"border-width\":1, \"width\":18, \"height\":18, \"color\":\"#111827\", \"font-size\":\"11px\", \"font-weight\":\"600\", \"text-wrap\":\"wrap\", \"text-max-width\":160, \"text-valign\":\"center\", \"text-halign\":\"right\", \"text-margin-x\":-12, \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.9, \"text-background-padding\":2 }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8011,
+      "kind": "line",
+      "text": "7047eb\", \"border-color\":\"#4c1d95\", \"width\":22, \"height\":22, \"text-halign\":\"right\", \"font-size\":\"12px\" }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8012,
+      "kind": "line",
+      "text": "64748b\", \"target-arrow-color\":\"#64748b\", \"target-arrow-shape\":\"triangle\", \"curve-style\":\"taxi\", \"taxi-direction\":\"rightward\", \"taxi-turn\":70, \"font-size\":\"10px\", \"font-weight\":\"700\", \"color\":\"#dc2626\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.92, \"text-background-padding\":2 }} }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8016,
+      "kind": "line",
+      "text": "order.`;"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8063,
+      "kind": "line",
+      "text": "fff; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8064,
+      "kind": "line",
+      "text": "cy {{ position:absolute; inset:0; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8065,
+      "kind": "line",
+      "text": "status {{ position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 16px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8086,
+      "kind": "line",
+      "text": "unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js\"));"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8192,
+      "kind": "line",
+      "text": "${{edge.order}}${{edge.line ? \" L\" + edge.line : \"\"}}`,"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8201,
+      "kind": "line",
+      "text": "ffffff\", \"border-color\":\"#111827\", \"border-width\":2, \"width\":8, \"height\":8, \"color\":\"#111827\", \"font-size\":\"11px\", \"text-wrap\":\"wrap\", \"text-max-width\":180, \"text-valign\":\"center\", \"text-halign\":\"right\", \"text-margin-x\":-8, \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.88, \"text-background-padding\":2 }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8202,
+      "kind": "line",
+      "text": "3267e3\", \"border-color\":\"#1d4ed8\", \"width\":14, \"height\":14, \"font-weight\":\"700\" }} }},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8203,
+      "kind": "line",
+      "text": "079669\", \"target-arrow-color\":\"#079669\", \"target-arrow-shape\":\"triangle\", \"curve-style\":\"taxi\", \"taxi-direction\":\"rightward\", \"taxi-turn\":70, \"font-size\":\"10px\", \"font-weight\":\"700\", \"color\":\"#dc2626\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.94, \"text-background-padding\":2 }} }}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8246,
+      "kind": "line",
+      "text": "labels read top-to-bottom. Use arrow keys to navigate.`;"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 8972,
+      "kind": "line",
+      "text": "\", \"https://\", \"/\")):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9033,
+      "kind": "line",
+      "text": "\", \"https://\", \"/\")):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9088,
+      "kind": "line",
+      "text": "\", \"https://\", \"/\")):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9560,
+      "kind": "line",
+      "text": "Google Analytics user actions\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9586,
+      "kind": "line",
+      "text": "# GA step {order}: {button}\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9609,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9610,
+      "kind": "line",
+      "text": "Mixpanel activity integration (parallel workflow to Google Analytics)."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9611,
+      "kind": "line",
+      "text": "GA auth is per-browser-session OAuth with no natural persistence, so GA"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9612,
+      "kind": "line",
+      "text": "connection state lives in memory (GOOGLE_ANALYTICS_SESSIONS). Mixpanel uses"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9613,
+      "kind": "line",
+      "text": "static project/service-account credentials instead, which do need to"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9614,
+      "kind": "line",
+      "text": "persist across page loads, so those are stored in Supabase, encrypted."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9615,
+      "kind": "line",
+      "text": "Loaded events are NOT stored in Supabase (GA doesn't do that either) -"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9616,
+      "kind": "line",
+      "text": "they're written as a generated markdown doc into src/codeval_generated/,"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9617,
+      "kind": "line",
+      "text": "the same mechanism GA uses so events become searchable/answerable"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9618,
+      "kind": "line",
+      "text": "alongside code through the existing /search pipeline."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9619,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9622,
+      "kind": "line",
+      "text": "data.mixpanel.com/api/2.0/export\", \"import\": \"https://api.mixpanel.com\"},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9623,
+      "kind": "line",
+      "text": "data-eu.mixpanel.com/api/2.0/export\", \"import\": \"https://api-eu.mixpanel.com\"},"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9800,
+      "kind": "line",
+      "text": "1000"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9835,
+      "kind": "line",
+      "text": "Mixpanel user actions\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9850,
+      "kind": "line",
+      "text": "# Mixpanel step {index}: {button}\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9969,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9970,
+      "kind": "line",
+      "text": "Sentry production error integration."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9971,
+      "kind": "line",
+      "text": "Unlike GA/Mixpanel custom event properties, Sentry stack frames are exact"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9972,
+      "kind": "line",
+      "text": "(filename, line, function), so errors are stored as real rows in"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9973,
+      "kind": "line",
+      "text": "codeval_analytics_events and matched deterministically against the SCIM"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9974,
+      "kind": "line",
+      "text": "function index + callgraph, instead of going through semantic search."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 9975,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 10036,
+      "kind": "line",
+      "text": "sentry.io/api/0/projects/{org_slug}/{project_slug}/\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 10082,
+      "kind": "line",
+      "text": "sentry.io/api/0/organizations/{org_slug}/issues/{issue_id}/events/latest/\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 10146,
+      "kind": "line",
+      "text": "sentry.io/api/0/projects/{org_slug}/{project_slug}/issues/\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 11101,
+      "kind": "line",
+      "text": "api.openai.com/v1/chat/completions\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12049,
+      "kind": "line",
+      "text": "analyticsdata.googleapis.com/v1beta/properties/{property_id}:runReport\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12331,
+      "kind": "line",
+      "text": "Request model"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12390,
+      "kind": "line",
+      "text": "Contact email settings"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12391,
+      "kind": "line",
+      "text": "Email delivery uses Mailjet's HTTPS Send API, which works on Render free services."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12392,
+      "kind": "line",
+      "text": "Set these environment variables:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12393,
+      "kind": "line",
+      "text": "MAILJET_API_KEY=<your Mailjet API key>"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12394,
+      "kind": "line",
+      "text": "MAILJET_SECRET_KEY=<your Mailjet secret key>"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12395,
+      "kind": "line",
+      "text": "MAILJET_FROM_EMAIL=<verified sender email>"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12396,
+      "kind": "line",
+      "text": "MAILJET_FROM_NAME=CodeVal"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12397,
+      "kind": "line",
+      "text": "CONTACT_TO_EMAIL=<recipient email>"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12412,
+      "kind": "line",
+      "text": "api.mailjet.com/v3.1/send\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12474,
+      "kind": "line",
+      "text": "api.mailjet.com/v3.1/send\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12542,
+      "kind": "line",
+      "text": "\", \"#\", \"/* */\", \"<!-- -->\", \"dashboard note\"],"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12588,
+      "kind": "line",
+      "text": "\", \"#\", \"/* */\", \"<!-- -->\", \"dashboard note\", \"dashboard todo\"],"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 12659,
+      "kind": "line",
+      "text": "L{int(line)}\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13033,
+      "kind": "line",
+      "text": "Current-file scope means the selected file is the anchor. Keep direct"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13034,
+      "kind": "line",
+      "text": "cross-file calls so a file with no same-file callees does not collapse"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13035,
+      "kind": "line",
+      "text": "to a single node, but only expand traversal through selected-file nodes."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13266,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13267,
+      "kind": "line",
+      "text": "preferred extracted source dir"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13268,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13275,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13276,
+      "kind": "line",
+      "text": "nested source dir"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13277,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13288,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13289,
+      "kind": "line",
+      "text": "fallback"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13290,
+      "kind": "line",
+      "text": "----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13673,
+      "kind": "line",
+      "text": "Generic words the callers/callees regex can otherwise swallow as a fake symbol name"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13674,
+      "kind": "line",
+      "text": "(e.g. \"find all callers of this function\" with no real target captures \"function\")."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13677,
+      "kind": "line",
+      "text": "Vendor-specific credential shapes that are unambiguous enough to flag at high confidence"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13678,
+      "kind": "line",
+      "text": "from raw text alone, regardless of source language."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13690,
+      "kind": "line",
+      "text": "A credential-sounding variable assigned a literal string instead of read from the environment."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13691,
+      "kind": "line",
+      "text": "Requires a quote immediately after `=`/`:`, which already excludes the common safe pattern"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13692,
+      "kind": "line",
+      "text": "of reading from os.environ / process.env (no literal quote follows the operator there)."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13705,
+      "kind": "line",
+      "text": "A DB connection string with embedded credentials, found in a file type that ships to the browser."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13707,
+      "kind": "line",
+      "text": "[^\\s'\\\"]+:[^\\s'\\\"@]+@[^\\s'\\\"]+\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13714,
+      "kind": "line",
+      "text": "CORS configured to allow any origin: the word origin/allow_origins/Access-Control-Allow-Origin"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13715,
+      "kind": "line",
+      "text": "followed within a short window by a quoted \"*\", which covers FastAPI/Starlette, Flask-CORS,"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13716,
+      "kind": "line",
+      "text": "Express `cors`, and manually-set headers without needing a per-framework parser."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13798,
+      "kind": "line",
+      "text": "` connection string with embedded credentials appears in a file that ships to the browser.\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13801,
+      "kind": "line",
+      "text": "...\"],"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13858,
+      "kind": "line",
+      "text": "\", \"#\", \"*\", \"/*\")):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13922,
+      "kind": "line",
+      "text": "match always ends with the literal `{` that opens the body; using"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13923,
+      "kind": "line",
+      "text": "the first `{` in the match would instead catch a destructured"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 13924,
+      "kind": "line",
+      "text": "param's brace (e.g. `({ session }) => {`), collapsing the scope."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 14305,
+      "kind": "line",
+      "text": "Safe dynamic SQL shape: only the number of parameter placeholders is interpolated."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 14308,
+      "kind": "line",
+      "text": "Safe dynamic SQL shape: a list of constant parameterized clauses is joined, while values remain bound separately."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16141,
+      "kind": "line",
+      "text": "# Fix generation skipped\\n\\n{skip_reason}\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16411,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16412,
+      "kind": "line",
+      "text": "FAST JAVA CALLGRAPH (WITH CALLER TRACKING)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16413,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16417,
+      "kind": "line",
+      "text": "-------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16418,
+      "kind": "line",
+      "text": "Helper: safe parse wrapper"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16419,
+      "kind": "line",
+      "text": "-------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16519,
+      "kind": "line",
+      "text": "Run pyan3"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16525,
+      "kind": "line",
+      "text": "Load DOT into NetworkX"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16528,
+      "kind": "line",
+      "text": "Remove 'main' node if it exists"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16532,
+      "kind": "line",
+      "text": "Save JSON"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16539,
+      "kind": "line",
+      "text": "Build PyVis network"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16542,
+      "kind": "line",
+      "text": "Find top-level nodes (nodes with no incoming edges)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16546,
+      "kind": "line",
+      "text": "maps node \u2192 unique number"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16547,
+      "kind": "line",
+      "text": "global counter per top node"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16549,
+      "kind": "line",
+      "text": "assign number to top"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16557,
+      "kind": "line",
+      "text": "iterate children"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16559,
+      "kind": "line",
+      "text": "assign number if new"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16568,
+      "kind": "line",
+      "text": "now safe to add edge"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16571,
+      "kind": "line",
+      "text": "Physics options"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16591,
+      "kind": "line",
+      "text": "Disable physics after 5s"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16609,
+      "kind": "line",
+      "text": "pyan3 CALLGRAPH (PYTHON)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16624,
+      "kind": "line",
+      "text": "Find all Python files in repo_dir"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16629,
+      "kind": "line",
+      "text": "Build pyan3 command"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16632,
+      "kind": "line",
+      "text": "Run pyan3 and capture DOT output"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16637,
+      "kind": "line",
+      "text": "Load DOT into NetworkX"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16640,
+      "kind": "line",
+      "text": "Optionally remove root node 'main'"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16645,
+      "kind": "line",
+      "text": "Save JSON version"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16652,
+      "kind": "line",
+      "text": "Build interactive PyVis graph"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16655,
+      "kind": "line",
+      "text": "Map nodes to numbers"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16658,
+      "kind": "line",
+      "text": "Add nodes with number + label"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16663,
+      "kind": "line",
+      "text": "Add edges using numbers"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16684,
+      "kind": "line",
+      "text": "Enable physics for initial layout"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16685,
+      "kind": "line",
+      "text": "Pass as JSON string"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16691,
+      "kind": "line",
+      "text": "After net.write_html(html_file)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16708,
+      "kind": "line",
+      "text": "optional, return NetworkX graph"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16716,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16717,
+      "kind": "line",
+      "text": "1. Utility: Load AST JSON and reconstruct AST"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16718,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16732,
+      "kind": "line",
+      "text": "Convert dump string \u2192 Python AST node"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16733,
+      "kind": "line",
+      "text": "ast.literal_eval converts the dump string into a Python dict-like structure"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16734,
+      "kind": "line",
+      "text": "ast.parse(ast.unparse(...)) reconstructs the AST"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16738,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16739,
+      "kind": "line",
+      "text": "2. CallGraphVisitor: Extract calls + fully-qualified names"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16740,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16748,
+      "kind": "line",
+      "text": "map imported names \u2192 module"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16752,
+      "kind": "line",
+      "text": "Scope stack: module \u2192 class \u2192 function"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16756,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16757,
+      "kind": "line",
+      "text": "Handle imports"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16758,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16761,
+      "kind": "line",
+      "text": "import utils \u2192 utils"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16768,
+      "kind": "line",
+      "text": "from utils import helper \u2192 helper \u2192 utils.helper"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16773,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16774,
+      "kind": "line",
+      "text": "Handle classes + functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16775,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16782,
+      "kind": "line",
+      "text": "Build fully-qualified name: module.Class.func"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16795,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16796,
+      "kind": "line",
+      "text": "Handle calls"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16797,
+      "kind": "line",
+      "text": "-----------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16802,
+      "kind": "line",
+      "text": "Case 1: foo()"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16806,
+      "kind": "line",
+      "text": "Case 2: obj.method()"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16808,
+      "kind": "line",
+      "text": "recursively resolve full chain"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16828,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16829,
+      "kind": "line",
+      "text": "3. Build global call graph from all AST JSON files"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16830,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16842,
+      "kind": "line",
+      "text": "Derive module name from file path"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16855,
+      "kind": "line",
+      "text": "Merge this file's graph into the global graph"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16861,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16862,
+      "kind": "line",
+      "text": "5. Main entry point"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16863,
+      "kind": "line",
+      "text": "---------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16867,
+      "kind": "line",
+      "text": "--- First pass: map module -> functions ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16878,
+      "kind": "line",
+      "text": "--- Second pass: build edges ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16890,
+      "kind": "line",
+      "text": "Add nodes"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16894,
+      "kind": "line",
+      "text": "Add edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 16898,
+      "kind": "line",
+      "text": "Only create edge if callee is user-defined in the same module"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17279,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17280,
+      "kind": "line",
+      "text": "PASS 1 \u2014 Collect all user-defined methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17281,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17293,
+      "kind": "line",
+      "text": "Class methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17298,
+      "kind": "line",
+      "text": "Top-level methods (rare)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17303,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17304,
+      "kind": "line",
+      "text": "PASS 2 \u2014 Collect edges between user methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17305,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17319,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17320,
+      "kind": "line",
+      "text": "CLASS METHODS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17321,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17332,
+      "kind": "line",
+      "text": "\ud83d\udeab Skip trivial self-recursion early (optional but useful)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17336,
+      "kind": "line",
+      "text": "\u2705 1. Same-class call"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17341,
+      "kind": "line",
+      "text": "\u2705 2. Qualifier-based guesses"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17354,
+      "kind": "line",
+      "text": "\u2705 3. Fallback"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17360,
+      "kind": "line",
+      "text": "\u2705 FINAL CLEAN ADD (THIS IS THE KEY PART)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17364,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17365,
+      "kind": "line",
+      "text": "OPTIONAL: TOP-LEVEL METHODS (rare in Java)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17366,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17378,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17379,
+      "kind": "line",
+      "text": "Write compact JSON"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17380,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17394,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17395,
+      "kind": "line",
+      "text": "PASS 1 \u2014 Collect all user-defined methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17396,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17410,
+      "kind": "line",
+      "text": "Class methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17416,
+      "kind": "line",
+      "text": "Top-level methods (rare)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17421,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17422,
+      "kind": "line",
+      "text": "PASS 2 \u2014 Collect edges between user methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17423,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17437,
+      "kind": "line",
+      "text": "CLASS METHODS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17444,
+      "kind": "line",
+      "text": "Walk the *entire* AST inside the method"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17449,
+      "kind": "line",
+      "text": "Skip trivial self-recursion"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17453,
+      "kind": "line",
+      "text": "1. Same-class call"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17458,
+      "kind": "line",
+      "text": "2. Qualifier-based resolution"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17470,
+      "kind": "line",
+      "text": "3. Fallback: suffix match"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17477,
+      "kind": "line",
+      "text": "Add edge if valid"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17481,
+      "kind": "line",
+      "text": "TOP-LEVEL METHODS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17494,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17495,
+      "kind": "line",
+      "text": "Write compact JSON"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17496,
+      "kind": "line",
+      "text": "-----------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17514,
+      "kind": "line",
+      "text": "All user-defined methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17517,
+      "kind": "line",
+      "text": "-------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17518,
+      "kind": "line",
+      "text": "Helper: safe parse wrapper"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17519,
+      "kind": "line",
+      "text": "-------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17532,
+      "kind": "line",
+      "text": "First pass: collect all user-defined functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17550,
+      "kind": "line",
+      "text": "Class methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17557,
+      "kind": "line",
+      "text": "Top-level functions (no class)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17562,
+      "kind": "line",
+      "text": "Second pass: collect edges only between user-defined functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17575,
+      "kind": "line",
+      "text": "Class methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17583,
+      "kind": "line",
+      "text": "Prepend class name if callee is also user-defined"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17596,
+      "kind": "line",
+      "text": "Top-level methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17609,
+      "kind": "line",
+      "text": "Write JSON"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17652,
+      "kind": "line",
+      "text": "Also capture top-level methods (no class)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17695,
+      "kind": "line",
+      "text": "Find all methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17700,
+      "kind": "line",
+      "text": "Find all method calls inside this method"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17708,
+      "kind": "line",
+      "text": "Save output"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17752,
+      "kind": "line",
+      "text": "--- detect method definition ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17760,
+      "kind": "line",
+      "text": "--- update brace depth ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17764,
+      "kind": "line",
+      "text": "if method closed"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17768,
+      "kind": "line",
+      "text": "--- detect calls ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17797,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17798,
+      "kind": "line",
+      "text": "COMMENT EXTRACTION (ORIGINAL)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17799,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17818,
+      "kind": "line",
+      "text": "\"):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17819,
+      "kind": "line",
+      "text": "\").strip())"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17845,
+      "kind": "line",
+      "text": "Remove <metaClassAdapter>, <iterator>, <module>, etc."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17851,
+      "kind": "line",
+      "text": "Ignore Joern internal nodes"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17878,
+      "kind": "line",
+      "text": "filter synthetic / internal nodes"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17961,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17962,
+      "kind": "line",
+      "text": "AST ANALYZER (ORIGINAL)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17963,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17968,
+      "kind": "line",
+      "text": "includes class methods"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17974,
+      "kind": "line",
+      "text": "start/end/loc per function"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17982,
+      "kind": "line",
+      "text": "handle: from x import *"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 17985,
+      "kind": "line",
+      "text": "handle: from x import a, b"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18127,
+      "kind": "line",
+      "text": "Helper to get full dotted name from an Attribute or Name"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18140,
+      "kind": "line",
+      "text": "--- Parse safely ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18162,
+      "kind": "line",
+      "text": "--- Wrap module for metadata ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18178,
+      "kind": "line",
+      "text": "--- Extract comments ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18184,
+      "kind": "line",
+      "text": "\"):"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18186,
+      "kind": "line",
+      "text": "\" in line:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18187,
+      "kind": "line",
+      "text": "\", 1)[1].strip())"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18189,
+      "kind": "line",
+      "text": "--- Extract module docstring ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18196,
+      "kind": "line",
+      "text": "--- CST Visitor ---"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18214,
+      "kind": "line",
+      "text": "Compose name with class if inside class"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18224,
+      "kind": "line",
+      "text": "Track decorator calls"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18246,
+      "kind": "line",
+      "text": "\u2705 OUTSIDE CLASS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18252,
+      "kind": "line",
+      "text": "Map calls outside any function to a <module> pseudo-function"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18257,
+      "kind": "line",
+      "text": "Go through all calls and assign top-level calls"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18259,
+      "kind": "line",
+      "text": "If call is already mapped in a function, skip"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18266,
+      "kind": "line",
+      "text": "Module docstring first"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18270,
+      "kind": "line",
+      "text": "Top comments"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18274,
+      "kind": "line",
+      "text": "Maybe include functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18296,
+      "kind": "line",
+      "text": "from libcst._nodes._internal import to_dict"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18300,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18301,
+      "kind": "line",
+      "text": "ZIP DOWNLOAD + EXTRACT"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18302,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18305,
+      "kind": "line",
+      "text": "github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18316,
+      "kind": "line",
+      "text": "github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18322,
+      "kind": "line",
+      "text": "Build a stable path"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18328,
+      "kind": "line",
+      "text": "Write ZIP to disk"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18352,
+      "kind": "line",
+      "text": "Windows MAX_PATH is 260 chars; deeply nested archives (e.g. .gradle"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18353,
+      "kind": "line",
+      "text": "caches) routinely exceed this even with sanitized components. The"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18354,
+      "kind": "line",
+      "text": "\\\\?\\ prefix opts into the extended-length path API so makedirs/open"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18355,
+      "kind": "line",
+      "text": "don't fail with a misleading FileNotFoundError."
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18394,
+      "kind": "line",
+      "text": "ZIP-slip protection"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18398,
+      "kind": "line",
+      "text": "Directory"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18403,
+      "kind": "line",
+      "text": "Ensure parent directory exists"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18407,
+      "kind": "line",
+      "text": "Extract file"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18411,
+      "kind": "line",
+      "text": "Detect GitHub-style top-level folder"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18419,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18420,
+      "kind": "line",
+      "text": "TRIM CALLGRAPH AND CFG - JOERN PIPELINE (CFG / DDG / PDG / CALLGRAPH)?"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18421,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18435,
+      "kind": "line",
+      "text": "Load callgraph edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18439,
+      "kind": "line",
+      "text": "Step 1: collect all user-defined functions as callers"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18442,
+      "kind": "line",
+      "text": "Step 2: filter edges to keep only calls between user-defined functions"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18449,
+      "kind": "line",
+      "text": "Step 3: save trimmed callgraph"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18459,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18460,
+      "kind": "line",
+      "text": "JOERN PIPELINE (CFG / DDG / PDG / CALLGRAPH)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18461,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18516,
+      "kind": "line",
+      "text": "Import Java source code"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18525,
+      "kind": "line",
+      "text": "---------------- FUNCTIONS ----------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18548,
+      "kind": "line",
+      "text": "---------------- CALLGRAPH ----------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18549,
+      "kind": "line",
+      "text": "Build a set of fully-qualified user-defined function names"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18551,
+      "kind": "line",
+      "text": "older Joern syntax"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18555,
+      "kind": "line",
+      "text": "Extract real function-to-function call edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18585,
+      "kind": "line",
+      "text": "------------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18586,
+      "kind": "line",
+      "text": "---------------- ORDERED AST CALLS (ADD THIS HERE) ---------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18587,
+      "kind": "line",
+      "text": "------------------------------------------------------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18594,
+      "kind": "line",
+      "text": "preserve source order"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18624,
+      "kind": "line",
+      "text": "---------------- ROOTS ----------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18643,
+      "kind": "line",
+      "text": "---------------- CFG ----------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18668,
+      "kind": "line",
+      "text": "---------------- COMMENTS ----------------"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18736,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18737,
+      "kind": "line",
+      "text": "PYVIS VISUALIZATIONS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18738,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18752,
+      "kind": "line",
+      "text": "ffffff\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18753,
+      "kind": "line",
+      "text": "222222\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18766,
+      "kind": "line",
+      "text": "00aaff\" },"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18777,
+      "kind": "line",
+      "text": "4a90e2\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18780,
+      "kind": "line",
+      "text": "FIXED: edges is a list of dicts, not tuples"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18789,
+      "kind": "line",
+      "text": "Add nodes"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18794,
+      "kind": "line",
+      "text": "Add edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18807,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18808,
+      "kind": "line",
+      "text": "AST VISUALIZATIONS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18809,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18862,
+      "kind": "line",
+      "text": "ffffff\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18863,
+      "kind": "line",
+      "text": "222222\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18866,
+      "kind": "line",
+      "text": "Inject physics toggle button + JS"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18878,
+      "kind": "line",
+      "text": "IMPORTANT FIX:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18879,
+      "kind": "line",
+      "text": "Expose the network object globally after PyVis creates it"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18899,
+      "kind": "line",
+      "text": "This JS is appended automatically by PyVis, so we patch it:"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18905,
+      "kind": "line",
+      "text": "4a90e2\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18906,
+      "kind": "line",
+      "text": "7ed321\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18908,
+      "kind": "line",
+      "text": "Layout parameters"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18915,
+      "kind": "line",
+      "text": "Collect AST entries"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18930,
+      "kind": "line",
+      "text": "If previous file had >20 functions, force next file to new row"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18937,
+      "kind": "line",
+      "text": "trees_per_row + row_offset"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18945,
+      "kind": "line",
+      "text": "File node (middle row)"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18960,
+      "kind": "line",
+      "text": "Compute horizontal fan-out"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 18964,
+      "kind": "line",
+      "text": "Place functions: even \u2192 top row, odd \u2192 bottom row"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19008,
+      "kind": "line",
+      "text": "4a90e2\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19061,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19062,
+      "kind": "line",
+      "text": "ROUTES"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19063,
+      "kind": "line",
+      "text": "============================================================"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19065,
+      "kind": "line",
+      "text": "@app.get(\"/\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19066,
+      "kind": "line",
+      "text": "def home():"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19067,
+      "kind": "line",
+      "text": "return {\"message\": \"Python parser + Joern pipeline running\"}"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19076,
+      "kind": "line",
+      "text": "Remove return type and parameters"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19079,
+      "kind": "line",
+      "text": "Remove <init> and <clinit>"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19081,
+      "kind": "line",
+      "text": "Remove trailing dots"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19121,
+      "kind": "line",
+      "text": "Only draw if small enough"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19130,
+      "kind": "line",
+      "text": "ffffff\","
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19131,
+      "kind": "line",
+      "text": "222222\""
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19170,
+      "kind": "line",
+      "text": "split only on the last dot"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19174,
+      "kind": "line",
+      "text": "keeps levels positive and avoids normalization"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19175,
+      "kind": "line",
+      "text": "Add a HIDDEN root node for better layout"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19178,
+      "kind": "line",
+      "text": "Build nodes + edges"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19181,
+      "kind": "line",
+      "text": "Main function node"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19182,
+      "kind": "line",
+      "text": "88c\", level=BASE, shape=\"box\")"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19183,
+      "kind": "line",
+      "text": "Add callers with staggered levels"
+    },
+    {
+      "file": "backend/main.py",
+      "line": 19185,
+      "kind": "line",
+      "text": "c88\", level=BASE - (i + 1))"
+    }
+  ],
+  "todos": [
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 150,
+      "text": "Fix joern callgrah - fix render environment JOERN_BIN=/path/to/joern"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 151,
+      "text": "Will need to install joern on render"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 154,
+      "text": "Function"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 156,
+      "text": "section can you allow the user to add a TODO."
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 157,
+      "text": "at the Product Level."
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 158,
+      "text": "."
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 160,
+      "text": "at the function level"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 162,
+      "text": "you simply the relevant functions, text and"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 12588,
+      "text": "\"],"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 28213,
+      "text": "TODO"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 28260,
+      "text": "uncomment this - testing only"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 28335,
+      "text": "remove this - testing only"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/main.py",
+      "line": 34210,
+      "text": "/FIXME-style comment extraction from repo comments.\", md_table([\"File\", \"Line\", \"Tag\", \"Text\"], todo_rows),"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/scim.py",
+      "line": 2744,
+      "text": "Show neighors for a node only when the user clicks on the node."
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/parsers/python/python_analyzer.py",
+      "line": 271,
+      "text": "Added new entry point main.py?"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/dashboard.html",
+      "line": 3232,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/demo.html",
+      "line": 2595,
+      "text": "</span></a>"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/demo.html",
+      "line": 3024,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/example.html",
+      "line": 1950,
+      "text": "</a>"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/example.html",
+      "line": 2346,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/experiment.html",
+      "line": 1870,
+      "text": "</a>"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/experiment.html",
+      "line": 2677,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/sample.html",
+      "line": 1950,
+      "text": "</a>"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/sample.html",
+      "line": 2325,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/BACKUP/dash.html",
+      "line": 1935,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/BACKUP/dashboardv1.html",
+      "line": 1980,
+      "text": "Add the feature related questions back later on"
+    },
+    {
+      "tag": "TODO",
+      "file": "backend/static/BACKUP/indexMAIN.html",
+      "line": 969,
+      "text": "TODO"
+    }
+  ]
+}

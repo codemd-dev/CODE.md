@@ -38,6 +38,7 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const crypto = __importStar(require("crypto"));
 const child_process_1 = require("child_process");
 const undici_1 = require("undici");
@@ -62,14 +63,19 @@ const DEFAULT_EXCLUDES = [
     '**/codemd.dev/**',
 ];
 const ARTIFACT_OUTPUT_DIR = 'codemd.dev';
+const CODEMD_DIFF_SCHEME = 'codemd-diff';
 const WORKSPACE_MCP_CONFIG_FILE = '.mcp.json';
 const WORKSPACE_CODEX_DIR = '.codex';
 const WORKSPACE_CODEX_CONFIG_FILE = '.codex/config.toml';
+const WORKSPACE_CLAUDE_DIR = '.claude';
+const WORKSPACE_CLAUDE_SETTINGS_FILE = '.claude/settings.local.json';
 const WEBVIEW_SUPPORT_ARTIFACTS = [
     'lib/cytoscape/cytoscape.min.js',
 ];
 const MCP_PROVIDER_ID = 'codemdGraphs.mcp';
-const MCP_SERVER_NAME = 'codemd';
+const MCP_SERVER_NAME = 'CODE.md MCP';
+const LEGACY_MCP_SERVER_NAMES = ['codemd'];
+const MCP_SERVER_NAMES = [MCP_SERVER_NAME, ...LEGACY_MCP_SERVER_NAMES];
 let managedVenvSetupPromise = null;
 // Keys whose artifacts are large, binary, or interpretive rather than direct
 // analysis output (vector DBs, embeddings, training pairs) — not useful to
@@ -96,10 +102,13 @@ function workspaceRelativePath(folder, uri) {
     return path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
 }
 function workspaceWriteIsAllowed(normalizedRelPath, kind) {
-    if (kind === 'file' && (normalizedRelPath === WORKSPACE_MCP_CONFIG_FILE || normalizedRelPath === WORKSPACE_CODEX_CONFIG_FILE)) {
+    if (kind === 'file' &&
+        (normalizedRelPath === WORKSPACE_MCP_CONFIG_FILE ||
+            normalizedRelPath === WORKSPACE_CODEX_CONFIG_FILE ||
+            normalizedRelPath === WORKSPACE_CLAUDE_SETTINGS_FILE)) {
         return true;
     }
-    if (kind === 'directory' && normalizedRelPath === WORKSPACE_CODEX_DIR) {
+    if (kind === 'directory' && (normalizedRelPath === WORKSPACE_CODEX_DIR || normalizedRelPath === WORKSPACE_CLAUDE_DIR)) {
         return true;
     }
     return normalizedRelPath === ARTIFACT_OUTPUT_DIR || normalizedRelPath.startsWith(`${ARTIFACT_OUTPUT_DIR}/`);
@@ -112,7 +121,7 @@ function assertWorkspaceWriteAllowed(uri, operation, kind) {
     const relPath = workspaceRelativePath(folder, uri);
     const normalized = relPath.replace(/^\.?\//, '');
     if (!workspaceWriteIsAllowed(normalized, kind)) {
-        throw new Error(`Blocked ${operation} to workspace file "${relPath}". CODE.md only writes ${ARTIFACT_OUTPUT_DIR}/ and ${WORKSPACE_MCP_CONFIG_FILE}.`);
+        throw new Error(`Blocked ${operation} to workspace file "${relPath}". CODE.md only writes ${ARTIFACT_OUTPUT_DIR}/, ${WORKSPACE_MCP_CONFIG_FILE}, and ${WORKSPACE_CLAUDE_SETTINGS_FILE}.`);
     }
 }
 async function safeWorkspaceCreateDirectory(uri) {
@@ -217,7 +226,7 @@ function registerMcpProvider(context) {
     context.subscriptions.push(register(MCP_PROVIDER_ID, {
         provideMcpServerDefinitions() {
             return (vscode.workspace.workspaceFolders || []).map((folder) => {
-                const server = new vscode.McpStdioServerDefinition('CODE.md', process.execPath, mcpServerArgs(context, folder.uri.fsPath), { CODEMD_WORKSPACE: folder.uri.fsPath }, context.extension.packageJSON?.version || '0.0.0');
+                const server = new vscode.McpStdioServerDefinition(MCP_SERVER_NAME, process.execPath, mcpServerArgs(context, folder.uri.fsPath), { CODEMD_WORKSPACE: folder.uri.fsPath }, context.extension.packageJSON?.version || '0.0.0');
                 server.cwd = folder.uri;
                 return server;
             });
@@ -238,6 +247,9 @@ async function setupClaudeProjectMcp(context, folder) {
         }
     }
     config.mcpServers = config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
+    for (const legacyName of LEGACY_MCP_SERVER_NAMES) {
+        delete config.mcpServers[legacyName];
+    }
     config.mcpServers[MCP_SERVER_NAME] = {
         command: 'node',
         args: mcpServerArgs(context, folder.uri.fsPath),
@@ -252,11 +264,120 @@ async function setupClaudeProjectMcp(context, folder) {
     await safeWorkspaceWriteFile(configUri, Buffer.from(nextText, 'utf8'));
     return true;
 }
+function claudeLocalSettingsUri(folder) {
+    return vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CLAUDE_SETTINGS_FILE.split('/'));
+}
+function readEnabledMcpjsonServers(folder) {
+    const settingsPath = claudeLocalSettingsUri(folder).fsPath;
+    if (!fs.existsSync(settingsPath)) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        return Array.isArray(parsed?.enabledMcpjsonServers) ? parsed.enabledMcpjsonServers : [];
+    }
+    catch {
+        return [];
+    }
+}
+// Only the *current* server name counts as approved. A legacy-only entry
+// (from before an MCP_SERVER_NAME rename) is stale: .mcp.json no longer has
+// that key, so Claude Code's own approval check wouldn't match it either —
+// requestClaudeMcpApproval below migrates it forward instead of trusting it.
+function isClaudeMcpServerApproved(folder) {
+    return readEnabledMcpjsonServers(folder).includes(MCP_SERVER_NAME);
+}
+// Writes only a narrow, named allowlist entry (never enableAllProjectMcpServers)
+// so approval is scoped to CODE.md's own server and can't be used to
+// silently trust other/future entries in .mcp.json.
+async function approveClaudeMcpServer(folder) {
+    const settingsUri = claudeLocalSettingsUri(folder);
+    let settings = {};
+    if (fs.existsSync(settingsUri.fsPath)) {
+        try {
+            const existing = fs.readFileSync(settingsUri.fsPath, 'utf8').trim();
+            settings = existing ? JSON.parse(existing) : {};
+        }
+        catch (err) {
+            throw new Error(`Could not read ${WORKSPACE_CLAUDE_SETTINGS_FILE}: ${err?.message || String(err)}`);
+        }
+    }
+    const enabled = Array.isArray(settings.enabledMcpjsonServers)
+        ? settings.enabledMcpjsonServers.filter((name) => !LEGACY_MCP_SERVER_NAMES.includes(String(name)))
+        : [];
+    if (!enabled.includes(MCP_SERVER_NAME)) {
+        enabled.push(MCP_SERVER_NAME);
+    }
+    settings.enabledMcpjsonServers = enabled;
+    await safeWorkspaceCreateDirectory(vscode.Uri.joinPath(folder.uri, WORKSPACE_CLAUDE_DIR));
+    await safeWorkspaceWriteFile(settingsUri, Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, 'utf8'));
+}
+// Asks the user before pre-approving the codemd MCP server for Claude Code,
+// so CODE.md never grants itself trust silently. Returns true only if the
+// user said yes and the approval was written.
+async function requestClaudeMcpApproval(folder) {
+    if (isClaudeMcpServerApproved(folder)) {
+        return false;
+    }
+    // Consent already granted under a pre-rename legacy name — carry it
+    // forward under the current name instead of asking again.
+    const enabled = readEnabledMcpjsonServers(folder);
+    if (LEGACY_MCP_SERVER_NAMES.some((name) => enabled.includes(name))) {
+        await approveClaudeMcpServer(folder);
+        return true;
+    }
+    const choice = await vscode.window.showInformationMessage(`CODE.md: allow the "${MCP_SERVER_NAME}" server to run automatically with Claude Code in "${folder.name}"? ` +
+        'This skips the manual /mcp approval step in Claude Code for this one server.', 'Allow', 'Not now');
+    if (choice !== 'Allow') {
+        return false;
+    }
+    await approveClaudeMcpServer(folder);
+    return true;
+}
 function tomlString(value) {
     return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 function tomlStringArray(values) {
     return `[${values.map(tomlString).join(', ')}]`;
+}
+function tomlKey(value) {
+    return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
+}
+function codexMcpBlock(context, workspaceRoot) {
+    const block = [
+        '# BEGIN CODE.md MCP',
+        `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}]`,
+        'command = "node"',
+        `args = ${tomlStringArray(mcpServerArgs(context, workspaceRoot))}`,
+        '',
+        `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}.env]`,
+        `CODEMD_WORKSPACE = ${tomlString(workspaceRoot)}`,
+        '# END CODE.md MCP',
+        '',
+    ].join('\n');
+    return block;
+}
+function removeCodexMcpServerTables(existing) {
+    const markerPattern = /# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP\r?\n?/;
+    const withoutMarkedBlock = existing.replace(markerPattern, '');
+    const lines = withoutMarkedBlock.split(/\r?\n/);
+    const kept = [];
+    let skipping = false;
+    const tableNamesToRemove = new Set(MCP_SERVER_NAMES.flatMap((name) => [`mcp_servers.${name}`, `mcp_servers.${name}.env`]));
+    for (const line of lines) {
+        const table = line.trim().match(/^\[([^\]]+)\]\s*$/)?.[1];
+        if (table) {
+            skipping = tableNamesToRemove.has(table) || tableNamesToRemove.has(table.replace(/"([^"]+)"/g, '$1'));
+        }
+        if (!skipping) {
+            kept.push(line);
+        }
+    }
+    return kept.join('\n').trimEnd();
+}
+function codexConfigWithMcp(existing, block) {
+    const base = removeCodexMcpServerTables(existing);
+    return `${base}${base.trim() ? '\n\n' : ''}${block}`;
 }
 async function setupCodexProjectMcp(context, folder) {
     const codexDir = vscode.Uri.joinPath(folder.uri, WORKSPACE_CODEX_DIR);
@@ -270,27 +391,36 @@ async function setupCodexProjectMcp(context, folder) {
             throw new Error(`Could not read ${WORKSPACE_CODEX_CONFIG_FILE}: ${err?.message || String(err)}`);
         }
     }
-    const block = [
-        '# BEGIN CODE.md MCP',
-        `[mcp_servers.${MCP_SERVER_NAME}]`,
-        'command = "node"',
-        `args = ${tomlStringArray(mcpServerArgs(context, folder.uri.fsPath))}`,
-        '',
-        `[mcp_servers.${MCP_SERVER_NAME}.env]`,
-        `CODEMD_WORKSPACE = ${tomlString(folder.uri.fsPath)}`,
-        '# END CODE.md MCP',
-        '',
-    ].join('\n');
-    const markerPattern = /# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP\r?\n?/;
-    const next = markerPattern.test(existing)
-        ? existing.replace(markerPattern, block)
-        : `${existing.trimEnd()}${existing.trim() ? '\n\n' : ''}${block}`;
+    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath));
     if (next === existing) {
         return false;
     }
     await safeWorkspaceCreateDirectory(codexDir);
     await safeWorkspaceWriteFile(configUri, Buffer.from(next, 'utf8'));
     return true;
+}
+function codexUserConfigPath() {
+    return path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml');
+}
+async function setupCodexUserMcp(context, folder) {
+    const configPath = codexUserConfigPath();
+    const configDir = path.dirname(configPath);
+    let existing = '';
+    if (fs.existsSync(configPath)) {
+        try {
+            existing = fs.readFileSync(configPath, 'utf8');
+        }
+        catch (err) {
+            throw new Error(`Could not read Codex user config ${configPath}: ${err?.message || String(err)}`);
+        }
+    }
+    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath));
+    if (next === existing) {
+        return { changed: false, path: configPath };
+    }
+    await fs.promises.mkdir(configDir, { recursive: true });
+    await fs.promises.writeFile(configPath, next, 'utf8');
+    return { changed: true, path: configPath };
 }
 async function setupProjectMcpConfigs(context, options) {
     const folders = vscode.workspace.workspaceFolders || [];
@@ -302,11 +432,19 @@ async function setupProjectMcpConfigs(context, options) {
     }
     const failures = [];
     const changedFolders = [];
+    const changedCodexUserConfigs = new Set();
     for (const folder of folders) {
         try {
             const changedClaude = await setupClaudeProjectMcp(context, folder);
             const changedCodex = await setupCodexProjectMcp(context, folder);
-            if (changedClaude || changedCodex) {
+            const changedCodexUser = await setupCodexUserMcp(context, folder);
+            // Only ask for MCP approval on explicit, user-initiated setup — never
+            // during the quiet background pass on activation.
+            const approvedClaude = options.quiet ? false : await requestClaudeMcpApproval(folder);
+            if (changedCodexUser.changed) {
+                changedCodexUserConfigs.add(changedCodexUser.path);
+            }
+            if (changedClaude || changedCodex || changedCodexUser.changed || approvedClaude) {
                 changedFolders.push(folder.name);
             }
         }
@@ -322,12 +460,88 @@ async function setupProjectMcpConfigs(context, options) {
         }
     }
     else if (changedFolders.length) {
-        const message = `CODE.md: Updated ${WORKSPACE_MCP_CONFIG_FILE} and ${WORKSPACE_CODEX_CONFIG_FILE} for MCP access in ${changedFolders.join(', ')}.`;
+        const codexUserConfigNote = changedCodexUserConfigs.size
+            ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
+            : '';
+        const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}".`;
         outputChannel?.appendLine(message);
         vscode.window.showInformationMessage(message);
     }
     else if (!options.quiet) {
-        vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date for Claude Code and Codex.`);
+        vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date in the workspace and Codex user config. Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}".`);
+    }
+}
+function commandExists(command) {
+    try {
+        const result = process.platform === 'win32'
+            ? (0, child_process_1.spawnSync)('where.exe', [command], { encoding: 'utf8', timeout: 3000 })
+            : (0, child_process_1.spawnSync)('sh', ['-lc', `command -v ${JSON.stringify(command)}`], { encoding: 'utf8', timeout: 3000 });
+        return result.status === 0;
+    }
+    catch {
+        return false;
+    }
+}
+function mcpClientDisplayName(client) {
+    return client === 'claude' ? 'Claude Code' : 'Codex';
+}
+function fileContains(filePath, needle) {
+    try {
+        return fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf8').includes(needle);
+    }
+    catch {
+        return false;
+    }
+}
+function mcpSetupStatus(folder) {
+    const workspaceConfigPath = vscode.Uri.joinPath(folder.uri, WORKSPACE_MCP_CONFIG_FILE).fsPath;
+    const codexProjectConfigPath = vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CODEX_CONFIG_FILE.split('/')).fsPath;
+    const userConfigPath = codexUserConfigPath();
+    let workspaceConfig = false;
+    try {
+        const config = JSON.parse(fs.readFileSync(workspaceConfigPath, 'utf8'));
+        workspaceConfig = MCP_SERVER_NAMES.some((name) => Boolean(config?.mcpServers?.[name]));
+    }
+    catch {
+        workspaceConfig = false;
+    }
+    const codexServerNeedles = MCP_SERVER_NAMES.flatMap((name) => [
+        `[mcp_servers.${tomlKey(name)}]`,
+        `[mcp_servers.${name}]`,
+    ]);
+    const codexProjectConfig = codexServerNeedles.some((needle) => fileContains(codexProjectConfigPath, needle));
+    const codexUserConfig = codexServerNeedles.some((needle) => fileContains(userConfigPath, needle));
+    return {
+        registered: workspaceConfig || codexProjectConfig || codexUserConfig,
+        workspaceConfig,
+        claudeApproved: isClaudeMcpServerApproved(folder),
+        codexProjectConfig,
+        codexUserConfig,
+        codexUserConfigPath: userConfigPath,
+        codexDetected: commandExists('codex'),
+        claudeDetected: commandExists('claude'),
+    };
+}
+function openMcpClientTerminal(client, folder) {
+    if (!commandExists(client)) {
+        const displayName = mcpClientDisplayName(client);
+        vscode.window.showWarningMessage(`CODE.md: ${displayName} CLI "${client}" was not found on PATH. Install ${displayName} or add "${client}" to PATH, then run Setup MCP again.`);
+        return;
+    }
+    const terminal = vscode.window.createTerminal({
+        name: `CODE.md ${mcpClientDisplayName(client)}`,
+        cwd: folder.uri.fsPath,
+    });
+    terminal.show();
+    terminal.sendText(client);
+    if (client === 'claude') {
+        const message = isClaudeMcpServerApproved(folder)
+            ? `CODE.md: "${MCP_SERVER_NAME}" is pre-approved for this workspace, Claude Code should pick it up automatically.`
+            : `CODE.md: In Claude Code, type /mcp and approve "${MCP_SERVER_NAME}" if it is pending.`;
+        vscode.window.showInformationMessage(message);
+    }
+    else {
+        vscode.window.showInformationMessage(`CODE.md: Codex started in a fresh workspace terminal. Approve "${MCP_SERVER_NAME}" if Codex prompts for MCP access.`);
     }
 }
 function activate(context) {
@@ -344,6 +558,7 @@ function activate(context) {
     const provider = new GraphsViewProvider(context);
     registerMcpProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('codemdGraphs.panel', provider));
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(CODEMD_DIFF_SCHEME, new GitShowContentProvider()));
     context.subscriptions.push(vscode.commands.registerCommand('codemd', () => provider.reveal()));
     context.subscriptions.push(vscode.commands.registerCommand('codemdGraphs.open', () => provider.reveal()));
     context.subscriptions.push(vscode.commands.registerCommand('codemdGraphs.openEditor', () => provider.openEditorPanel()));
@@ -394,10 +609,6 @@ async function resolveBackendDir(context, quiet) {
     if (fs.existsSync(path.join(bundledBackendDir, 'main.py'))) {
         return bundledBackendDir;
     }
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-    if (workspaceRoot && fs.existsSync(path.join(workspaceRoot, 'main.py'))) {
-        return workspaceRoot;
-    }
     // Background/quiet runs must never surface blocking native UI — a modal
     // folder picker popping up unprompted during automatic startup analysis
     // steals OS focus from whatever else is running (editor, terminal, other
@@ -408,7 +619,7 @@ async function resolveBackendDir(context, quiet) {
             'Set it in Settings, or run "Generate CODE.md" manually to be prompted for the folder.');
     }
     const picked = await vscode.window.showOpenDialog({
-        title: 'Select the folder containing the CodeVal FastAPI app (main.py)',
+        title: 'Select the folder containing the CODE.md analyzer backend (main.py)',
         canSelectFiles: false,
         canSelectFolders: true,
         canSelectMany: false,
@@ -560,27 +771,46 @@ function localBackendEnv(context) {
         CODEVAL_SECRET_ENCRYPTION_KEY: '',
     };
 }
+async function isServerReachable(baseUrl) {
+    try {
+        const res = await fetch(`${baseUrl}/openapi.json`);
+        return res.ok;
+    }
+    catch {
+        return false;
+    }
+}
 async function ensureServerRunning(context, onStatus, quiet) {
     const config = vscode.workspace.getConfiguration('codemdGraphs');
     const host = String(config.get('host') || '127.0.0.1');
     const port = Number(config.get('port') || 8100);
     const baseUrl = `http://${host}:${port}`;
     if (serverProcess && serverProcess.exitCode === null) {
-        return baseUrl;
+        if (await isServerReachable(baseUrl)) {
+            return baseUrl;
+        }
+        onStatus('Waiting for the local analysis service to become reachable...');
+        try {
+            await waitForServerReady(baseUrl, serverProcess, 5000);
+            return baseUrl;
+        }
+        catch {
+            outputChannel.appendLine(`\n--- Local server process was running but unreachable at ${baseUrl}; restarting it. ---`);
+            stopServer();
+        }
     }
     const backendDir = await resolveBackendDir(context, quiet);
     const mainPyPath = path.join(backendDir, 'main.py');
     if (!fs.existsSync(mainPyPath)) {
-        throw new Error(`Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CodeVal FastAPI app.`);
+        throw new Error(`Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODE.md analyzer backend.`);
     }
     const pythonPath = await backendPythonPath(context, backendDir, onStatus);
     const args = ['-m', 'uvicorn', 'main:app', '--host', host, '--port', String(port)];
-    onStatus(`Starting local FastAPI server (${pythonPath} ${args.join(' ')})…`);
+    onStatus('Starting local analysis service…');
     outputChannel.appendLine(`\n--- Starting local server: ${pythonPath} ${args.join(' ')} (cwd: ${backendDir}) ---`);
-    outputChannel.show(true);
     // This extension only does local analysis — no error/usage telemetry or
     // third-party integration should leave the machine. main.py defaults Sentry
-    // to "on" (with a baked-in DSN) for the hosted CodeVal service, and Google
+    // to "on" for hosted service deployments, and Google
     // Analytics / Mixpanel activate whenever their credentials happen to be
     // present in the environment. Force all three off for the locally-spawned
     // server regardless of what's in the launching shell's environment.
@@ -666,15 +896,8 @@ function localMcpUsageFileUri(outDirUri) {
     return vscode.Uri.joinPath(outDirUri, MCP_USAGE_FILE);
 }
 function readMcpUsage(folder) {
-    let configured = false;
-    try {
-        const configPath = vscode.Uri.joinPath(folder.uri, WORKSPACE_MCP_CONFIG_FILE).fsPath;
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        configured = Boolean(config?.mcpServers?.[MCP_SERVER_NAME]);
-    }
-    catch {
-        configured = false;
-    }
+    const setup = mcpSetupStatus(folder);
+    const configured = setup.registered;
     try {
         const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
         const usage = JSON.parse(fs.readFileSync(localMcpUsageFileUri(outDirUri).fsPath, 'utf8'));
@@ -685,15 +908,23 @@ function readMcpUsage(folder) {
         const clients = Object.entries(clientCounts)
             .map(([name, calls]) => ({ name, calls: Number(calls) || 0 }))
             .sort((a, b) => b.calls - a.calls);
+        const recordedTotal = Number(usage?.total_calls || 0);
+        const toolCalls = Object.values(usage?.tools && typeof usage.tools === 'object' ? usage.tools : {})
+            .reduce((sum, calls) => sum + (Number(calls) || 0), 0);
+        const resourceReads = Object.values(usage?.resources && typeof usage.resources === 'object' ? usage.resources : {})
+            .reduce((sum, calls) => sum + (Number(calls) || 0), 0);
         return {
             configured,
-            totalCalls: Number(usage?.total_calls || 0),
+            totalCalls: Math.max(recordedTotal, toolCalls + resourceReads),
             updatedAt: String(usage?.updated_at || ''),
+            stale: !usage?.updated_at || (Date.now() - Date.parse(String(usage.updated_at || ''))) > 24 * 60 * 60 * 1000,
             clients,
+            setup,
+            restartNeeded: configured && (!usage?.updated_at || (Date.now() - Date.parse(String(usage.updated_at || ''))) > 24 * 60 * 60 * 1000),
         };
     }
     catch {
-        return { configured, totalCalls: 0, updatedAt: '', clients: [] };
+        return { configured, totalCalls: 0, updatedAt: '', stale: true, clients: [], setup, restartNeeded: configured };
     }
 }
 // ---------------------------------------------------------------------------
@@ -853,7 +1084,8 @@ function rewriteHtmlArtifactForWebview(content, relPath) {
     // actual location, so this stays correct even if the generator's own
     // convention changes later.
     return content
-        .replace(/(["'`])(?:\.\.\/)*\/?lib\/cytoscape\/cytoscape\.min\.js\1/g, `$1${supportPrefix}lib/cytoscape/cytoscape.min.js$1`);
+        .replace(/(["'`])(?:\.\.\/)*\/?lib\/cytoscape\/cytoscape\.min\.js\1/g, `$1${supportPrefix}lib/cytoscape/cytoscape.min.js$1`)
+        .replace('const initialElements = explicitElements.length ? explicitElements : [nodeElement(firstRoot)];', 'const initialElements = explicitElements.length ? explicitElements : flowElementsFor(firstRoot, 1, 16);');
 }
 async function copyIfExists(source, target) {
     try {
@@ -1029,7 +1261,7 @@ async function analyzeLocalPathCli(context, outDirUri, folderPath, workspaceName
     const backendDir = await resolveBackendDir(context, quiet);
     const mainPyPath = path.join(backendDir, 'main.py');
     if (!fs.existsSync(mainPyPath)) {
-        throw new Error(`Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CodeVal backend.`);
+        throw new Error(`Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODE.md analyzer backend.`);
     }
     const scriptPath = path.join(context.extensionUri.fsPath, 'scripts', 'local-analyze.py');
     if (!fs.existsSync(scriptPath)) {
@@ -1098,6 +1330,354 @@ function pickInitialGraphUrl(uploadResult) {
         graphs.callgraph_html ||
         graphs.java_merged_navigatable_html ||
         '');
+}
+function compactSymbolName(symbol) {
+    const parts = String(symbol || '').split('.');
+    return parts.slice(-2).join('.') || symbol;
+}
+function impactedFilesFromChange(change) {
+    return (change?.impact_files || []).map((item) => String(item || '')).filter(Boolean);
+}
+function impactedNodesFromChange(change) {
+    return (change?.impact_radius || []).map((item) => String(item || '')).filter(Boolean);
+}
+function fileTypeLabel(file) {
+    const ext = path.extname(file).replace(/^\./, '').toUpperCase();
+    return ext ? `${ext} files` : 'changed files';
+}
+function checksForChange(change) {
+    const impactedFiles = impactedFilesFromChange(change);
+    const impactedNodes = impactedNodesFromChange(change);
+    const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+    const confidence = change?.confidence || {};
+    const lowEdges = Number(confidence.low || 0);
+    const checks = new Set();
+    if (directCallers > 0) {
+        checks.add('Direct caller behavior');
+    }
+    if (impactedNodes.length > directCallers) {
+        checks.add('Transitive caller behavior');
+    }
+    if (impactedFiles.length) {
+        checks.add('Impacted file workflows');
+        for (const file of impactedFiles.slice(0, 3)) {
+            checks.add(fileTypeLabel(file));
+        }
+    }
+    if (lowEdges > 0) {
+        checks.add('Inferred dependency paths');
+    }
+    if (!checks.size) {
+        checks.add('Changed behavior at call sites');
+        checks.add('Nearby tests or examples');
+    }
+    return Array.from(checks).slice(0, 5);
+}
+function checksForFiles(files) {
+    const checks = new Set();
+    if (files.length) {
+        checks.add('File-level behavior');
+        for (const file of files.slice(0, 4)) {
+            checks.add(fileTypeLabel(file));
+        }
+    }
+    if (!checks.size) {
+        checks.add('Manual review');
+    }
+    return Array.from(checks).slice(0, 5);
+}
+function checksForRemovedChange(change) {
+    const checks = new Set();
+    if (Number(change?.direct_callers || 0) > 0) {
+        checks.add('Direct caller behavior');
+    }
+    if (Number(change?.direct_callees || 0) > 0) {
+        checks.add('Removed dependency behavior');
+    }
+    if (change?.still_referenced) {
+        checks.add('Remaining references');
+    }
+    if (!checks.size) {
+        checks.add('Nearby tests or examples');
+    }
+    return Array.from(checks).slice(0, 5);
+}
+function riskRank(level) {
+    return { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 }[level] ?? 4;
+}
+function modifiedRisk(change) {
+    const impactedNodes = impactedNodesFromChange(change).length;
+    const impactedFiles = impactedFilesFromChange(change).length;
+    const lowConfidence = Number(change?.confidence?.low || 0);
+    const truncated = Boolean(change?.truncated);
+    if (truncated || impactedNodes >= 100 || impactedFiles >= 8) {
+        return { label: 'High', level: 'high' };
+    }
+    if (impactedNodes >= 25 || impactedFiles >= 3 || lowConfidence > 0) {
+        return { label: 'Medium-high', level: 'medium' };
+    }
+    if (impactedNodes >= 5 || impactedFiles >= 2) {
+        return { label: 'Medium', level: 'medium' };
+    }
+    return { label: 'Low', level: 'low' };
+}
+function evidenceConfidence(confidence) {
+    const high = Number(confidence?.high || 0);
+    const low = Number(confidence?.low || 0);
+    const total = high + low;
+    if (!total) {
+        return 'Confidence: no call-edge evidence';
+    }
+    return `Confidence: ${Math.round((high / total) * 100)}%`;
+}
+function changeResultSnippet(change) {
+    const impactedFiles = impactedFilesFromChange(change);
+    const lines = [];
+    if (impactedFiles.length) {
+        lines.push('Impacted files:');
+        for (const file of impactedFiles.slice(0, 6)) {
+            lines.push(`- ${file}`);
+        }
+        if (impactedFiles.length > 6) {
+            lines.push(`- +${impactedFiles.length - 6} more`);
+        }
+    }
+    return lines.join('\n');
+}
+function buildModifiedChangeCard(change) {
+    const symbol = String(change?.symbol || '');
+    const impactedFiles = impactedFilesFromChange(change);
+    const impactedNodes = impactedNodesFromChange(change);
+    const confidence = change?.confidence || {};
+    const highEdges = Number(confidence.high || 0);
+    const lowEdges = Number(confidence.low || 0);
+    const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+    const risk = modifiedRisk(change);
+    return {
+        kind: 'modified',
+        title: 'Modified function',
+        symbol,
+        change: 'Function body changed; callers may observe different behavior.',
+        risk: risk.label,
+        riskLevel: risk.level,
+        metrics: [
+            { label: 'Files', value: String(impactedFiles.length) },
+            { label: 'Direct callers', value: String(directCallers) },
+            { label: 'Impacted nodes', value: String(impactedNodes.length) },
+            { label: 'Inferred edges', value: String(lowEdges) },
+        ],
+        evidence: [
+            `${highEdges} parser-confirmed edge(s)`,
+            `${lowEdges} inferred edge(s)`,
+            evidenceConfidence(confidence),
+        ],
+        checks: checksForChange(change),
+        actions: ['View diff', 'View impact graph'],
+        startCollapsed: true,
+    };
+}
+function buildDeletedChangeCard(change) {
+    const symbol = String(change?.symbol || '');
+    const severity = String(change?.severity || 'UNKNOWN').toUpperCase();
+    const level = severity === 'CRITICAL' ? 'critical' : severity === 'HIGH' ? 'high' : severity === 'LOW' ? 'low' : 'unknown';
+    return {
+        kind: 'removed',
+        title: 'Removed function',
+        symbol,
+        change: Boolean(change?.still_referenced)
+            ? 'Function was removed but still has direct callers.'
+            : 'Function was removed from the analyzed source.',
+        risk: severity === 'UNKNOWN' ? 'Unknown' : severity,
+        riskLevel: level,
+        metrics: [
+            { label: 'Direct callers', value: String(change?.direct_callers || 0) },
+            { label: 'Direct callees', value: String(change?.direct_callees || 0) },
+            { label: 'Still referenced', value: change?.still_referenced ? 'Yes' : 'No' },
+        ],
+        evidence: [
+            change?.still_referenced ? 'Direct caller edge remains' : 'No remaining direct caller found',
+            severity === 'UNKNOWN' ? 'No callgraph available' : `Severity: ${severity}`,
+        ],
+        checks: checksForRemovedChange(change),
+        actions: ['View diff', 'View impact graph'],
+        startCollapsed: true,
+    };
+}
+function buildOtherFilesCard(files) {
+    const shown = files.slice(0, 5);
+    const more = Math.max(0, files.length - shown.length);
+    return {
+        kind: 'files',
+        title: 'Other changed files',
+        change: 'Changed files were not mapped to function-level graph nodes.',
+        risk: 'Review',
+        riskLevel: 'unknown',
+        metrics: [
+            { label: 'Files', value: String(files.length) },
+            { label: 'Shown', value: more ? `${shown.length} +${more}` : String(shown.length) },
+        ],
+        evidence: shown.concat(more ? [`+${more} more`] : []),
+        checks: checksForFiles(files),
+        actions: [],
+        startCollapsed: true,
+    };
+}
+// ---------------------------------------------------------------------------
+// Blast Radius Report: same "modified" entries as the full changes list, but
+// filtered down to functions whose caller footprint is actually risky. The
+// underlying data (impact_radius/levels) already walks CALLERS of the changed
+// function transitively (see get_impact_radius() in
+// backend/features/core/helpers.py) — this just decides which of those are
+// worth surfacing instead of showing every touched function.
+// ---------------------------------------------------------------------------
+const BLAST_RADIUS_DIRECT_CALLER_THRESHOLD = 5;
+const BLAST_RADIUS_TOTAL_UPSTREAM_THRESHOLD = 15;
+function blastRadiusEntriesFromReport(report) {
+    const modified = Array.isArray(report?.modified) ? report.modified : [];
+    const entries = [];
+    for (const change of modified) {
+        const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+        const totalUpstream = impactedNodesFromChange(change).length;
+        if (directCallers >= BLAST_RADIUS_DIRECT_CALLER_THRESHOLD || totalUpstream >= BLAST_RADIUS_TOTAL_UPSTREAM_THRESHOLD) {
+            entries.push({
+                symbol: String(change?.symbol || ''),
+                file: String(change?.file || ''),
+                directCallers,
+                totalUpstream,
+                affectedFiles: impactedFilesFromChange(change),
+            });
+        }
+    }
+    entries.sort((a, b) => b.totalUpstream - a.totalUpstream || b.directCallers - a.directCallers);
+    return entries;
+}
+function buildBlastRadiusCard(entry) {
+    const shownFiles = entry.affectedFiles.slice(0, 6);
+    const moreFiles = entry.affectedFiles.length - shownFiles.length;
+    const affects = shownFiles.length
+        ? `Affects: ${shownFiles.join(', ')}${moreFiles > 0 ? `, +${moreFiles} more` : ''}`
+        : 'Affects: no file mapping available for the callgraph nodes reached';
+    return {
+        kind: 'blastRadius',
+        title: 'High blast radius',
+        symbol: `⚠️ ${entry.symbol}`,
+        change: 'Function body changed and has enough callers that a behavior change could ripple widely.',
+        risk: 'High',
+        riskLevel: 'high',
+        metrics: [
+            { label: 'Direct callers', value: String(entry.directCallers) },
+            { label: 'Total upstream-affected', value: String(entry.totalUpstream) },
+            { label: 'Files affected', value: String(entry.affectedFiles.length) },
+        ],
+        evidence: [affects],
+        checks: checksForChange({
+            impact_files: entry.affectedFiles,
+            impact_radius: Array.from({ length: entry.totalUpstream }, (_, index) => String(index)),
+            levels: Object.fromEntries(Array.from({ length: entry.directCallers }, (_, index) => [`caller-${index}`, 1])),
+            confidence: {},
+        }),
+        actions: ['View diff', 'View impact graph'],
+        startCollapsed: true,
+    };
+}
+function buildChangesAnswer(report) {
+    const modified = Array.isArray(report?.modified) ? report.modified : [];
+    const deleted = Array.isArray(report?.deleted) ? report.deleted : [];
+    const unsupported = Array.isArray(report?.unsupported_files) ? report.unsupported_files.map((f) => String(f || '')).filter(Boolean) : [];
+    const impactedFileSet = new Set();
+    for (const item of modified) {
+        for (const file of impactedFilesFromChange(item)) {
+            impactedFileSet.add(file);
+        }
+    }
+    const lines = [`${modified.length + deleted.length} analyzed function change(s).`];
+    if (impactedFileSet.size) {
+        lines.push(`${impactedFileSet.size} impacted file(s) found by the callgraph.`);
+    }
+    else {
+        lines.push('No callgraph file impact found yet.');
+    }
+    if (unsupported.length) {
+        lines.push(`${unsupported.length} other changed file(s) grouped separately.`);
+    }
+    if (!report?.callgraph_available) {
+        lines.push('Callgraph unavailable; impact scoring is limited.');
+    }
+    return lines.join('\n');
+}
+function mcpSetupHelpText(folder, context) {
+    const workspace = folder.uri.fsPath;
+    const claudeLines = isClaudeMcpServerApproved(folder)
+        ? [
+            'Claude Code:',
+            `1. Close any running Claude Code session for ${workspace}.`,
+            `2. Open a terminal in ${workspace} and run: claude`,
+            `"${MCP_SERVER_NAME}" was already approved for this workspace (.claude/settings.local.json), no /mcp approval needed.`,
+            'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
+        ]
+        : [
+            'Claude Code:',
+            `1. Close any running Claude Code session for ${workspace}.`,
+            `2. Open a terminal in ${workspace} and run: claude`,
+            '3. In Claude Code, type: /mcp',
+            `4. If "${MCP_SERVER_NAME}" is pending approval, approve it there. You can also check from a terminal with: claude mcp list`,
+            'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
+        ];
+    return [
+        'CODE.md MCP config has been written for this workspace and Codex user config.',
+        '',
+        ...claudeLines,
+        '',
+        'Codex CLI:',
+        `1. Close the current Codex session for ${workspace}.`,
+        `2. Open a new terminal in ${workspace} and run: codex`,
+        `3. Codex should read "${MCP_SERVER_NAME}" from: ${codexUserConfigPath()}`,
+        '4. The current session will not hot-reload MCP config; it must be a new session.',
+        `5. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
+        'If Windows says "codex is not recognized", install the Codex CLI or add it to PATH first.',
+        '',
+        'Other MCP clients:',
+        `Use a stdio MCP server named "${MCP_SERVER_NAME}".`,
+        `Command: node ${mcpServerArgs(context, workspace).join(' ')}`,
+        'Approval is controlled by the MCP client. CODE.md can register the server, but the user must approve/trust it inside the client when prompted.',
+        '',
+        'What the number means:',
+        'The access count is historical. If the timestamp is old, Claude/Codex are not currently connected even though the config exists.',
+    ].join('\n');
+}
+// Re-assigning an <iframe> src to the exact same string it already has is a
+// no-op in every browser/webview engine — it does not reload. The scoped
+// search-result graph is always written to the same fixed filename
+// (build_first_available_search_graph's default graph_name), so without this,
+// clicking a different result row after the first one silently keeps showing
+// whatever graph loaded first, even though the backend wrote fresh content.
+function withCacheBust(url) {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}_t=${Date.now()}`;
+}
+// ---------------------------------------------------------------------------
+// Virtual "old version" side of the "View diff" action: resolves
+// codemd-diff:/<file>?<cwd,base,file> to `git show <base>:<file>` so it can
+// be diffed against the real (working-tree) file with vscode's built-in
+// diff editor, without needing a snapshot cache of the base ref.
+// ---------------------------------------------------------------------------
+class GitShowContentProvider {
+    provideTextDocumentContent(uri) {
+        let cwd = '';
+        let base = 'HEAD';
+        let file = '';
+        try {
+            ({ cwd, base, file } = JSON.parse(decodeURIComponent(uri.query)));
+        }
+        catch {
+            return '# CODE.md: malformed diff request.';
+        }
+        const result = (0, child_process_1.spawnSync)('git', ['show', `${base}:${file}`], { cwd, encoding: 'utf8' });
+        if (result.status !== 0) {
+            return `# CODE.md: could not load ${file} at ${base} (it may be newly added).\n# ${(result.stderr || '').trim()}`;
+        }
+        return result.stdout;
+    }
 }
 // ---------------------------------------------------------------------------
 // Webview view: search box + callgraph.
@@ -1249,16 +1829,20 @@ class GraphsViewProvider {
     }
     refreshMcpUsage(folder = vscode.workspace.workspaceFolders?.[0]) {
         if (!folder) {
-            this.post({ type: 'mcpUsage', configured: false, totalCalls: 0, updatedAt: '', clients: [] });
+            this.post({ type: 'mcpUsage', serverName: MCP_SERVER_NAME, configured: false, totalCalls: 0, updatedAt: '', stale: true, clients: [], setup: null, restartNeeded: false });
             return;
         }
         const usage = readMcpUsage(folder);
         this.post({
             type: 'mcpUsage',
+            serverName: MCP_SERVER_NAME,
             configured: usage.configured,
             totalCalls: usage.totalCalls,
             updatedAt: usage.updatedAt,
+            stale: usage.stale,
             clients: usage.clients,
+            setup: usage.setup,
+            restartNeeded: usage.restartNeeded,
         });
     }
     ensureMcpUsageWatcher(folder) {
@@ -1380,6 +1964,9 @@ class GraphsViewProvider {
         this.postGraph();
     }
     rememberSearchResult(message) {
+        if (message?.kind === 'changes' || message?.kind === 'blastRadius') {
+            this.searchHistory = this.searchHistory.filter((item) => item?.kind !== message.kind);
+        }
         this.searchHistory.push(message);
         this.searchHistory = this.searchHistory.slice(-10);
     }
@@ -1418,8 +2005,20 @@ class GraphsViewProvider {
         else if (message.type === 'checkChanges') {
             this.runChangesCheck();
         }
+        else if (message.type === 'blastRadius') {
+            this.runBlastRadiusCheck();
+        }
         else if (message.type === 'checkCommits') {
             this.runLatestCommitsCheck();
+        }
+        else if (message.type === 'setupMcp') {
+            this.setupMcpFromPanel();
+        }
+        else if (message.type === 'openMcpClient') {
+            this.openMcpClient(String(message.client || ''));
+        }
+        else if (message.type === 'viewDiff') {
+            this.viewDiff(String(message.file || ''));
         }
         else if (message.type === 'ready') {
             // The webview's script has just attached its message listener — resend
@@ -1440,6 +2039,42 @@ class GraphsViewProvider {
             this.refreshMcpUsage();
         }
     }
+    async setupMcpFromPanel() {
+        await setupProjectMcpConfigs(this.context, { quiet: false });
+        this.refreshMcpUsage();
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (folder) {
+            const resultMessage = {
+                type: 'searchResult',
+                kind: 'mcpSetup',
+                replace: false,
+                query: 'MCP setup next steps',
+                answer: mcpSetupHelpText(folder, this.context),
+                results: [],
+            };
+            this.rememberSearchResult(resultMessage);
+            this.post(resultMessage);
+            const choice = await vscode.window.showInformationMessage('CODE.md: MCP config is ready. Start a fresh client session from this workspace to approve/use codemd.', 'Open Codex', 'Open Claude Code');
+            if (choice === 'Open Codex') {
+                openMcpClientTerminal('codex', folder);
+            }
+            else if (choice === 'Open Claude Code') {
+                openMcpClientTerminal('claude', folder);
+            }
+            return;
+        }
+        vscode.window.showInformationMessage('CODE.md: MCP config is ready. See the CODE.md panel for exact Claude Code and Codex restart/check steps.');
+    }
+    openMcpClient(client) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            vscode.window.showWarningMessage('CODE.md: Open a workspace before starting an MCP client.');
+            return;
+        }
+        if (client === 'codex' || client === 'claude') {
+            openMcpClientTerminal(client, folder);
+        }
+    }
     async openFile(file, line) {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder || !file) {
@@ -1456,6 +2091,25 @@ class GraphsViewProvider {
         }
         catch (err) {
             vscode.window.showWarningMessage(`CODE.md: Could not open ${file} — ${err?.message || String(err)}`);
+        }
+    }
+    async viewDiff(file) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder || !file) {
+            return;
+        }
+        const base = this.sessionStartGitRef || 'HEAD';
+        try {
+            const newUri = await this.resolveFileUri(folder, file);
+            const oldUri = vscode.Uri.from({
+                scheme: CODEMD_DIFF_SCHEME,
+                path: `/${file}`,
+                query: encodeURIComponent(JSON.stringify({ cwd: folder.uri.fsPath, base, file })),
+            });
+            await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `${file} (${base} ↔ working tree)`);
+        }
+        catch (err) {
+            vscode.window.showWarningMessage(`CODE.md: Could not open diff for ${file} — ${err?.message || String(err)}`);
         }
     }
     /**
@@ -1673,8 +2327,12 @@ class GraphsViewProvider {
         this.post({ type: 'status', text: results.length ? 'Ready.' : `No local matches for "${trimmed}".` });
     }
     async ensureInteractiveServer() {
-        if (this.baseUrl) {
+        if (this.baseUrl && await isServerReachable(this.baseUrl)) {
             return this.baseUrl;
+        }
+        if (this.baseUrl) {
+            this.baseUrl = '';
+            this.post({ type: 'status', text: 'Restarting local graph service...' });
         }
         this.post({ type: 'status', text: 'Starting local search companion...' });
         const baseUrl = await ensureServerRunning(this.context, (text) => {
@@ -1689,6 +2347,8 @@ class GraphsViewProvider {
         if (!this.ownerName || !this.repoName) {
             return;
         }
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        const artifactRootPath = folder ? path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR) : '';
         const label = String(result?.label || result?.symbol || result?.fullName || result?.name || 'result');
         this.post({ type: 'status', text: `Building graph for "${label}"…` });
         try {
@@ -1699,6 +2359,7 @@ class GraphsViewProvider {
                 body: JSON.stringify({
                     owner_name: this.ownerName,
                     repo_name: this.repoName,
+                    artifact_root_path: artifactRootPath,
                     result: {
                         graph_symbol: result?.graphSymbol || '',
                         fullName: result?.fullName || '',
@@ -1715,7 +2376,7 @@ class GraphsViewProvider {
             const graphUrl = data.search_graph_url || '';
             if (graphUrl) {
                 this.lastDisplayedServerGraphUrl = `${this.baseUrl}${graphUrl}`;
-                this.post({ type: 'graph', url: this.lastDisplayedServerGraphUrl });
+                this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
                 this.post({ type: 'status', text: 'Ready.' });
             }
             else {
@@ -1754,6 +2415,38 @@ class GraphsViewProvider {
             return 0;
         }
     }
+    /**
+     * Spawns scripts/deletion-report.py against the workspace root and parses
+     * its JSON report. Shared by runChangesCheck (full list) and
+     * runBlastRadiusCheck (filtered summary) — both need the identical
+     * diff/callgraph data, just rendered differently.
+     */
+    async runDeletionReportScript(folder) {
+        const backendDir = await resolveBackendDir(this.context, true);
+        const scriptPath = path.join(this.context.extensionUri.fsPath, 'scripts', 'deletion-report.py');
+        const pythonPath = await backendPythonPath(this.context, backendDir, () => { });
+        const usingSessionStart = Boolean(this.sessionStartGitRef);
+        const base = this.sessionStartGitRef || 'HEAD';
+        const args = [scriptPath, '--repo-root', folder.uri.fsPath, '--base', base, '--backend-dir', backendDir];
+        const stdout = await new Promise((resolve, reject) => {
+            const proc = (0, child_process_1.spawn)(pythonPath, args, { cwd: backendDir, env: localBackendEnv(this.context) });
+            let out = '';
+            let err = '';
+            trackProcess(proc);
+            proc.stdout.on('data', (chunk) => { out += chunk.toString(); });
+            proc.stderr.on('data', (chunk) => { err += chunk.toString(); });
+            proc.on('error', reject);
+            proc.on('exit', (code) => {
+                if (code === 0) {
+                    resolve(out);
+                }
+                else {
+                    reject(new Error(err.trim() || `deletion-report.py exited with code ${code}`));
+                }
+            });
+        });
+        return { report: JSON.parse(stdout), usingSessionStart };
+    }
     async runChangesCheck(options = {}) {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
@@ -1766,30 +2459,7 @@ class GraphsViewProvider {
         this.changesBusy = true;
         this.post({ type: 'status', text: 'Checking what changed since this session started…' });
         try {
-            const backendDir = await resolveBackendDir(this.context, true);
-            const scriptPath = path.join(this.context.extensionUri.fsPath, 'scripts', 'deletion-report.py');
-            const pythonPath = await backendPythonPath(this.context, backendDir, () => { });
-            const usingSessionStart = Boolean(this.sessionStartGitRef);
-            const base = this.sessionStartGitRef || 'HEAD';
-            const args = [scriptPath, '--repo-root', folder.uri.fsPath, '--base', base, '--backend-dir', backendDir];
-            const stdout = await new Promise((resolve, reject) => {
-                const proc = (0, child_process_1.spawn)(pythonPath, args, { cwd: backendDir, env: localBackendEnv(this.context) });
-                let out = '';
-                let err = '';
-                trackProcess(proc);
-                proc.stdout.on('data', (chunk) => { out += chunk.toString(); });
-                proc.stderr.on('data', (chunk) => { err += chunk.toString(); });
-                proc.on('error', reject);
-                proc.on('exit', (code) => {
-                    if (code === 0) {
-                        resolve(out);
-                    }
-                    else {
-                        reject(new Error(err.trim() || `deletion-report.py exited with code ${code}`));
-                    }
-                });
-            });
-            const report = JSON.parse(stdout);
+            const { report, usingSessionStart } = await this.runDeletionReportScript(folder);
             if (report.error) {
                 this.post({ type: 'status', text: `Error checking changes: ${report.error}` });
                 return;
@@ -1799,11 +2469,13 @@ class GraphsViewProvider {
                 const symbol = String(d.symbol || '');
                 const tail = symbol.split('.').pop() || symbol;
                 const file = String(d.file || '');
+                const card = buildDeletedChangeCard(d);
                 results.push({
-                    label: `[${d.severity}] Removed ${symbol}`,
+                    label: `${card.title}: ${compactSymbolName(symbol)}`,
                     file,
                     line: String(d.line || ''),
-                    snippet: '',
+                    snippet: card.change,
+                    changeCard: card,
                     graphSymbol: symbol,
                     fullName: symbol,
                     symbol: tail,
@@ -1814,13 +2486,14 @@ class GraphsViewProvider {
             for (const m of report.modified || []) {
                 const symbol = String(m.symbol || '');
                 const tail = symbol.split('.').pop() || symbol;
-                const fileCount = (m.impact_files || []).length;
                 const file = String(m.file || '');
+                const card = buildModifiedChangeCard(m);
                 results.push({
-                    label: `Modified ${symbol} — impact radius ${fileCount} file(s)`,
+                    label: `${card.title}: ${compactSymbolName(symbol)}`,
                     file,
                     line: '',
-                    snippet: '',
+                    snippet: card.change,
+                    changeCard: card,
                     graphSymbol: symbol,
                     fullName: symbol,
                     symbol: tail,
@@ -1828,17 +2501,42 @@ class GraphsViewProvider {
                     changeTime: this.changeTimeForFile(folder, file),
                 });
             }
-            results.sort((a, b) => (b.changeTime || 0) - (a.changeTime || 0));
+            const unsupportedFiles = (report.unsupported_files || []).map((file) => String(file || '')).filter(Boolean);
+            if (unsupportedFiles.length) {
+                const card = buildOtherFilesCard(unsupportedFiles);
+                results.push({
+                    label: card.title,
+                    file: '',
+                    line: '',
+                    snippet: card.change,
+                    changeCard: card,
+                    graphSymbol: '',
+                    fullName: 'other changed files',
+                    symbol: 'other changed files',
+                    name: 'other changed files',
+                    changeTime: Math.max(0, ...unsupportedFiles.map((file) => this.changeTimeForFile(folder, file))),
+                });
+            }
+            results.sort((a, b) => {
+                const riskDelta = riskRank(a.changeCard?.riskLevel || 'unknown') - riskRank(b.changeCard?.riskLevel || 'unknown');
+                return riskDelta || ((b.changeTime || 0) - (a.changeTime || 0));
+            });
             let answer = (report.summary || []).join('\n');
             if (!report.callgraph_available) {
                 answer += '\n(No callgraph found yet — severities are unscored. Regenerate CODE.md for full scoring.)';
             }
             if ((report.unsupported_files || []).length) {
-                answer += `\n(${report.unsupported_files.length} file(s) in unsupported languages changed too — not analyzed yet.)`;
+                const files = (report.unsupported_files || []).map((f) => String(f)).filter(Boolean);
+                const shown = files.slice(0, 8).join(', ');
+                const more = files.length > 8 ? `, +${files.length - 8} more` : '';
+                answer += `\nChanged files not function-analyzed yet (${files.length}): ${shown}${more}`;
             }
+            answer = buildChangesAnswer(report);
             const resultMessage = {
                 type: 'searchResult',
-                query: usingSessionStart ? 'Changes since this session started' : 'Changes since HEAD',
+                kind: 'changes',
+                replace: true,
+                query: usingSessionStart ? 'Latest edits since this session started' : 'Latest edits since HEAD',
                 answer,
                 results,
             };
@@ -1855,6 +2553,71 @@ class GraphsViewProvider {
         }
         catch (err) {
             this.post({ type: 'status', text: `Error checking changes: ${err?.message || String(err)}` });
+        }
+        finally {
+            this.changesBusy = false;
+        }
+    }
+    /**
+     * Blast Radius Report: the same diff/callgraph data as runChangesCheck, but
+     * filtered down to only the changed functions whose caller footprint
+     * crosses BLAST_RADIUS_DIRECT_CALLER_THRESHOLD /
+     * BLAST_RADIUS_TOTAL_UPSTREAM_THRESHOLD — everything else is dropped
+     * silently so this stays a short, high-signal list instead of restating
+     * every touched function.
+     */
+    async runBlastRadiusCheck() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            return;
+        }
+        if (this.changesBusy) {
+            this.post({ type: 'status', text: 'Already checking changes — please wait.' });
+            return;
+        }
+        this.changesBusy = true;
+        this.post({ type: 'status', text: 'Computing blast radius of uncommitted changes…' });
+        try {
+            const { report } = await this.runDeletionReportScript(folder);
+            if (report.error) {
+                this.post({ type: 'status', text: `Error computing blast radius: ${report.error}` });
+                return;
+            }
+            const entries = blastRadiusEntriesFromReport(report);
+            const results = entries.map((entry) => {
+                const tail = entry.symbol.split('.').pop() || entry.symbol;
+                const card = buildBlastRadiusCard(entry);
+                return {
+                    label: `${card.title}: ${compactSymbolName(entry.symbol)}`,
+                    file: entry.file,
+                    line: '',
+                    snippet: card.change,
+                    changeCard: card,
+                    graphSymbol: entry.symbol,
+                    fullName: entry.symbol,
+                    symbol: tail,
+                    name: tail,
+                    changeTime: this.changeTimeForFile(folder, entry.file),
+                };
+            });
+            const answer = entries.length
+                ? `${entries.length} high-risk change(s) crossed the blast-radius threshold ` +
+                    `(≥${BLAST_RADIUS_DIRECT_CALLER_THRESHOLD} direct callers or ≥${BLAST_RADIUS_TOTAL_UPSTREAM_THRESHOLD} total upstream-affected functions).`
+                : '✅ No high-risk changes detected';
+            const resultMessage = {
+                type: 'searchResult',
+                kind: 'blastRadius',
+                replace: true,
+                query: 'Blast Radius Report',
+                answer,
+                results,
+            };
+            this.rememberSearchResult(resultMessage);
+            this.post(resultMessage);
+            this.post({ type: 'status', text: 'Ready.' });
+        }
+        catch (err) {
+            this.post({ type: 'status', text: `Error computing blast radius: ${err?.message || String(err)}` });
         }
         finally {
             this.changesBusy = false;
@@ -1994,9 +2757,18 @@ function getHtml(host, port, cspSource) {
   #mcpUsageCard.mcp-idle .mcpDot { background: #d29922; }
   #mcpUsageLabel { font-size: 13px; font-weight: 600; }
   #mcpUsageSubtitle { font-size: 11px; opacity: 0.7; margin: 3px 0 0 18px; }
+  #mcpSetupStatus { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 18px; }
+  .mcpChip { border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 1px 7px; font-size: 10px; line-height: 16px; opacity: 0.9; }
+  .mcpChip-ok { color: #3fb950; }
+  .mcpChip-warn { color: #d29922; }
+  .mcpChip-missing { color: var(--vscode-errorForeground); }
+  #mcpActionRow { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 18px; }
+  #mcpActionRow button { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
+  #mcpActionRow button:disabled { opacity: 0.55; cursor: default; }
   #mcpUsageByClient { margin: 4px 0 0 18px; font-size: 12px; opacity: 0.85; }
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
+  #setupMcpBtn { margin-left: auto; flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
   #messages { flex: 1; overflow-y: auto; padding: 8px; }
   .msg { margin-bottom: 12px; }
   .msg .query { font-weight: 600; margin-bottom: 4px; }
@@ -2006,6 +2778,28 @@ function getHtml(host, port, cspSource) {
   .result:hover { background: var(--vscode-list-activeSelectionBackground); }
   .result .label { font-weight: 600; }
   .result .loc { opacity: 0.7; }
+  .result .snippet { white-space: pre-wrap; opacity: 0.82; margin-top: 3px; line-height: 1.35; }
+  .changeCard { display: grid; gap: 6px; }
+  .changeCard.is-collapsed .changeDetails { display: none; }
+  .changeTop { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .changeTitleRow { display: flex; align-items: center; gap: 6px; }
+  .changeTitle { font-size: 11px; opacity: 0.75; }
+  .changeSymbol { font-size: 12px; font-weight: 700; word-break: break-word; }
+  .riskPill { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
+  .risk-critical, .risk-high { color: var(--vscode-errorForeground); }
+  .risk-medium { color: var(--vscode-editorWarning-foreground); }
+  .metricGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .metric { border: 1px solid var(--vscode-panel-border); padding: 4px; border-radius: 3px; }
+  .metricValue { display: block; font-size: 13px; font-weight: 700; }
+  .metricLabel { display: block; opacity: 0.72; overflow-wrap: anywhere; }
+  .changeSection { opacity: 0.88; line-height: 1.35; }
+  .changeSectionTitle { font-weight: 700; opacity: 0.85; margin-bottom: 2px; }
+  .actionRow { display: flex; flex-wrap: wrap; gap: 4px; }
+  .actionChip { border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 1px 5px; opacity: 0.88; }
+  .actionChipClickable { cursor: pointer; }
+  .actionChipClickable:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  .detailsToggle { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 0 4px; font-size: 10px; line-height: 16px; cursor: pointer; }
+  .detailsToggle:hover { background: var(--vscode-list-hoverBackground); }
   #searchForm { display: flex; gap: 4px; padding: 8px; border-top: 1px solid var(--vscode-panel-border); }
   #queryInput { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 6px; }
 </style>
@@ -2025,15 +2819,22 @@ function getHtml(host, port, cspSource) {
     <div id="statusRow">
       <span id="statusLine">Preparing callgraph in the background…</span>
       <button id="checkChangesBtn" title="Check local file edits that have not been committed yet.">Check Uncommitted Edits</button>
+      <button id="blastRadiusBtn" title="Show only changed functions whose callers are numerous enough to be risky.">Blast Radius Report</button>
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
     </div>
-    <div id="mcpUsageCard" title="Claude/Codex calls observed by the CODE.md MCP wrapper.">
+    <div id="mcpUsageCard" title="Claude/Codex MCP accesses observed by the CODE.md wrapper.">
       <div id="mcpUsageHeadline">
         <span class="mcpDot"></span>
-        <span id="mcpUsageLabel">Claude/Codex calls to CODE.md: 0</span>
+        <span id="mcpUsageLabel">CODE.md MCP accesses: 0</span>
+        <button id="setupMcpBtn" title="Write Claude/Codex MCP config for this workspace. You may still need to approve the server in your client.">Set Up MCP</button>
       </div>
       <div id="mcpUsageSubtitle"></div>
+      <div id="mcpSetupStatus"></div>
+      <div id="mcpActionRow">
+        <button id="openCodexBtn" title="Start a fresh Codex session in this workspace.">Open Codex</button>
+        <button id="openClaudeBtn" title="Start Claude Code in this workspace.">Open Claude Code</button>
+      </div>
       <div id="mcpUsageByClient"></div>
     </div>
     <div id="messages"></div>
@@ -2050,10 +2851,15 @@ function getHtml(host, port, cspSource) {
   const mcpUsageCard = document.getElementById('mcpUsageCard');
   const mcpUsageLabel = document.getElementById('mcpUsageLabel');
   const mcpUsageSubtitle = document.getElementById('mcpUsageSubtitle');
+  const mcpSetupStatus = document.getElementById('mcpSetupStatus');
+  const openCodexBtn = document.getElementById('openCodexBtn');
+  const openClaudeBtn = document.getElementById('openClaudeBtn');
   const mcpUsageByClient = document.getElementById('mcpUsageByClient');
+  const setupMcpBtn = document.getElementById('setupMcpBtn');
   const messages = document.getElementById('messages');
   const generateBtn = document.getElementById('generateBtn');
   const checkChangesBtn = document.getElementById('checkChangesBtn');
+  const blastRadiusBtn = document.getElementById('blastRadiusBtn');
   const checkCommitsBtn = document.getElementById('checkCommitsBtn');
   const openGraphBtn = document.getElementById('openGraphBtn');
   const expandGraphBtn = document.getElementById('expandGraphBtn');
@@ -2064,8 +2870,24 @@ function getHtml(host, port, cspSource) {
     vscode.postMessage({ type: 'generate' });
   });
 
+  setupMcpBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'setupMcp' });
+  });
+
+  openCodexBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openMcpClient', client: 'codex' });
+  });
+
+  openClaudeBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openMcpClient', client: 'claude' });
+  });
+
   checkChangesBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'checkChanges' });
+  });
+
+  blastRadiusBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'blastRadius' });
   });
 
   checkCommitsBtn.addEventListener('click', () => {
@@ -2096,7 +2918,136 @@ function getHtml(host, port, cspSource) {
     return div.innerHTML;
   }
 
+  function renderListSection(parent, title, items) {
+    if (!items || !items.length) { return; }
+    const section = document.createElement('div');
+    section.className = 'changeSection';
+    const heading = document.createElement('div');
+    heading.className = 'changeSectionTitle';
+    heading.textContent = title;
+    section.appendChild(heading);
+    const body = document.createElement('div');
+    body.textContent = items.join(' • ');
+    section.appendChild(body);
+    parent.appendChild(section);
+  }
+
+  function renderChangeCard(item, card, r) {
+    item.classList.add('changeResult');
+    item.textContent = '';
+    const root = document.createElement('div');
+    root.className = 'changeCard';
+    const startsCollapsed = Boolean(card.startCollapsed);
+    if (startsCollapsed) {
+      root.classList.add('is-collapsed');
+    }
+
+    const top = document.createElement('div');
+    top.className = 'changeTop';
+    const titleBlock = document.createElement('div');
+    const titleRow = document.createElement('div');
+    titleRow.className = 'changeTitleRow';
+    let detailsToggle = null;
+    if (startsCollapsed) {
+      detailsToggle = document.createElement('button');
+      detailsToggle.type = 'button';
+      detailsToggle.className = 'detailsToggle';
+      detailsToggle.textContent = '+';
+      detailsToggle.title = 'Show details';
+      detailsToggle.setAttribute('aria-expanded', 'false');
+      detailsToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const collapsed = root.classList.toggle('is-collapsed');
+        detailsToggle.textContent = collapsed ? '+' : '-';
+        detailsToggle.title = collapsed ? 'Show details' : 'Hide details';
+        detailsToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      });
+      titleRow.appendChild(detailsToggle);
+    }
+    const title = document.createElement('div');
+    title.className = 'changeTitle';
+    title.textContent = card.title || 'Change';
+    titleRow.appendChild(title);
+    const symbol = document.createElement('div');
+    symbol.className = 'changeSymbol';
+    symbol.textContent = card.symbol || item.dataset.label || '';
+    titleBlock.appendChild(titleRow);
+    titleBlock.appendChild(symbol);
+    const risk = document.createElement('span');
+    risk.className = 'riskPill risk-' + String(card.riskLevel || 'unknown');
+    risk.textContent = card.risk || 'Review';
+    top.appendChild(titleBlock);
+    top.appendChild(risk);
+    root.appendChild(top);
+
+    const details = document.createElement('div');
+    details.className = 'changeDetails';
+
+    if (card.change) {
+      const change = document.createElement('div');
+      change.className = 'changeSection';
+      change.textContent = card.change;
+      details.appendChild(change);
+    }
+
+    if (card.metrics && card.metrics.length) {
+      const metrics = document.createElement('div');
+      metrics.className = 'metricGrid';
+      card.metrics.forEach((metric) => {
+        const box = document.createElement('div');
+        box.className = 'metric';
+        const value = document.createElement('span');
+        value.className = 'metricValue';
+        value.textContent = String(metric.value || '');
+        const label = document.createElement('span');
+        label.className = 'metricLabel';
+        label.textContent = String(metric.label || '');
+        box.appendChild(value);
+        box.appendChild(label);
+        metrics.appendChild(box);
+      });
+      details.appendChild(metrics);
+    }
+
+    renderListSection(details, 'Evidence', card.evidence || []);
+    renderListSection(details, 'Recommended checks', card.checks || []);
+
+    if (card.actions && card.actions.length) {
+      const actions = document.createElement('div');
+      actions.className = 'actionRow';
+      card.actions.forEach((action) => {
+        const chip = document.createElement('span');
+        chip.className = 'actionChip actionChipClickable';
+        chip.textContent = action;
+        chip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (action === 'View diff' && r && r.file) {
+            vscode.postMessage({ type: 'viewDiff', file: r.file });
+          } else if (action === 'View impact graph' && r) {
+            vscode.postMessage({ type: 'graphForResult', result: r });
+          }
+        });
+        actions.appendChild(chip);
+      });
+      details.appendChild(actions);
+    }
+
+    root.appendChild(details);
+    item.appendChild(root);
+  }
+
+  function addMcpChip(label, tone, title) {
+    const chip = document.createElement('span');
+    chip.className = 'mcpChip mcpChip-' + tone;
+    chip.textContent = label;
+    if (title) { chip.title = title; }
+    mcpSetupStatus.appendChild(chip);
+  }
+
   function renderSearchResult(msg) {
+    if (msg.replace) {
+      messages.textContent = '';
+    }
     const wrapper = document.createElement('div');
     wrapper.className = 'msg';
     if (msg.query) {
@@ -2120,9 +3071,20 @@ function getHtml(host, port, cspSource) {
       (msg.results || []).forEach((r) => {
         const item = document.createElement('div');
         item.className = 'result';
-        const loc = r.file ? (r.file + (r.line ? ':' + r.line : '')) : '';
-        item.innerHTML = '<span class="label">' + escapeHtml(r.label) + '</span>' +
-          (loc ? ' <span class="loc">' + escapeHtml(loc) + '</span>' : '');
+        item.dataset.label = r.label || '';
+        if (r.changeCard) {
+          renderChangeCard(item, r.changeCard, r);
+        } else {
+          const loc = r.file ? (r.file + (r.line ? ':' + r.line : '')) : '';
+          item.innerHTML = '<span class="label">' + escapeHtml(r.label) + '</span>' +
+            (loc ? ' <span class="loc">' + escapeHtml(loc) + '</span>' : '');
+        }
+        if (r.snippet && !r.changeCard) {
+          const snippet = document.createElement('div');
+          snippet.className = 'snippet';
+          snippet.textContent = String(r.snippet);
+          item.appendChild(snippet);
+        }
         const graphable = r.graphSymbol || r.fullName || r.symbol || r.name;
         if (r.file || graphable) {
           item.addEventListener('click', () => {
@@ -2148,18 +3110,40 @@ function getHtml(host, port, cspSource) {
     } else if (msg.type === 'mcpUsage') {
       const total = Number(msg.totalCalls || 0);
       const configured = Boolean(msg.configured);
+      const stale = Boolean(msg.stale);
+      const setup = msg.setup || {};
+      const serverName = msg.serverName || 'CODE.md MCP';
+      const restartNeeded = Boolean(msg.restartNeeded);
       const updatedAt = msg.updatedAt ? new Date(msg.updatedAt).toLocaleString() : '';
       const usageTitle = !configured
-        ? 'No codemd server entry was found in .mcp.json.'
+        ? 'MCP is not set up for this workspace. Click Set Up MCP, then approve "' + serverName + '" in Claude/Codex if prompted.'
         : total > 0
-          ? ('Last observed wrapper call: ' + (updatedAt || msg.updatedAt))
-          : 'The project MCP config exists, but no client has called the CODE.md wrapper yet.';
-      mcpUsageLabel.textContent = 'Claude/Codex calls to CODE.md: ' + total;
+          ? stale
+            ? ('Last observed MCP access: ' + (updatedAt || msg.updatedAt) + ' (stale; start a new Claude Code/Codex session and check /mcp).')
+            : ('Last observed MCP access: ' + (updatedAt || msg.updatedAt))
+          : 'MCP config exists. If Claude/Codex still cannot see "' + serverName + '", restart the client and approve it when prompted.';
+      mcpUsageLabel.textContent = 'CODE.md MCP accesses: ' + total;
       mcpUsageSubtitle.textContent = usageTitle;
-      mcpUsageCard.title = usageTitle + ' Only calls through CODE.md MCP tools are counted.';
+      mcpUsageCard.title = usageTitle + ' Counts CODE.md MCP resource reads and tool calls only.';
+      mcpSetupStatus.textContent = '';
+      addMcpChip(configured ? 'Registered' : 'Not registered', configured ? 'ok' : 'missing',
+        configured ? '"' + serverName + '" is present in at least one MCP config file.' : 'Click Set Up MCP to write client config.');
+      addMcpChip(setup.codexDetected ? 'Codex detected' : 'Codex missing', setup.codexDetected ? 'ok' : 'warn',
+        setup.codexDetected ? 'The codex command is available on PATH.' : 'Codex is not on PATH for VS Code. Config can still be written; launch Codex manually if needed.');
+      addMcpChip(setup.claudeDetected ? 'Claude detected' : 'Claude missing', setup.claudeDetected ? 'ok' : 'warn',
+        setup.claudeDetected ? 'The claude command is available on PATH.' : 'Claude Code is not installed or not on PATH.');
+      addMcpChip(setup.claudeApproved ? 'Claude approved' : 'Claude approval needed', setup.claudeApproved ? 'ok' : 'warn',
+        setup.claudeApproved ? 'Claude Code is pre-approved through .claude/settings.local.json.' : 'Approve in the setup prompt or later inside Claude Code with /mcp.');
+      addMcpChip(!configured ? 'Set up first' : restartNeeded ? 'Restart needed' : 'Connected recently', !configured || restartNeeded ? 'warn' : 'ok',
+        !configured ? 'Click Set Up MCP before starting a client.' : restartNeeded ? 'Start a fresh client session and approve "' + serverName + '" if prompted.' : 'A client accessed CODE.md recently.');
+      if (setup.codexUserConfigPath) {
+        addMcpChip('Codex config ready', setup.codexUserConfig ? 'ok' : 'warn', setup.codexUserConfigPath);
+      }
+      openCodexBtn.disabled = !setup.codexDetected;
+      openClaudeBtn.disabled = !setup.claudeDetected;
       mcpUsageCard.classList.remove('mcp-active', 'mcp-idle');
       if (configured) {
-        mcpUsageCard.classList.add(total > 0 ? 'mcp-active' : 'mcp-idle');
+        mcpUsageCard.classList.add(total > 0 && !stale ? 'mcp-active' : 'mcp-idle');
       }
 
       mcpUsageByClient.innerHTML = '';
@@ -2167,7 +3151,7 @@ function getHtml(host, port, cspSource) {
       clients.forEach((c) => {
         const line = document.createElement('span');
         line.className = 'clientLine';
-        line.textContent = 'CODE.md used by ' + (c.name || 'unknown') + ': ' + c.calls + (c.calls === 1 ? ' call' : ' calls');
+        line.textContent = 'CODE.md used by ' + (c.name || 'unknown') + ': ' + c.calls + (c.calls === 1 ? ' access' : ' accesses');
         mcpUsageByClient.appendChild(line);
       });
     } else if (msg.type === 'graph') {

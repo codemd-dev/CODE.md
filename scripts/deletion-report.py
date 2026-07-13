@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 
 def _run_git(repo_root, args):
     result = subprocess.run(
@@ -81,6 +83,19 @@ def changed_files(repo_root, base):
             rel_path = strip_git_prefix(git_path, prefix)
             entries.append((status, rel_path, rel_path, git_path, git_path))
     return entries
+
+
+def should_skip_report_path(rel_path):
+    rel_path = str(rel_path or "").replace("\\", "/")
+    parts = rel_path.split("/")
+    if not rel_path:
+        return True
+    if "__pycache__" in parts or "node_modules" in parts or "codemd.dev" in parts:
+        return True
+    if parts[0] in {"out", "dist", "build"}:
+        return True
+    suffix = Path(rel_path).suffix.lower()
+    return suffix in {".pyc", ".pyo", ".vsix", ".map"}
 
 
 def git_show(repo_root, base, git_rel_path):
@@ -207,6 +222,31 @@ def load_callgraph(core_helpers, repo_root):
     return core_helpers.edge_graph_to_callgraph(graph)
 
 
+def load_function_files(repo_root):
+    """Best-effort symbol -> source file map from generated language graphs."""
+    result = {}
+    graph_paths = [
+        Path(repo_root) / "codemd.dev" / "python" / "python_callgraph.json",
+        Path(repo_root) / "codemd.dev" / "javascript" / "javascript_callgraph.json",
+        Path(repo_root) / "codemd.dev" / "csharp" / "csharp_callgraph.json",
+        Path(repo_root) / "codemd.dev" / "javalang" / "javalang_callgraph.json",
+        Path(repo_root) / "codemd.dev" / "java_merged" / "java_merged_callgraph.json",
+    ]
+    for graph_path in graph_paths:
+        if not graph_path.exists():
+            continue
+        try:
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        function_files = graph.get("function_files") if isinstance(graph, dict) else {}
+        if isinstance(function_files, dict):
+            for symbol, file_path in function_files.items():
+                if symbol and file_path:
+                    result[str(symbol)] = str(file_path).replace("\\", "/")
+    return result
+
+
 def format_summary_lines(report):
     lines = []
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "LOW": 2, "UNKNOWN": 3}
@@ -275,11 +315,14 @@ def main():
         return
 
     callgraph = load_callgraph(core_helpers, repo_root)
+    node_files = load_function_files(repo_root)
     report["callgraph_available"] = callgraph is not None
     deleted_symbols = {}  # symbol -> {file, start_line, end_line}
     confirmed_modified_symbols = {}  # symbol -> file
 
     for status, old_rel_path, new_rel_path, old_git_path, new_git_path in entries:
+        if should_skip_report_path(old_rel_path) or should_skip_report_path(new_rel_path):
+            continue
         old_ext = os.path.splitext(old_rel_path)[1].lower()
         new_ext = os.path.splitext(new_rel_path)[1].lower()
         if old_ext not in supported_exts and new_ext not in supported_exts:
@@ -321,13 +364,14 @@ def main():
         for symbol, file_path in sorted(confirmed_modified_symbols.items()):
             radius = core_helpers.get_impact_radius(symbol, callgraph, max_nodes=200)
             impact_files = sorted({
-                deleted_symbols.get(n, {}).get("file", "") for n in radius["impacted"]
+                node_files.get(n) or deleted_symbols.get(n, {}).get("file", "") for n in radius["impacted"]
             } - {""})
             report["modified"].append({
                 "symbol": symbol,
                 "file": file_path,
                 "impact_radius": radius["impacted"],
                 "impact_files": impact_files,
+                "levels": radius.get("levels", {}),
                 "confidence": radius["confidence"],
                 "truncated": radius["truncated"],
             })

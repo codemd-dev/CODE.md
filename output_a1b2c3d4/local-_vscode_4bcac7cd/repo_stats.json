@@ -1,0 +1,63 @@
+{
+  "repo_full_name": "local-path/vscode-extension-graphs-4e0db6a0",
+  "default_branch": "local",
+  "source": "downloaded_zip",
+  "total_files_seen": 99,
+  "source_line_count": 121180,
+  "source_files_counted": 63,
+  "unique_extension_count": 15,
+  "extension_counts": {
+    ".py": 39,
+    ".html": 14,
+    ".vsix": 10,
+    ".js": 9,
+    ".json": 7,
+    ".jpg": 5,
+    ".svg": 3,
+    ".log": 2,
+    ".md": 2,
+    ".txt": 2,
+    "[no extension]": 2,
+    ".bat": 1,
+    ".png": 1,
+    ".toml": 1,
+    ".ts": 1
+  },
+  "language_counts": {
+    "Python": 39,
+    "HTML": 14,
+    "JavaScript": 9,
+    "JSON": 7,
+    "Markdown": 2,
+    "TypeScript": 1
+  },
+  "known_from_github_repo_metadata": {
+    "full_name": "local-path/vscode-extension-graphs-4e0db6a0",
+    "owner_login": null,
+    "default_branch": "local",
+    "html_url": "",
+    "created_at": null,
+    "updated_at": null,
+    "pushed_at": null,
+    "size_kb": null,
+    "stargazers_count": null,
+    "forks_count": null,
+    "open_issues_count": null,
+    "watchers_count": null,
+    "subscribers_count": null,
+    "network_count": null,
+    "primary_language": null,
+    "visibility": null,
+    "archived": null,
+    "disabled": null,
+    "license": null,
+    "description": null,
+    "topics": []
+  },
+  "not_available_from_downloaded_zip": [
+    "Git history",
+    "Pull requests",
+    "Issues",
+    "Branch protection"
+  ]
+}

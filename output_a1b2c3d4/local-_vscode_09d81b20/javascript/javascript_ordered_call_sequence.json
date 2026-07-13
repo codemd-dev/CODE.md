@@ -1,0 +1,1601 @@
+{
+  "mode": "ordered_call_sequence",
+  "parser": "javascript-regex",
+  "source_callgraph": "javascript_callgraph.json",
+  "calls": [
+    {
+      "caller": "backend.static.autotrack.codevalClickContextPayload",
+      "callee": "backend.static.autotrack.codevalRecentClick",
+      "file": "backend/static/autotrack.js",
+      "line": 198,
+      "column": 16,
+      "order": 20,
+      "call_text": "codevalRecentClick"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalClickContextPayload",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 200,
+      "column": 23,
+      "order": 21,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalClickContextPayload",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 201,
+      "column": 24,
+      "order": 22,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalElementFunctionName",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 235,
+      "column": 44,
+      "order": 25,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalElementFunctionName",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 236,
+      "column": 9,
+      "order": 26,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalElementFunctionName",
+      "callee": "backend.static.autotrack.codevalInlineHandlerName",
+      "file": "backend/static/autotrack.js",
+      "line": 241,
+      "column": 4,
+      "order": 27,
+      "call_text": "codevalInlineHandlerName"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalEndpointName",
+      "callee": "backend.static.autotrack.codevalUrlInfo",
+      "file": "backend/static/autotrack.js",
+      "line": 53,
+      "column": 14,
+      "order": 2,
+      "call_text": "codevalUrlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalEndpointName",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 54,
+      "column": 19,
+      "order": 3,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalErrorNode",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 112,
+      "column": 9,
+      "order": 10,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalInlineHandlerName",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 231,
+      "column": 9,
+      "order": 24,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalInputValue",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 224,
+      "column": 9,
+      "order": 23,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalLastTrigger",
+      "callee": "backend.static.autotrack.codevalRecentClick",
+      "file": "backend/static/autotrack.js",
+      "line": 194,
+      "column": 9,
+      "order": 19,
+      "call_text": "codevalRecentClick"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalMixpanelEvent",
+      "callee": "backend.static.mixpanel.track",
+      "file": "backend/static/autotrack.js",
+      "line": 37,
+      "column": 6,
+      "order": 1,
+      "call_text": "window.mixpanel.track"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalRepositoryContext",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 78,
+      "column": 24,
+      "order": 7,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalRepositoryContext",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 79,
+      "column": 23,
+      "order": 8,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalSafeRequestUrl",
+      "callee": "backend.static.autotrack.codevalUrlInfo",
+      "file": "backend/static/autotrack.js",
+      "line": 60,
+      "column": 14,
+      "order": 4,
+      "call_text": "codevalUrlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalSafeRequestUrl",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 61,
+      "column": 19,
+      "order": 5,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalSafeRequestUrl",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 68,
+      "column": 9,
+      "order": 6,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalShouldIgnoreFetch",
+      "callee": "backend.static.autotrack.codevalUrlInfo",
+      "file": "backend/static/autotrack.js",
+      "line": 90,
+      "column": 14,
+      "order": 9,
+      "call_text": "codevalUrlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalStackTopFrame",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 155,
+      "column": 17,
+      "order": 17,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalStackTopFrame",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 159,
+      "column": 9,
+      "order": 18,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalRepositoryContext",
+      "file": "backend/static/autotrack.js",
+      "line": 127,
+      "column": 7,
+      "order": 11,
+      "call_text": "codevalRepositoryContext"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalErrorNode",
+      "file": "backend/static/autotrack.js",
+      "line": 131,
+      "column": 15,
+      "order": 12,
+      "call_text": "codevalErrorNode"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalGtagEvent",
+      "file": "backend/static/autotrack.js",
+      "line": 139,
+      "column": 2,
+      "order": 13,
+      "call_text": "codevalGtagEvent"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalMixpanelEvent",
+      "file": "backend/static/autotrack.js",
+      "line": 140,
+      "column": 2,
+      "order": 14,
+      "call_text": "codevalMixpanelEvent"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalGtagEvent",
+      "file": "backend/static/autotrack.js",
+      "line": 141,
+      "column": 2,
+      "order": 15,
+      "call_text": "codevalGtagEvent"
+    },
+    {
+      "caller": "backend.static.autotrack.codevalTrackErrorEvent",
+      "callee": "backend.static.autotrack.codevalMixpanelEvent",
+      "file": "backend/static/autotrack.js",
+      "line": 142,
+      "column": 2,
+      "order": 16,
+      "call_text": "codevalMixpanelEvent"
+    },
+    {
+      "caller": "backend.static.autotrack.inspectNode",
+      "callee": "backend.static.autotrack.codevalCleanText",
+      "file": "backend/static/autotrack.js",
+      "line": 475,
+      "column": 19,
+      "order": 28,
+      "call_text": "codevalCleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.clickContextPayload",
+      "callee": "backend.static.autotrack_core.recentClick",
+      "file": "backend/static/autotrack_core.js",
+      "line": 151,
+      "column": 18,
+      "order": 41,
+      "call_text": "recentClick"
+    },
+    {
+      "caller": "backend.static.autotrack_core.clickContextPayload",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 153,
+      "column": 25,
+      "order": 42,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.clickContextPayload",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 154,
+      "column": 26,
+      "order": 43,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.domPath",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 242,
+      "column": 11,
+      "order": 51,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.elementFunctionName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 206,
+      "column": 46,
+      "order": 48,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.elementFunctionName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 207,
+      "column": 11,
+      "order": 49,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.elementFunctionName",
+      "callee": "backend.static.autotrack_core.inlineHandlerName",
+      "file": "backend/static/autotrack_core.js",
+      "line": 212,
+      "column": 6,
+      "order": 50,
+      "call_text": "inlineHandlerName"
+    },
+    {
+      "caller": "backend.static.autotrack_core.elementName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 199,
+      "column": 22,
+      "order": 46,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.elementName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 202,
+      "column": 11,
+      "order": 47,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.endpointName",
+      "callee": "backend.static.autotrack_core.urlInfo",
+      "file": "backend/static/autotrack_core.js",
+      "line": 54,
+      "column": 16,
+      "order": 29,
+      "call_text": "urlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack_core.endpointName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 55,
+      "column": 21,
+      "order": 30,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inlineHandlerName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 184,
+      "column": 11,
+      "order": 45,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inputValue",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 177,
+      "column": 11,
+      "order": 44,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inspectUiMessageNode",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 513,
+      "column": 22,
+      "order": 54,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inspectUiMessageNode",
+      "callee": "backend.static.autotrack_core.looksLikeUiError",
+      "file": "backend/static/autotrack_core.js",
+      "line": 514,
+      "column": 23,
+      "order": 55,
+      "call_text": "looksLikeUiError"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inspectUiMessageNode",
+      "callee": "backend.static.autotrack_core.sourceName",
+      "file": "backend/static/autotrack_core.js",
+      "line": 515,
+      "column": 21,
+      "order": 56,
+      "call_text": "sourceName"
+    },
+    {
+      "caller": "backend.static.autotrack_core.inspectUiMessageNode",
+      "callee": "backend.static.autotrack_core.recentClick",
+      "file": "backend/static/autotrack_core.js",
+      "line": 525,
+      "column": 25,
+      "order": 57,
+      "call_text": "recentClick"
+    },
+    {
+      "caller": "backend.static.autotrack_core.repositoryContext",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 98,
+      "column": 26,
+      "order": 35,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.repositoryContext",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 99,
+      "column": 25,
+      "order": 36,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.repositoryContext",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 103,
+      "column": 26,
+      "order": 37,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.repositoryContext",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 104,
+      "column": 25,
+      "order": 38,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.safeRequestUrl",
+      "callee": "backend.static.autotrack_core.urlInfo",
+      "file": "backend/static/autotrack_core.js",
+      "line": 61,
+      "column": 16,
+      "order": 31,
+      "call_text": "urlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack_core.safeRequestUrl",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 62,
+      "column": 21,
+      "order": 32,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.safeRequestUrl",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 69,
+      "column": 11,
+      "order": 33,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.shouldIgnoreFetch",
+      "callee": "backend.static.autotrack_core.urlInfo",
+      "file": "backend/static/autotrack_core.js",
+      "line": 73,
+      "column": 16,
+      "order": 34,
+      "call_text": "urlInfo"
+    },
+    {
+      "caller": "backend.static.autotrack_core.sourceName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 246,
+      "column": 46,
+      "order": 52,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.sourceName",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 247,
+      "column": 11,
+      "order": 53,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.stackTopFrame",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 112,
+      "column": 19,
+      "order": 39,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_core.stackTopFrame",
+      "callee": "backend.static.autotrack_core.cleanText",
+      "file": "backend/static/autotrack_core.js",
+      "line": 116,
+      "column": 11,
+      "order": 40,
+      "call_text": "cleanText"
+    },
+    {
+      "caller": "backend.static.autotrack_mixpanel.initMixpanel",
+      "callee": "backend.static.mixpanel.init",
+      "file": "backend/static/autotrack_mixpanel.js",
+      "line": 26,
+      "column": 8,
+      "order": 58,
+      "call_text": "window.mixpanel.init"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "callee": "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 268,
+      "column": 18,
+      "order": 75,
+      "call_text": "mixpanelFindingFromRow"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugReview",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 270,
+      "column": 4,
+      "order": 76,
+      "call_text": "setMixpanelBugReview"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.analyzeMixpanelBugFix",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 271,
+      "column": 4,
+      "order": 77,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 35,
+      "column": 26,
+      "order": 60,
+      "call_text": "mixpanelCurrentRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 37,
+      "column": 4,
+      "order": 61,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 46,
+      "column": 4,
+      "order": 62,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 50,
+      "column": 2,
+      "order": 63,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelPreview",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 68,
+      "column": 4,
+      "order": 64,
+      "call_text": "setMixpanelPreview"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 70,
+      "column": 6,
+      "order": 65,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 74,
+      "column": 6,
+      "order": 66,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.connectMixpanel",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 77,
+      "column": 4,
+      "order": 67,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.createMixpanelEventGraph",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 314,
+      "column": 26,
+      "order": 86,
+      "call_text": "mixpanelCurrentRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 364,
+      "column": 26,
+      "order": 87,
+      "call_text": "mixpanelCurrentRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 366,
+      "column": 4,
+      "order": 88,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 370,
+      "column": 2,
+      "order": 89,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelPreview",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 380,
+      "column": 4,
+      "order": 90,
+      "call_text": "setMixpanelPreview"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 383,
+      "column": 6,
+      "order": 91,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.renderMixpanelEventsTable",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 386,
+      "column": 6,
+      "order": 92,
+      "call_text": "renderMixpanelEventsTable"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 405,
+      "column": 6,
+      "order": 93,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.loadMixpanelUserActivity",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 408,
+      "column": 4,
+      "order": 94,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "callee": "backend.static.mixpanel-integration.parseGitHubRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 19,
+      "column": 9,
+      "order": 59,
+      "call_text": "parseGitHubRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+      "callee": "backend.static.mixpanel-integration.mixpanelFindingId",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 205,
+      "column": 8,
+      "order": 71,
+      "call_text": "mixpanelFindingId"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.renderMixpanelEventsTable",
+      "callee": "backend.static.mixpanel-integration.mixpanelRowIsBugCandidate",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 141,
+      "column": 23,
+      "order": 70,
+      "call_text": "mixpanelRowIsBugCandidate"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 283,
+      "column": 18,
+      "order": 78,
+      "call_text": "mixpanelFindingFromRow"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentAnalysisRunId",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 284,
+      "column": 24,
+      "order": 79,
+      "call_text": "mixpanelCurrentAnalysisRunId"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 286,
+      "column": 4,
+      "order": 80,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 289,
+      "column": 2,
+      "order": 81,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugReview",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 304,
+      "column": 4,
+      "order": 82,
+      "call_text": "setMixpanelBugReview"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 305,
+      "column": 4,
+      "order": 83,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.renderMixpanelEventsTable",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 306,
+      "column": 4,
+      "order": 84,
+      "call_text": "renderMixpanelEventsTable"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.resolveMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 308,
+      "column": 4,
+      "order": 85,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 415,
+      "column": 26,
+      "order": 95,
+      "call_text": "mixpanelCurrentRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.restoreMixpanelConnectionStatus",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 424,
+      "column": 6,
+      "order": 96,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.setupMixpanelActivityTracking",
+      "callee": "backend.static.mixpanel-integration.mixpanelCurrentRepo",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 84,
+      "column": 26,
+      "order": 68,
+      "call_text": "mixpanelCurrentRepo"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.setupMixpanelActivityTracking",
+      "callee": "backend.static.mixpanel-integration.setMixpanelStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 100,
+      "column": 2,
+      "order": 69,
+      "call_text": "setMixpanelStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.validateMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.mixpanelFindingFromRow",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 255,
+      "column": 18,
+      "order": 72,
+      "call_text": "mixpanelFindingFromRow"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.validateMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugReview",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 257,
+      "column": 4,
+      "order": 73,
+      "call_text": "setMixpanelBugReview"
+    },
+    {
+      "caller": "backend.static.mixpanel-integration.validateMixpanelBug",
+      "callee": "backend.static.mixpanel-integration.setMixpanelBugStatus",
+      "file": "backend/static/mixpanel-integration.js",
+      "line": 258,
+      "column": 4,
+      "order": 74,
+      "call_text": "setMixpanelBugStatus"
+    },
+    {
+      "caller": "backend.static.mixpanel.installLogoutReset",
+      "callee": "backend.static.mixpanel.urlPath",
+      "file": "backend/static/mixpanel.js",
+      "line": 134,
+      "column": 19,
+      "order": 98,
+      "call_text": "urlPath"
+    },
+    {
+      "caller": "backend.static.mixpanel.installLogoutReset",
+      "callee": "backend.static.mixpanel.reset",
+      "file": "backend/static/mixpanel.js",
+      "line": 136,
+      "column": 55,
+      "order": 99,
+      "call_text": "reset"
+    },
+    {
+      "caller": "backend.static.mixpanel.reset",
+      "callee": "backend.static.mixpanel.init",
+      "file": "backend/static/mixpanel.js",
+      "line": 114,
+      "column": 10,
+      "order": 97,
+      "call_text": "init"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.classifyParserTier",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 241,
+      "column": 19,
+      "order": 112,
+      "call_text": "classifyParserTier"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.recordEdgeInfo",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 242,
+      "column": 31,
+      "order": 113,
+      "call_text": "recordEdgeInfo"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 247,
+      "column": 4,
+      "order": 114,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 248,
+      "column": 4,
+      "order": 115,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 265,
+      "column": 8,
+      "order": 116,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 266,
+      "column": 8,
+      "order": 117,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 276,
+      "column": 6,
+      "order": 118,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "callee": "scripts.codemd-mcp-server.addEdge",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 277,
+      "column": 6,
+      "order": 119,
+      "call_text": "addEdge"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.bfsFrom",
+      "callee": "scripts.codemd-mcp-server.pathDepth",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 579,
+      "column": 20,
+      "order": 145,
+      "call_text": "pathDepth"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.bfsFrom",
+      "callee": "scripts.codemd-mcp-server.edgeKey",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 584,
+      "column": 53,
+      "order": 146,
+      "call_text": "edgeKey"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.callersOrCallees",
+      "callee": "scripts.codemd-mcp-server.impactRadius",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 547,
+      "column": 9,
+      "order": 137,
+      "call_text": "impactRadius"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.edgeConfidence",
+      "callee": "scripts.codemd-mcp-server.edgeKey",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 364,
+      "column": 30,
+      "order": 123,
+      "call_text": "edgeKey"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.loadImpactGraph",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 664,
+      "column": 16,
+      "order": 147,
+      "call_text": "loadImpactGraph"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.resolveNodes",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 666,
+      "column": 20,
+      "order": 148,
+      "call_text": "resolveNodes"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.resolveNodes",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 667,
+      "column": 18,
+      "order": 149,
+      "call_text": "resolveNodes"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.kShortestPaths",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 688,
+      "column": 24,
+      "order": 150,
+      "call_text": "kShortestPaths"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.edgeConfidence",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 704,
+      "column": 77,
+      "order": 151,
+      "call_text": "edgeConfidence"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.findCallPaths",
+      "callee": "scripts.codemd-mcp-server.summarizeConfidence",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 712,
+      "column": 18,
+      "order": 152,
+      "call_text": "summarizeConfidence"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 857,
+      "column": 6,
+      "order": 153,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 858,
+      "column": 43,
+      "order": 154,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.artifactStatus",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 858,
+      "column": 69,
+      "order": 155,
+      "call_text": "artifactStatus"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 861,
+      "column": 6,
+      "order": 156,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 862,
+      "column": 43,
+      "order": 157,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.readArtifact",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 862,
+      "column": 54,
+      "order": 158,
+      "call_text": "readArtifact"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 865,
+      "column": 6,
+      "order": 159,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 866,
+      "column": 43,
+      "order": 160,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.searchArtifacts",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 866,
+      "column": 54,
+      "order": 161,
+      "call_text": "searchArtifacts"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 869,
+      "column": 6,
+      "order": 162,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 870,
+      "column": 43,
+      "order": 163,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.findCallPaths",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 870,
+      "column": 54,
+      "order": 164,
+      "call_text": "findCallPaths"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 873,
+      "column": 6,
+      "order": 165,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 874,
+      "column": 43,
+      "order": 166,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.impactRadius",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 874,
+      "column": 54,
+      "order": 167,
+      "call_text": "impactRadius"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 877,
+      "column": 6,
+      "order": 168,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 878,
+      "column": 43,
+      "order": 169,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.callersOrCallees",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 878,
+      "column": 54,
+      "order": 170,
+      "call_text": "callersOrCallees"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.recordUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 881,
+      "column": 6,
+      "order": 171,
+      "call_text": "recordUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.textResult",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 882,
+      "column": 43,
+      "order": 172,
+      "call_text": "textResult"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.handleRequest",
+      "callee": "scripts.codemd-mcp-server.callersOrCallees",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 882,
+      "column": 54,
+      "order": 173,
+      "call_text": "callersOrCallees"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.loadImpactGraph",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 505,
+      "column": 16,
+      "order": 130,
+      "call_text": "loadImpactGraph"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.resolveNodes",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 506,
+      "column": 16,
+      "order": 131,
+      "call_text": "resolveNodes"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.traverse",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 523,
+      "column": 17,
+      "order": 132,
+      "call_text": "traverse"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.nodeRows",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 524,
+      "column": 21,
+      "order": 133,
+      "call_text": "nodeRows"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.traverse",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 528,
+      "column": 17,
+      "order": 134,
+      "call_text": "traverse"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.nodeRows",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 529,
+      "column": 21,
+      "order": 135,
+      "call_text": "nodeRows"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.impactRadius",
+      "callee": "scripts.codemd-mcp-server.summarizeConfidence",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 539,
+      "column": 22,
+      "order": 136,
+      "call_text": "summarizeConfidence"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.bfsFrom",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 569,
+      "column": 11,
+      "order": 138,
+      "call_text": "bfsFrom"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.pathDepth",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 579,
+      "column": 20,
+      "order": 139,
+      "call_text": "pathDepth"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.edgeKey",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 584,
+      "column": 53,
+      "order": 140,
+      "call_text": "edgeKey"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.bfsFrom",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 604,
+      "column": 16,
+      "order": 141,
+      "call_text": "bfsFrom"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.arraysEqual",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 621,
+      "column": 28,
+      "order": 142,
+      "call_text": "arraysEqual"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.edgeKey",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 622,
+      "column": 26,
+      "order": 143,
+      "call_text": "edgeKey"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.kShortestPaths",
+      "callee": "scripts.codemd-mcp-server.bfsFrom",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 629,
+      "column": 23,
+      "order": 144,
+      "call_text": "bfsFrom"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.loadImpactGraph",
+      "callee": "scripts.codemd-mcp-server.readJsonIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 322,
+      "column": 18,
+      "order": 120,
+      "call_text": "readJsonIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.loadImpactGraph",
+      "callee": "scripts.codemd-mcp-server.addEdgesFromGraph",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 332,
+      "column": 4,
+      "order": 121,
+      "call_text": "addEdgesFromGraph"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.loadImpactGraph",
+      "callee": "scripts.codemd-mcp-server.mergeLocationIndex",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 333,
+      "column": 4,
+      "order": 122,
+      "call_text": "mergeLocationIndex"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.nodeRows",
+      "callee": "scripts.codemd-mcp-server.nodeConfidenceMap",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 484,
+      "column": 27,
+      "order": 129,
+      "call_text": "nodeConfidenceMap"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.processBuffer",
+      "callee": "scripts.codemd-mcp-server.handleRequest",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 921,
+      "column": 23,
+      "order": 174,
+      "call_text": "handleRequest"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.processBuffer",
+      "callee": "scripts.codemd-mcp-server.send",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 923,
+      "column": 8,
+      "order": 175,
+      "call_text": "send"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.processBuffer",
+      "callee": "scripts.codemd-mcp-server.send",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 926,
+      "column": 6,
+      "order": 176,
+      "call_text": "send"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.readArtifact",
+      "callee": "scripts.codemd-mcp-server.safeJoin",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 120,
+      "column": 19,
+      "order": 102,
+      "call_text": "safeJoin"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.readArtifact",
+      "callee": "scripts.codemd-mcp-server.readTextIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 121,
+      "column": 15,
+      "order": 103,
+      "call_text": "readTextIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.readJsonIfExists",
+      "callee": "scripts.codemd-mcp-server.readTextIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 39,
+      "column": 15,
+      "order": 100,
+      "call_text": "readTextIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.recordEdgeInfo",
+      "callee": "scripts.codemd-mcp-server.edgeKey",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 231,
+      "column": 14,
+      "order": 111,
+      "call_text": "edgeKey"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.recordUsage",
+      "callee": "scripts.codemd-mcp-server.readUsage",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 77,
+      "column": 16,
+      "order": 101,
+      "call_text": "readUsage"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.resolveNodes",
+      "callee": "scripts.codemd-mcp-server.functionTail",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 414,
+      "column": 15,
+      "order": 124,
+      "call_text": "functionTail"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.resolveNodes",
+      "callee": "scripts.codemd-mcp-server.functionTail",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 419,
+      "column": 45,
+      "order": 125,
+      "call_text": "functionTail"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.resolveNodes",
+      "callee": "scripts.codemd-mcp-server.functionTail",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 427,
+      "column": 32,
+      "order": 126,
+      "call_text": "functionTail"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.addMatch",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 168,
+      "column": 2,
+      "order": 104,
+      "call_text": "addMatch"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.readTextIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 168,
+      "column": 33,
+      "order": 105,
+      "call_text": "readTextIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.readJsonIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 171,
+      "column": 17,
+      "order": 106,
+      "call_text": "readJsonIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.flattenTextEntries",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 172,
+      "column": 24,
+      "order": 107,
+      "call_text": "flattenTextEntries"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.addMatch",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 173,
+      "column": 6,
+      "order": 108,
+      "call_text": "addMatch"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.readJsonIfExists",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 178,
+      "column": 17,
+      "order": 109,
+      "call_text": "readJsonIfExists"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.searchArtifacts",
+      "callee": "scripts.codemd-mcp-server.addMatch",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 181,
+      "column": 6,
+      "order": 110,
+      "call_text": "addMatch"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.traverse",
+      "callee": "scripts.codemd-mcp-server.edgeConfidence",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 451,
+      "column": 38,
+      "order": 127,
+      "call_text": "edgeConfidence"
+    },
+    {
+      "caller": "scripts.codemd-mcp-server.traverse",
+      "callee": "scripts.codemd-mcp-server.edgeConfidence",
+      "file": "scripts/codemd-mcp-server.js",
+      "line": 451,
+      "column": 74,
+      "order": 128,
+      "call_text": "edgeConfidence"
+    },
+    {
+      "caller": "src.extension.deactivate",
+      "callee": "src.extension.stopServer",
+      "file": "src/extension.ts",
+      "line": 400,
+      "column": 2,
+      "order": 177,
+      "call_text": "stopServer"
+    }
+  ],
+  "call_count": 177
+}

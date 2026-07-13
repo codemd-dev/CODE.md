@@ -1,0 +1,12 @@
+repo_id,symbol,path,start_line,end_line,in_degree,out_degree,pagerank,component_id
+vscode-extension-graphs,extension.activate,extension.ts,334,397,0,0,0.090909090909,4
+vscode-extension-graphs,extension.deactivate,extension.ts,399,401,0,0,0.090909090909,6
+vscode-extension-graphs,extension.check,extension.ts,731,755,0,0,0.090909090909,5
+vscode-extension-graphs,extension.stopServer,extension.ts,760,771,0,0,0.090909090909,10
+vscode-extension-graphs,extension.LocalCallgraphIndex,extension.ts,850,2494,0,0,0.090909090909,2
+vscode-extension-graphs,extension.ArtifactEntry,extension.ts,1095,1098,0,0,0.090909090909,0
+vscode-extension-graphs,extension.NormalizedSearchResult,extension.ts,1316,1328,0,0,0.090909090909,3
+vscode-extension-graphs,extension.GraphsViewProvider,extension.ts,1334,2494,0,0,0.090909090909,1
+vscode-extension-graphs,extension.status,extension.ts,1809,1812,0,0,0.090909090909,9
+vscode-extension-graphs,extension.escapeHtml,extension.ts,2393,2397,0,0,0.090909090909,7
+vscode-extension-graphs,extension.renderSearchResult,extension.ts,2399,2442,0,0,0.090909090909,8

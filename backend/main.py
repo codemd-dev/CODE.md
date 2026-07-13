@@ -7312,7 +7312,23 @@ def build_navigatable_cytoscape_graph(
     output_repo_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_repo_dir / f"{graph_name}.json"
     html_path = output_repo_dir / f"{graph_name}.html"
-    initial_roots = initial_roots or (nodes[:1] if nodes else [])
+    node_set = set(nodes or [])
+    initial_roots = [root for root in (initial_roots or []) if root in node_set]
+    if not initial_roots and nodes:
+        initial_roots = nodes[:1]
+    if not initial_visible_nodes and initial_roots:
+        edge_pairs = [(edge[0], edge[1]) for edge in edges if len(edge) >= 2]
+        preview_nodes, preview_edges = navigatable_initial_preview(nodes, edge_pairs, initial_roots[0], max_nodes=12)
+        if preview_nodes:
+            edge_meta_by_pair = {}
+            for edge in edges:
+                if len(edge) >= 4:
+                    edge_meta_by_pair[(edge[0], edge[1])] = (edge[2], edge[3])
+            initial_visible_nodes = preview_nodes
+            initial_visible_edges = [
+                (src, dst, *edge_meta_by_pair.get((src, dst), (None, None)))
+                for src, dst in preview_edges
+            ]
     graph_data = {
         "mode": "navigatable_ordered_ga_graph",
         "title": graph_title,
@@ -7324,7 +7340,7 @@ def build_navigatable_cytoscape_graph(
         "initial_visible_edges": [[src, dst, order, line] for src, dst, order, line in (initial_visible_edges or [])],
         "node_labels": node_labels or {},
         "edge_labels": edge_labels or {},
-        "instructions": "Click a node to reveal one incoming or outgoing link at a time.",
+        "instructions": "Click a node to reveal the next connected node or edge.",
     }
     json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
     relative_json = os.path.relpath(json_path, BASE_OUTPUT).replace("\\", "/")
@@ -7338,17 +7354,25 @@ def build_navigatable_cytoscape_graph(
   <style>
     html, body {{ width:100%; height:100%; margin:0; overflow:hidden; font-family:Arial, sans-serif; background:#ffffff; color:#111827; }}
     #cy {{ position:absolute; inset:0; min-height:100%; background:#ffffff; }}
-    #status {{ position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 16px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; }}
-    #legend {{ position:absolute; right:8px; top:46px; z-index:10; max-width:300px; background:rgba(255,255,255,.94); border:1px solid #ddd; border-radius:6px; padding:8px 10px; font-size:12px; color:#334155; box-shadow:0 8px 24px rgba(15,23,42,.08); }}
-    #legend strong {{ display:block; color:#111827; font-size:12px; margin-bottom:5px; }}
+    #status {{ position:absolute; left:8px; top:8px; z-index:10; max-width:calc(100% - 324px); background:rgba(255,255,255,.94); border:1px solid #dbe3ef; border-radius:6px; padding:7px 9px; color:#334155; font-size:13px; line-height:1.35; }}
+    #legend {{ position:absolute; right:8px; top:8px; z-index:11; width:min(300px, calc(100% - 16px)); font-size:12px; color:#334155; }}
+    #legend summary {{ display:flex; justify-content:space-between; align-items:center; gap:8px; width:max-content; max-width:100%; margin-left:auto; cursor:pointer; list-style:none; background:rgba(255,255,255,.96); border:1px solid #dbe3ef; border-radius:6px; padding:7px 10px; color:#111827; font-weight:700; box-shadow:0 8px 24px rgba(15,23,42,.08); }}
+    #legend summary::-webkit-details-marker {{ display:none; }}
+    #legend summary::after {{ content:""; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid #475569; }}
+    #legend[open] summary::after {{ border-top:0; border-bottom:5px solid #475569; }}
+    #legendPanel {{ margin-top:6px; background:rgba(255,255,255,.96); border:1px solid #dbe3ef; border-radius:6px; padding:8px 10px; box-shadow:0 12px 30px rgba(15,23,42,.12); }}
     #legend .legend-row {{ display:flex; gap:6px; align-items:flex-start; margin-top:4px; line-height:1.25; }}
     #legend .legend-key {{ min-width:78px; color:#dc2626; font-weight:700; }}
     #legend .legend-note {{ color:#64748b; }}
+    @media (max-width: 640px) {{
+      #status {{ left:8px; right:8px; top:48px; max-width:none; }}
+      #legend {{ top:8px; }}
+    }}
   </style>
 </head>
 <body>
   <div id=\"status\">Loading {graph_title}...</div>
-  <div id=\"legend\"><strong>Edge legend</strong><div id=\"legendRows\">Loading relationships...</div></div>
+  <details id=\"legend\"><summary>Edge Legend</summary><div id=\"legendPanel\"><div id=\"legendRows\">Loading relationships...</div></div></details>
   <div id=\"cy\"></div>
   <script>
     const GRAPH_JSON = \"{graph_json_url}\";
@@ -7404,6 +7428,9 @@ def build_navigatable_cytoscape_graph(
       return limit(label);
     }}
     function sanitize(raw) {{ return String(raw).replace(/[^a-zA-Z0-9_]/g, \"_\"); }}
+    function countLabel(count, singular, plural) {{
+      return `${{count}} ${{count === 1 ? singular : plural}}`;
+    }}
     function loadGraphData() {{
       return fetch(GRAPH_JSON).then(r => r.ok ? r.json() : Promise.reject(new Error(`Failed to load ${{GRAPH_JSON}}`))).catch(() => EMBEDDED_GRAPH_DATA);
     }}
@@ -7583,7 +7610,7 @@ def build_navigatable_cytoscape_graph(
         || Array.from(nodeById.keys()).find(id => (incoming.get(id) || []).length || (outgoing.get(id) || []).length)
         || sanitize(roots[0] || rawNodes[0] || \"root\");
       const explicitElements = explicitInitialElements();
-      const initialElements = explicitElements.length ? explicitElements : [nodeElement(firstRoot)];
+      const initialElements = explicitElements.length ? explicitElements : flowElementsFor(firstRoot, 1, 16);
       const cy = cytoscape({{
         container: document.getElementById(\"cy\"),
         elements: initialElements.length ? initialElements : [nodeElement(firstRoot)],
@@ -7810,7 +7837,7 @@ def build_navigatable_cytoscape_graph(
         const added = addMissingElements(oneStepElementsFor(id));
         if (added) {{
           relayout(true, id);
-          statusEl.textContent = `${{data.title}}: added one linked node/edge from ${{compactLabel(nodeById.get(id) || id)}} (${{cy.nodes().length}} nodes, ${{cy.edges().length}} edges). Click again to reveal the next link.`;
+          statusEl.textContent = `${{data.title}}: added the next link from ${{compactLabel(nodeById.get(id) || id)}} (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible). Click again to continue.`;
           return;
         }}
         const next = findNextExpansionTarget(id);
@@ -7818,13 +7845,13 @@ def build_navigatable_cytoscape_graph(
           expandedNodes.add(next);
           addMissingElements(oneStepElementsFor(next));
           relayout(true, next);
-          statusEl.textContent = `${{data.title}}: ${{compactLabel(nodeById.get(id) || id)}} fully expanded. Continuing from ${{compactLabel(nodeById.get(next) || next)}} (${{cy.nodes().length}} nodes, ${{cy.edges().length}} edges). Click to keep going.`;
+          statusEl.textContent = `${{data.title}}: ${{compactLabel(nodeById.get(id) || id)}} is fully expanded. Continuing from ${{compactLabel(nodeById.get(next) || next)}} (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible). Click to keep going.`;
         }} else {{
-          statusEl.textContent = `${{data.title}}: all reachable nodes from ${{compactLabel(nodeById.get(id) || id)}} are now visible (${{cy.nodes().length}} nodes, ${{cy.edges().length}} edges).`;
+          statusEl.textContent = `${{data.title}}: all reachable nodes from ${{compactLabel(nodeById.get(id) || id)}} are now visible (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible).`;
         }}
       }});
 
-      statusEl.textContent = `${{data.title}}: starting at ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}} (${{cy.nodes().length}} node, ${{cy.edges().length}} edges). Click a node to reveal one link at a time.`;
+      statusEl.textContent = `${{data.title}}: showing connections from ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}} (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible). Click a node to reveal the next connected node or edge.`;
       requestAnimationFrame(() => relayout(true, firstRoot));
     
     }}).catch(err => {{
@@ -8349,7 +8376,7 @@ def navigatable_graph_html_current(html_path):
     except OSError:
         return False
     return (
-        "Click a node to reveal one link at a time" in html
+        "Click a node to reveal the next connected node or edge" in html
         and "applyRoadLayout" in html
         and "single-root-progressive-v5" in html
         and "node_labels" in html
@@ -8875,6 +8902,7 @@ def build_combined_navigatable_callgraph(output_repo_dir, results=None, repo_src
         combined_dir,
         graph_name="combined_navigatable_callgraph",
         graph_title="Navigable Merged Callgraph",
+        initial_preview_node_count=16,
     )
     return results
 
@@ -13234,6 +13262,93 @@ def scoped_callgraph(req: ScopedCallgraphRequest):
 
 def repo_output_dir(owner_name: str, repo_name: str):
     return BASE_OUTPUT / short_id(owner_name, repo_name)
+
+
+def analysis_artifact_belongs_to_repo(candidate_dir: Path, owner_name: str, repo_name: str) -> bool:
+    candidate_dir = Path(candidate_dir)
+    expected_full_name = f"{owner_name}/{repo_name}"
+    repo_stats_path = candidate_dir / "repo_stats.json"
+    if repo_stats_path.exists():
+        try:
+            stats = json.loads(repo_stats_path.read_text(encoding="utf-8", errors="ignore"))
+            full_name = str(
+                stats.get("repo_full_name")
+                or (stats.get("known_from_github_repo_metadata") or {}).get("full_name")
+                or ""
+            ).strip()
+            if full_name == expected_full_name:
+                return True
+        except Exception as e:
+            logger.warning("Unable to validate mirrored repo_stats.json at %s: %s", repo_stats_path, e)
+
+    code_md_path = candidate_dir / "CODE.md"
+    if code_md_path.exists():
+        try:
+            preview = code_md_path.read_text(encoding="utf-8", errors="ignore")[:1000]
+            return f"Generated for {expected_full_name} " in preview
+        except Exception as e:
+            logger.warning("Unable to validate mirrored CODE.md at %s: %s", code_md_path, e)
+    return False
+
+
+def materialize_mirrored_analysis_output(
+    mirror_dir_value: str,
+    output_repo_dir: Path,
+    owner_name: str,
+    repo_name: str,
+):
+    """Adopt a workspace codemd.dev mirror for local companion-server graphing.
+
+    The VS Code extension can generate artifacts with the one-shot CLI and
+    mirror them into the workspace, then later start a fresh FastAPI companion
+    whose private BASE_OUTPUT cache is empty. Copying the validated mirror back
+    under BASE_OUTPUT keeps the existing /codemd.dev static URL behavior.
+    """
+    mirror_dir_value = str(mirror_dir_value or "").strip()
+    if not mirror_dir_value:
+        return {"materialized": False, "reason": "no mirror path provided"}
+
+    mirror_dir = Path(mirror_dir_value).expanduser()
+    if not mirror_dir.exists() or not mirror_dir.is_dir():
+        return {"materialized": False, "reason": "mirror path does not exist", "mirror_dir": str(mirror_dir)}
+    if not analysis_artifact_belongs_to_repo(mirror_dir, owner_name, repo_name):
+        return {
+            "materialized": False,
+            "reason": "mirror metadata does not match selected repository",
+            "mirror_dir": str(mirror_dir),
+        }
+
+    artifact_root = artifact_root_for_output(mirror_dir)
+    if not any(
+        (artifact_root / rel_path).exists()
+        for rel_path in (
+            Path("combined_callgraph") / "combined_callgraph.json",
+            Path("python") / "python_callgraph.json",
+            Path("javascript") / "javascript_callgraph.json",
+            Path("html_ui") / "html_ui_graph.json",
+        )
+    ):
+        return {
+            "materialized": False,
+            "reason": "mirror does not contain a usable callgraph artifact",
+            "mirror_dir": str(mirror_dir),
+        }
+
+    output_repo_dir = Path(output_repo_dir)
+    try:
+        if mirror_dir.resolve() == output_repo_dir.resolve():
+            return {"materialized": True, "reason": "mirror already is output directory", "mirror_dir": str(mirror_dir)}
+    except Exception:
+        pass
+
+    output_repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(mirror_dir, output_repo_dir, dirs_exist_ok=True)
+    return {
+        "materialized": True,
+        "reason": "copied workspace mirror into companion output cache",
+        "mirror_dir": str(mirror_dir),
+        "output_repo_dir": str(output_repo_dir),
+    }
 
 
 
@@ -19881,7 +19996,7 @@ def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="
         full_graph_edges or graph_edges,
         output_repo_dir,
         graph_name=graph_name,
-        graph_title="Navigable Search Results Graph",
+        graph_title="Search Results Graph",
         initial_roots=sorted(root_set),
         entry_points=sorted(root_set),
         initial_visible_nodes=sorted(nodes),
@@ -25169,6 +25284,14 @@ def search(request: Request, payload: dict):
         restore_result = restore_search_artifacts()
         logger.info("Search artifact restore result for %s/%s: %s", owner, repo, restore_result)
     if not OUTPUT_REPO_DIR.exists():
+        restore_result = materialize_mirrored_analysis_output(
+            payload.get("artifact_root_path") or payload.get("mirror_artifact_dir") or "",
+            OUTPUT_REPO_DIR,
+            owner,
+            repo,
+        )
+        logger.info("Search mirror materialization result for %s/%s: %s", owner, repo, restore_result)
+    if not OUTPUT_REPO_DIR.exists():
         restore_result = restore_search_artifacts()
         logger.info("Search output restore result for %s/%s: %s", owner, repo, restore_result)
     if not OUTPUT_REPO_DIR.exists():
@@ -26136,8 +26259,17 @@ def search_result_graph(payload: dict):
     repo_id = short_id(owner, repo)
     OUTPUT_REPO_DIR = Path(BASE_OUTPUT) / repo_id
     if not OUTPUT_REPO_DIR.exists():
+        restore_result = materialize_mirrored_analysis_output(
+            payload.get("artifact_root_path") or payload.get("mirror_artifact_dir") or "",
+            OUTPUT_REPO_DIR,
+            owner,
+            repo,
+        )
+        logger.info("Search result graph mirror materialization result for %s/%s: %s", owner, repo, restore_result)
+    if not OUTPUT_REPO_DIR.exists():
         return {
             "error": f"No analysis output exists for {owner}/{repo}. Analyze the selected repository first.",
+            "restore_result": restore_result,
             "search_graph_url": "",
         }
     artifact_root = artifact_root_for_output(OUTPUT_REPO_DIR)
@@ -34225,19 +34357,15 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
     repo_stats = {}
     repo_comments = {}
     repo_text = {}
-    if repo_stats_path and os.path.exists(repo_stats_path):
-        with open(repo_stats_path, "r", encoding="utf-8") as f:
-            repo_stats = json.load(f)
-    if repo_comments_path and os.path.exists(repo_comments_path):
-        with open(repo_comments_path, "r", encoding="utf-8") as f:
-            repo_comments = json.load(f)
-    if repo_text_path and os.path.exists(repo_text_path):
-        with open(repo_text_path, "r", encoding="utf-8") as f:
-            repo_text = json.load(f)
+    if repo_stats_path:
+        repo_stats = load_json_file(Path(repo_stats_path), {})
+    if repo_comments_path:
+        repo_comments = load_json_file(Path(repo_comments_path), {})
+    if repo_text_path:
+        repo_text = load_json_file(Path(repo_text_path), {})
     feature_catalog = {}
-    if feature_catalog_path and os.path.exists(feature_catalog_path):
-        with open(feature_catalog_path, "r", encoding="utf-8") as f:
-            feature_catalog = json.load(f)
+    if feature_catalog_path:
+        feature_catalog = load_json_file(Path(feature_catalog_path), {})
     ui_feature_seeds = []
     if isinstance(repo_text, dict):
         try:
