@@ -1,11 +1,13 @@
 {
   "mcpServers": {
-    "CODE.md MCP": {
+    "codemd": {
       "command": "node",
       "args": [
-        "c:\\Users\\prana\\.vscode\\extensions\\codeval.codeval-codemd-graphs-0.0.40\\scripts\\codemd-mcp-server.js",
+        "c:\\Users\\prana\\.vscode\\extensions\\codeval.codeval-codemd-graphs-0.0.73\\scripts\\codemd-mcp-server.js",
         "--workspace",
-        "c:\\DATA\\Code\\github\\vscode-extension-graphs"
+        "c:\\DATA\\Code\\github\\vscode-extension-graphs",
+        "--server-name",
+        "codemd"
       ],
       "env": {
         "CODEMD_WORKSPACE": "c:\\DATA\\Code\\github\\vscode-extension-graphs"

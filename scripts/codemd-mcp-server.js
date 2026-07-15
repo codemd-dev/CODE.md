@@ -3,8 +3,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { spawn, spawnSync } = require('child_process');
 
-const SERVER_NAME = 'CODE.md MCP';
 const SERVER_VERSION = '0.0.24';
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -13,10 +14,234 @@ function argValue(name) {
   return index >= 0 && index + 1 < process.argv.length ? process.argv[index + 1] : '';
 }
 
+const SERVER_NAME = argValue('--server-name') || 'codemd';
+const SERVER_INSTRUCTIONS = [
+  `${SERVER_NAME} — cached static-analysis index (callgraph, impact radius, repo docs) over this workspace's .codemd/ artifacts.`,
+  'Reach for it BEFORE and WHILE writing or editing code, not only when asked to explore:',
+  '- Before editing or removing a function/route/component, call codemd_get_impact_radius (or the cheaper codemd_get_callers / codemd_get_callees) on it to see what calls it or what it calls, including dynamic-dispatch edges plain grep misses.',
+  '- Before tracing how two symbols connect, call codemd_get_call_paths instead of manually following calls by hand.',
+  '- To find likely symbol names before reading many files, call codemd_search_artifacts.',
+  '- For a repository overview, call codemd_read_artifact (defaults to CODE.md).',
+  'These artifacts are generated static analysis: some edges are regex-inferred rather than AST-resolved, and content can go stale if source changed since generation. Treat results as a fast lead, and verify against the actual source file before finalizing a change.',
+].join('\n');
 const workspaceRoot = path.resolve(argValue('--workspace') || process.env.CODEMD_WORKSPACE || process.cwd());
-const artifactRoot = path.join(workspaceRoot, 'codemd.dev');
+const artifactRoot = path.join(workspaceRoot, '.codemd');
 const usagePath = path.join(artifactRoot, '.mcp-usage.json');
 const RESOURCE_SCHEME = 'codemd';
+
+// ---------------------------------------------------------------------------
+// Freshness coordinator — mirrors CodeGraph's own daemon+lock pattern so this
+// server can refresh .codemd/ on its own, without the VS Code extension
+// needing to be running. Any client (Claude Code, Codex, VS Code, ...) spawns
+// its own copy of this script, so multiple copies can race to re-analyze at
+// once; a pidfile lock under .codemd/ ensures only one of them actually runs
+// local-analyze.py at a time, and the rest just keep serving whatever's on
+// disk. local-analyze.py already no-ops quickly when it finds no source
+// changes ("Reusing cached local-path analysis"), so holding the lock only
+// for the duration of one run is enough — no separate staleness heuristic is
+// needed here, we just let local-analyze.py decide.
+//
+// This deliberately does NOT bootstrap a Python environment (creating a venv
+// and pip-installing the analyzer's dependencies is slow, network-dependent,
+// and out of scope for a lazy per-tool-call refresh). It only uses a venv the
+// VS Code extension already provisioned, or a system python/python3/py -3 on
+// PATH. If neither is available, refresh is skipped silently and the server
+// just serves whatever is already in .codemd/ (same as before this change).
+// ---------------------------------------------------------------------------
+
+const EXTENSION_ROOT = path.resolve(__dirname, '..');
+const DAEMON_LOCK_PATH = path.join(artifactRoot, '.mcp-daemon.lock');
+const DAEMON_LOG_PATH = path.join(artifactRoot, '.mcp-daemon.log');
+const REFRESH_STATE_PATH = path.join(artifactRoot, '.mcp-refresh-state.json');
+// Rebuilding is now cheap when nothing in a given language changed (the
+// per-extension mtime filtering in backend/main.py), but a burst of tool
+// calls during active editing would still mean re-invoking local-analyze.py
+// (a fresh python process + a full walk of the source tree) on every single
+// call. This cooldown caps how often we even attempt a refresh, so rapid-fire
+// tool calls between edits don't each pay that cost — freshness becomes "at
+// most once per cooldown window" instead of "once per tool call." Shared via
+// a file (not an in-memory flag) since separate clients (Claude Code, Codex,
+// VS Code) each spawn their own copy of this process.
+const REFRESH_COOLDOWN_MS = 2 * 60 * 1000;
+let refreshInFlight = false;
+
+function cooldownActive() {
+  try {
+    const state = JSON.parse(fs.readFileSync(REFRESH_STATE_PATH, 'utf8'));
+    return Date.now() - Number(state.lastAttemptAt || 0) < REFRESH_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function recordRefreshAttempt() {
+  try {
+    fs.mkdirSync(artifactRoot, { recursive: true });
+    fs.writeFileSync(REFRESH_STATE_PATH, JSON.stringify({ lastAttemptAt: Date.now() }));
+  } catch {
+    // Best-effort — worst case we just refresh a bit more often than intended.
+  }
+}
+
+function daemonLog(line) {
+  try {
+    fs.mkdirSync(artifactRoot, { recursive: true });
+    fs.appendFileSync(DAEMON_LOG_PATH, `[${new Date().toISOString()}] ${line}\n`);
+  } catch {
+    // Best-effort only — never let logging break the refresh path.
+  }
+}
+
+// Same globalStorage convention VS Code uses for context.globalStorageUri,
+// replicated here since this script has no `vscode` module to ask directly.
+function vscodeGlobalStorageDir() {
+  const home = os.homedir();
+  const EXT_ID = 'codeval.codeval-codemd-graphs';
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Code', 'User', 'globalStorage', EXT_ID);
+  }
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', EXT_ID);
+  }
+  return path.join(home, '.config', 'Code', 'User', 'globalStorage', EXT_ID);
+}
+
+function candidateSystemPythons() {
+  return process.platform === 'win32'
+    ? [{ cmd: 'py', args: ['-3'] }, { cmd: 'python', args: [] }, { cmd: 'python3', args: [] }]
+    : [{ cmd: 'python3', args: [] }, { cmd: 'python', args: [] }];
+}
+
+function resolvePython() {
+  const venvPython = process.platform === 'win32'
+    ? path.join(vscodeGlobalStorageDir(), 'venv', 'Scripts', 'python.exe')
+    : path.join(vscodeGlobalStorageDir(), 'venv', 'bin', 'python');
+  if (fs.existsSync(venvPython)) {
+    return { cmd: venvPython, args: [] };
+  }
+  for (const candidate of candidateSystemPythons()) {
+    try {
+      const result = spawnSync(candidate.cmd, [...candidate.args, '--version'], { timeout: 5000 });
+      if (result.status === 0) {
+        return candidate;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+// Exclusive-create the lock file; on EEXIST, reclaim it only if its owning
+// PID is no longer alive (crashed holder), otherwise another live process
+// already owns the refresh.
+function acquireDaemonLock() {
+  const payload = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
+  try {
+    fs.mkdirSync(artifactRoot, { recursive: true });
+    fs.writeFileSync(DAEMON_LOCK_PATH, payload, { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if (err.code !== 'EEXIST') {
+      return false;
+    }
+  }
+  try {
+    const existing = JSON.parse(fs.readFileSync(DAEMON_LOCK_PATH, 'utf8'));
+    process.kill(existing.pid, 0); // throws if that PID isn't running
+    return false;
+  } catch {
+    // Stale lock (owner gone, or unreadable) — reclaim it.
+    try {
+      fs.writeFileSync(DAEMON_LOCK_PATH, payload);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function releaseDaemonLock() {
+  try {
+    const existing = JSON.parse(fs.readFileSync(DAEMON_LOCK_PATH, 'utf8'));
+    if (existing.pid === process.pid) {
+      fs.unlinkSync(DAEMON_LOCK_PATH);
+    }
+  } catch {
+    // Already gone — nothing to do.
+  }
+}
+
+// Fire-and-forget: kicks off a re-analysis if nothing else is already doing
+// one, and returns immediately without blocking whatever tool call triggered
+// it. Freshness is eventually-consistent, same as CodeGraph's own "index lags
+// writes by ~1s" behavior — callers see current on-disk artifacts now, and
+// more current ones on their next call.
+function refreshArtifactsInBackground() {
+  if (refreshInFlight) {
+    return;
+  }
+  if (cooldownActive()) {
+    return;
+  }
+  const python = resolvePython();
+  if (!python) {
+    return;
+  }
+  const scriptPath = path.join(EXTENSION_ROOT, 'scripts', 'local-analyze.py');
+  const backendDir = path.join(EXTENSION_ROOT, 'backend');
+  if (!fs.existsSync(scriptPath) || !fs.existsSync(path.join(backendDir, 'main.py'))) {
+    return;
+  }
+  if (!acquireDaemonLock()) {
+    return;
+  }
+  recordRefreshAttempt();
+
+  refreshInFlight = true;
+  const args = [
+    ...python.args,
+    scriptPath,
+    '--path', workspaceRoot,
+    '--name', path.basename(workspaceRoot),
+    '--mirror-out', artifactRoot,
+    '--result-json', path.join(artifactRoot, '.analysis-result.json'),
+  ];
+  const env = {
+    ...process.env,
+    CODEVAL_OUTPUT_DIR: path.join(vscodeGlobalStorageDir(), 'backend-output'),
+    SENTRY_ENABLED: 'false',
+    SENTRY_DSN: '',
+    GOOGLE_CLIENT_ID: '',
+    GOOGLE_CLIENT_SECRET: '',
+    GOOGLE_ANALYTICS_CLIENT_ID: '',
+    GOOGLE_ANALYTICS_CLIENT_SECRET: '',
+    CODEVAL_MIXPANEL_SECRET_KEY: '',
+    CODEVAL_SECRET_ENCRYPTION_KEY: '',
+  };
+
+  const finish = (note) => {
+    if (note) {
+      daemonLog(note);
+    }
+    refreshInFlight = false;
+    releaseDaemonLock();
+  };
+
+  let proc;
+  try {
+    proc = spawn(python.cmd, args, { cwd: backendDir, env });
+  } catch (err) {
+    finish(`spawn failed: ${err?.message || err}`);
+    return;
+  }
+  let stderr = '';
+  proc.stderr?.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  proc.on('error', (err) => finish(`refresh error: ${err?.message || err}`));
+  proc.on('close', (code) => finish(code === 0 ? '' : `local-analyze.py exited ${code}: ${stderr.slice(-2000)}`));
+}
 
 function safeJoin(root, relPath) {
   const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
@@ -802,7 +1027,7 @@ const tools = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Path under codemd.dev. Defaults to CODE.md.' },
+        path: { type: 'string', description: 'Path under .codemd. Defaults to CODE.md.' },
         max_chars: { type: 'number', description: 'Maximum characters to return.' },
       },
       additionalProperties: false,
@@ -890,12 +1115,18 @@ const tools = [
 function handleRequest(message) {
   const { id, method, params = {} } = message;
   if (method === 'initialize') {
+    handshakeComplete = true;
+    if (handshakeTimer) {
+      clearTimeout(handshakeTimer);
+      handshakeTimer = null;
+    }
     if (params.clientInfo && typeof params.clientInfo === 'object') {
       currentClient = {
         name: String(params.clientInfo.name || 'unknown'),
         version: String(params.clientInfo.version || ''),
       };
     }
+    refreshArtifactsInBackground();
     return {
       jsonrpc: '2.0',
       id,
@@ -903,6 +1134,7 @@ function handleRequest(message) {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {}, resources: {} },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+        instructions: SERVER_INSTRUCTIONS,
       },
     };
   }
@@ -922,6 +1154,7 @@ function handleRequest(message) {
   if (method === 'tools/call') {
     const name = params.name;
     const args = params.arguments || {};
+    refreshArtifactsInBackground();
     if (name === 'codemd_status') {
       recordUsage('tool', name);
       return { jsonrpc: '2.0', id, result: textResult(JSON.stringify(artifactStatus(), null, 2)) };
@@ -959,43 +1192,91 @@ function handleRequest(message) {
 }
 
 let inputBuffer = Buffer.alloc(0);
+let transportMode = null;
+let handshakeComplete = false;
+let handshakeTimer = setTimeout(() => {
+  if (!handshakeComplete) {
+    process.exit(1);
+  }
+}, 30000);
 
 function send(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8');
+  if (transportMode === 'line') {
+    process.stdout.write(`${body.toString('utf8')}\n`);
+    return;
+  }
   process.stdout.write(`Content-Length: ${body.length}\r\n\r\n`);
   process.stdout.write(body);
 }
 
+function respondToMessage(message) {
+  try {
+    const response = handleRequest(message);
+    if (response) {
+      send(response);
+    }
+  } catch (err) {
+    send({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32603, message: err && err.message ? err.message : String(err) },
+    });
+  }
+}
+
 function processBuffer() {
   for (;;) {
-    const headerEnd = inputBuffer.indexOf('\r\n\r\n');
-    if (headerEnd < 0) {
-      return;
-    }
-    const header = inputBuffer.slice(0, headerEnd).toString('utf8');
-    const match = header.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      inputBuffer = inputBuffer.slice(headerEnd + 4);
+    const textStart = inputBuffer.toString('utf8', 0, Math.min(inputBuffer.length, 32));
+    if (/^Content-Length:/i.test(textStart)) {
+      transportMode = 'headers';
+      const headerEnd = inputBuffer.indexOf('\r\n\r\n');
+      if (headerEnd < 0) {
+        return;
+      }
+      const header = inputBuffer.slice(0, headerEnd).toString('utf8');
+      const match = header.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
+        inputBuffer = inputBuffer.slice(headerEnd + 4);
+        continue;
+      }
+      const length = Number(match[1]);
+      const bodyStart = headerEnd + 4;
+      const bodyEnd = bodyStart + length;
+      if (inputBuffer.length < bodyEnd) {
+        return;
+      }
+      const body = inputBuffer.slice(bodyStart, bodyEnd).toString('utf8');
+      inputBuffer = inputBuffer.slice(bodyEnd);
+      try {
+        respondToMessage(JSON.parse(body));
+      } catch (err) {
+        send({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32700, message: err && err.message ? err.message : String(err) },
+        });
+      }
       continue;
     }
-    const length = Number(match[1]);
-    const bodyStart = headerEnd + 4;
-    const bodyEnd = bodyStart + length;
-    if (inputBuffer.length < bodyEnd) {
+
+    transportMode = 'line';
+    const newlineEnd = inputBuffer.indexOf('\n');
+    if (newlineEnd < 0) {
       return;
     }
-    const body = inputBuffer.slice(bodyStart, bodyEnd).toString('utf8');
-    inputBuffer = inputBuffer.slice(bodyEnd);
+    const line = inputBuffer.slice(0, newlineEnd).toString('utf8').trim();
+    inputBuffer = inputBuffer.slice(newlineEnd + 1);
+    if (!line) {
+      continue;
+    }
     try {
-      const response = handleRequest(JSON.parse(body));
-      if (response) {
-        send(response);
-      }
+      respondToMessage(JSON.parse(line));
     } catch (err) {
       send({
         jsonrpc: '2.0',
         id: null,
-        error: { code: -32603, message: err && err.message ? err.message : String(err) },
+        error: { code: -32700, message: err && err.message ? err.message : String(err) },
       });
     }
   }
@@ -1005,3 +1286,6 @@ process.stdin.on('data', (chunk) => {
   inputBuffer = Buffer.concat([inputBuffer, chunk]);
   processBuffer();
 });
+
+process.stdin.on('end', () => process.exit(0));
+process.stdin.on('close', () => process.exit(0));

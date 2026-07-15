@@ -3,7 +3,7 @@
 Compares the working tree against a git ref (default HEAD): for every
 changed Python, JavaScript/TypeScript, or Java file, diffs the function
 symbol set (old vs new), scores each deleted symbol by how connected it was
-in the last-generated callgraph (codemd.dev/combined_callgraph/combined_callgraph.json),
+in the last-generated callgraph (.codemd/combined_callgraph/combined_callgraph.json),
 and computes the blast radius of every confirmed-modified symbol.
 
 No hooks, no persistent snapshot cache, no Claude/Codex coupling: this is a
@@ -90,7 +90,7 @@ def should_skip_report_path(rel_path):
     parts = rel_path.split("/")
     if not rel_path:
         return True
-    if "__pycache__" in parts or "node_modules" in parts or "codemd.dev" in parts:
+    if "__pycache__" in parts or "node_modules" in parts or ".codemd" in parts:
         return True
     if parts[0] in {"out", "dist", "build"}:
         return True
@@ -140,9 +140,12 @@ def ranges_overlap(a_start, a_end, b_start, b_end):
 
 
 def diff_file_symbols(core_helpers, repo_root, base, status, old_rel_path, new_rel_path, old_git_path, new_git_path):
-    """Returns (deleted, added, confirmed_modified, pre_spans_by_symbol) for
-    one changed file. pre_spans_by_symbol carries start/end lines so callers
-    can report file+line for deleted symbols."""
+    """Returns (deleted, added, confirmed_modified, pre_spans_by_symbol,
+    cosmetic_only, signature_diffs) for one changed file. pre_spans_by_symbol
+    carries start/end lines so callers can report file+line for deleted
+    symbols; cosmetic_only/signature_diffs are keyed by symbol (Python
+    confirmed_modified only — see python_function_ast_unchanged /
+    python_function_signature_diff in helpers.py for what None means)."""
     old_source = None if status == "A" else git_show(repo_root, base, old_git_path)
     new_abs_path = os.path.join(repo_root, new_rel_path)
     new_source = None
@@ -181,7 +184,26 @@ def diff_file_symbols(core_helpers, repo_root, base, status, old_rel_path, new_r
             if any(ranges_overlap(r[0], r[1], span["start_line"], span["end_line"]) for r in touched_ranges):
                 confirmed_modified.add(symbol)
 
-    return deleted, added, confirmed_modified, pre_by_symbol
+    # A line range overlapping a function's span only means the *text*
+    # changed there — it doesn't mean the function's behavior did. For
+    # Python we can tell the two apart for free: if the parsed body is
+    # identical, the "modification" was whitespace/comments/formatting.
+    # Signature diffing needs the same old/new source + symbol inputs as the
+    # cosmetic check, so compute both here rather than re-reading sources
+    # again in main().
+    cosmetic_only = {}
+    signature_diffs = {}
+    new_ext = os.path.splitext(new_rel_path)[1].lower()
+    if new_ext == ".py" and confirmed_modified and old_source is not None and new_source is not None:
+        for symbol in confirmed_modified:
+            cosmetic_only[symbol] = core_helpers.python_function_ast_unchanged(
+                old_source, new_source, new_rel_path, symbol
+            )
+            signature_diffs[symbol] = core_helpers.python_function_signature_diff(
+                old_source, new_source, new_rel_path, symbol
+            )
+
+    return deleted, added, confirmed_modified, pre_by_symbol, cosmetic_only, signature_diffs
 
 
 def score_deleted_symbol(core_helpers, symbol, callgraph, deleted_set):
@@ -211,8 +233,53 @@ def score_deleted_symbol(core_helpers, symbol, callgraph, deleted_set):
     }
 
 
+def check_call_sites(core_helpers, repo_root, symbol, new_signature, direct_callers, node_files, deleted_set):
+    """For each direct caller of `symbol` (already known to call it, per the
+    callgraph), reads the caller's CURRENT file off disk, finds the actual
+    call expression(s), and checks them against `symbol`'s new signature.
+    Only callers with a provably incompatible call site are returned — a
+    call site not found (different overload path, aliased import, etc.) or
+    an unverifiable one (*args/**kwargs spread) says nothing about whether
+    it's broken, so it's left for a human rather than reported as fine or
+    broken."""
+    issues = []
+    tail = symbol.rsplit(".", 1)[-1]
+    for caller in direct_callers:
+        if caller in deleted_set:
+            continue  # the caller itself no longer exists; nothing to check
+        caller_file = node_files.get(caller)
+        if not caller_file or not caller_file.endswith(".py"):
+            continue
+        abs_path = os.path.join(repo_root, caller_file)
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                caller_source = f.read()
+        except OSError:
+            continue
+        calls = core_helpers.python_find_calls_in_function(caller_source, caller_file, caller, tail)
+        for call in calls or []:
+            result = core_helpers.python_check_call_compatibility(new_signature, call)
+            if result["status"] == "incompatible":
+                issues.append({
+                    "caller": caller,
+                    "file": caller_file,
+                    "line": call.get("line"),
+                    "reason": result["reason"],
+                })
+    return issues
+
+
+def public_signature_diff(sig_diff):
+    """Strips `new_signature` — internal plumbing check_call_sites needs,
+    not something the report's consumers should have to parse — before a
+    signature diff goes into the JSON report."""
+    if sig_diff is None:
+        return None
+    return {k: v for k, v in sig_diff.items() if k != "new_signature"}
+
+
 def load_callgraph(core_helpers, repo_root):
-    graph_path = Path(repo_root) / "codemd.dev" / "combined_callgraph" / "combined_callgraph.json"
+    graph_path = Path(repo_root) / ".codemd" / "combined_callgraph" / "combined_callgraph.json"
     if not graph_path.exists():
         return None
     try:
@@ -226,11 +293,11 @@ def load_function_files(repo_root):
     """Best-effort symbol -> source file map from generated language graphs."""
     result = {}
     graph_paths = [
-        Path(repo_root) / "codemd.dev" / "python" / "python_callgraph.json",
-        Path(repo_root) / "codemd.dev" / "javascript" / "javascript_callgraph.json",
-        Path(repo_root) / "codemd.dev" / "csharp" / "csharp_callgraph.json",
-        Path(repo_root) / "codemd.dev" / "javalang" / "javalang_callgraph.json",
-        Path(repo_root) / "codemd.dev" / "java_merged" / "java_merged_callgraph.json",
+        Path(repo_root) / ".codemd" / "python" / "python_callgraph.json",
+        Path(repo_root) / ".codemd" / "javascript" / "javascript_callgraph.json",
+        Path(repo_root) / ".codemd" / "csharp" / "csharp_callgraph.json",
+        Path(repo_root) / ".codemd" / "javalang" / "javalang_callgraph.json",
+        Path(repo_root) / ".codemd" / "java_merged" / "java_merged_callgraph.json",
     ]
     for graph_path in graph_paths:
         if not graph_path.exists():
@@ -319,6 +386,8 @@ def main():
     report["callgraph_available"] = callgraph is not None
     deleted_symbols = {}  # symbol -> {file, start_line, end_line}
     confirmed_modified_symbols = {}  # symbol -> file
+    cosmetic_only_symbols = {}  # symbol -> True/False/None (None = undeterminable)
+    signature_diff_symbols = {}  # symbol -> dict|None (see python_function_signature_diff)
 
     for status, old_rel_path, new_rel_path, old_git_path, new_git_path in entries:
         if should_skip_report_path(old_rel_path) or should_skip_report_path(new_rel_path):
@@ -341,7 +410,7 @@ def main():
         if diffed is None:
             report["unsupported_files"].append(new_rel_path)
             continue
-        deleted, _added, confirmed_modified, pre_by_symbol = diffed
+        deleted, _added, confirmed_modified, pre_by_symbol, cosmetic_only, signature_diffs = diffed
         for symbol in deleted:
             deleted_symbols[symbol] = {
                 "file": old_rel_path,
@@ -350,6 +419,8 @@ def main():
             }
         for symbol in confirmed_modified:
             confirmed_modified_symbols[symbol] = new_rel_path
+            cosmetic_only_symbols[symbol] = cosmetic_only.get(symbol)
+            signature_diff_symbols[symbol] = signature_diffs.get(symbol)
 
     deleted_set = set(deleted_symbols)
     for symbol, meta in sorted(deleted_symbols.items()):
@@ -366,6 +437,16 @@ def main():
             impact_files = sorted({
                 node_files.get(n) or deleted_symbols.get(n, {}).get("file", "") for n in radius["impacted"]
             } - {""})
+            sig_diff = signature_diff_symbols.get(symbol)
+            call_site_issues = []
+            # Only worth the extra file reads/parses when the signature
+            # itself changed — a body-only edit can't desync a caller's
+            # argument list.
+            if sig_diff and sig_diff.get("changed"):
+                direct_callers = [n for n, lvl in radius.get("levels", {}).items() if int(lvl) == 1]
+                call_site_issues = check_call_sites(
+                    core_helpers, repo_root, symbol, sig_diff["new_signature"], direct_callers, node_files, deleted_set,
+                )
             report["modified"].append({
                 "symbol": symbol,
                 "file": file_path,
@@ -373,13 +454,20 @@ def main():
                 "impact_files": impact_files,
                 "levels": radius.get("levels", {}),
                 "confidence": radius["confidence"],
+                "node_confidence": radius.get("node_confidence", {}),
                 "truncated": radius["truncated"],
+                "cosmetic_only": cosmetic_only_symbols.get(symbol),
+                "signature_diff": public_signature_diff(sig_diff),
+                "call_site_issues": call_site_issues,
             })
     else:
         for symbol, file_path in sorted(confirmed_modified_symbols.items()):
             report["modified"].append({
                 "symbol": symbol, "file": file_path, "impact_radius": [], "impact_files": [],
-                "confidence": {"high": 0, "low": 0}, "truncated": False,
+                "confidence": {"high": 0, "low": 0}, "node_confidence": {}, "truncated": False,
+                "cosmetic_only": cosmetic_only_symbols.get(symbol),
+                "signature_diff": public_signature_diff(signature_diff_symbols.get(symbol)),
+                "call_site_issues": [],
             })
 
     report["summary"] = format_summary_lines(report)

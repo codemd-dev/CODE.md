@@ -103,14 +103,6 @@ from features.core.helpers import (
     stable_text_id,
 )
 
-from features.feature_detection.feature_detection import (
-    extract_ui_feature_seeds,
-    build_scim_artifacts,
-    generate_feature_descriptions,
-)
-from features.feature_detection.ui import html_extractor
-from features.feature_detection.ui.html_extractor import extract_html_features_text
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "lib", "PyCG"))
 from pycg import utils
 
@@ -123,6 +115,43 @@ from parsers.python.python_analyzer import (
 )
 
 from typing import Optional
+
+class VisibleTextHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self.values = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = str(tag or "").lower()
+        if tag in {"script", "style", "noscript", "template", "svg"}:
+            self._skip_depth += 1
+        attrs_dict = {str(key or "").lower(): str(value or "") for key, value in (attrs or [])}
+        for key in ("aria-label", "alt", "title", "placeholder", "value"):
+            value = attrs_dict.get(key, "").strip()
+            if value:
+                self.values.append(value)
+
+    def handle_endtag(self, tag):
+        tag = str(tag or "").lower()
+        if tag in {"script", "style", "noscript", "template", "svg"} and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        text = str(data or "").strip()
+        if text:
+            self.values.append(text)
+
+
+def extract_html_visible_text(text: str, max_chars: int = 4000) -> str:
+    parser = VisibleTextHTMLParser()
+    try:
+        parser.feed(str(text or ""))
+    except Exception:
+        return ""
+    return normalize_human_text("\n".join(parser.values), max_chars)
 from typing import Dict, Any
 
 import shutil
@@ -356,7 +385,7 @@ SKIP_DIRS = {
     "extern", "external", "deps", "dependencies",
     "vendor", "vendors",
     "sample", "samples",
-    ".git", "codemd.dev",
+    ".git", ".codemd",
 }
 
 ALLOWED_CODE_EXTENSIONS = {
@@ -2322,16 +2351,6 @@ def artifact_type_for_path(path: Path):
         return "architecture_model_layers_json"
     if name == "functions.jsonl" and "/scim/" in rel:
         return "scim_functions_jsonl"
-    if name == "feature_catalog.json":
-        return "feature_catalog_json"
-    if name == "feature_summaries.json":
-        return "generated_feature_summaries_json"
-    if name == "features.txt":
-        return "generated_features_txt"
-    if name == "answers.jsonl" and "/derived_memory/" in rel:
-        return "derived_memory_answers_jsonl"
-    if name == "feedback.jsonl" and "/derived_memory/" in rel:
-        return "derived_memory_feedback_jsonl"
     if name == "search_history.jsonl" and "/search_history/" in rel:
         return "search_history_jsonl"
     if name == "ga_interactions.json":
@@ -2341,8 +2360,6 @@ def artifact_type_for_path(path: Path):
         return f"{prefix}_ordered_call_sequence_json"
     if "combined_callgraph" in rel:
         return "combined_callgraph_html" if path.suffix.lower() == ".html" else "combined_callgraph_json"
-    if "feature_graph" in rel:
-        return "feature_callgraph_html" if path.suffix.lower() == ".html" else "feature_callgraph_json"
     if "file_graph_navigatable" in name:
         return "file_graph_navigatable_html"
     if "file_graph" in rel:
@@ -3452,8 +3469,6 @@ def supabase_find_previous_feature_summaries(
 ARTIFACT_TYPE_GRAPH_KEYS = {
     "combined_callgraph_html": ["callgraph_url", "callgraph_html", "combined_navigatable_callgraph_html", "navigatable_callgraph_html"],
     "combined_callgraph_json": ["callgraph_json", "combined_callgraph_json", "navigatable_callgraph_json"],
-    "feature_callgraph_html": ["feature_callgraph_html", "feature_implementation_graph_html"],
-    "feature_callgraph_json": ["feature_callgraph_json", "feature_implementation_graph_json"],
     "file_graph_navigatable_html": ["file_graph_navigatable_html", "navigatable_file_callgraph_html"],
     "file_graph_html": ["file_graph_html"],
     "file_graph_json": ["file_graph_json"],
@@ -3491,7 +3506,6 @@ SUPABASE_SCIM_RESTORE_TYPES = {
     "csharp_json",
     "html_ui_graph_json",
     "file_graph_json",
-    "feature_callgraph_json",
     "java_merged_json",
     "java_merged_ordered_call_sequence_json",
     "tree_sitter_java_json",
@@ -3500,14 +3514,9 @@ SUPABASE_SCIM_RESTORE_TYPES = {
     "javalang_ordered_call_sequence_json",
     "joern_json",
     "joern_ordered_call_sequence_json",
-    "feature_catalog_json",
-    "generated_feature_summaries_json",
-    "generated_features_txt",
     "docs_sqlite",
     "function_summaries_sqlite",
     "knowledge_sqlite",
-    "derived_memory_answers_jsonl",
-    "derived_memory_feedback_jsonl",
     "search_history_jsonl",
     "ga_interactions_json",
     "code_md",
@@ -3720,13 +3729,7 @@ def supabase_restore_analysis_payload(client, run: dict, expires_in: int = 60 * 
                         repo_text_for_seeds = {}
                 if repo_text_for_seeds:
                     try:
-                        repo_context_for_seeds = build_repo_context(owner_name, repo_name, {}, "", repo_text_for_seeds)
-                        ui_feature_seeds = extract_ui_feature_seeds(repo_text_for_seeds, repo_context_for_seeds)
-                        if ui_feature_seeds:
-                            payload["ui_feature_seeds"] = ui_feature_seeds
-                            feature_catalog = dict(payload.get("feature_catalog") or {})
-                            feature_catalog["ui_feature_seeds"] = ui_feature_seeds
-                            payload["feature_catalog"] = feature_catalog
+                        pass
                     except Exception as seed_error:
                         logger.warning("Unable to hydrate UI feature seeds from restored analysis: %s", seed_error)
             feature_summaries, feature_summary_path, features_text_path = load_persisted_feature_summaries(artifact_root)
@@ -3764,6 +3767,19 @@ def supabase_restore_analysis_payload(client, run: dict, expires_in: int = 60 * 
     if not by_type.get("file_graph_navigatable_html"):
         graphs.pop("file_graph_navigatable_html", None)
         graphs.pop("navigatable_file_callgraph_html", None)
+    for key in (
+        "feature_catalog",
+        "feature_catalog_url",
+        "feature_summaries",
+        "feature_summary_count",
+        "feature_summary_url",
+        "feature_summary_restore_debug",
+        "feature_summary_restore_skipped",
+        "feature_summaries_updated_at",
+        "features_text_url",
+        "ui_feature_seeds",
+    ):
+        payload.pop(key, None)
     payload["graphs"] = graphs
     payload["supabase"] = {
         "analysis_run_id": run.get("id", ""),
@@ -7307,6 +7323,7 @@ def build_navigatable_cytoscape_graph(
     initial_visible_nodes=None,
     initial_visible_edges=None,
     edge_labels=None,
+    highlight_data=None,
 ):
     output_repo_dir = Path(output_repo_dir)
     output_repo_dir.mkdir(parents=True, exist_ok=True)
@@ -7340,6 +7357,7 @@ def build_navigatable_cytoscape_graph(
         "initial_visible_edges": [[src, dst, order, line] for src, dst, order, line in (initial_visible_edges or [])],
         "node_labels": node_labels or {},
         "edge_labels": edge_labels or {},
+        "highlight": highlight_data or {},
         "instructions": "Click a node to reveal the next connected node or edge.",
     }
     json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
@@ -7362,8 +7380,10 @@ def build_navigatable_cytoscape_graph(
     #legend[open] summary::after {{ border-top:0; border-bottom:5px solid #475569; }}
     #legendPanel {{ margin-top:6px; background:rgba(255,255,255,.96); border:1px solid #dbe3ef; border-radius:6px; padding:8px 10px; box-shadow:0 12px 30px rgba(15,23,42,.12); }}
     #legend .legend-row {{ display:flex; gap:6px; align-items:flex-start; margin-top:4px; line-height:1.25; }}
-    #legend .legend-key {{ min-width:78px; color:#dc2626; font-weight:700; }}
+    #legend .legend-key {{ min-width:78px; color:#dc2626; font-weight:700; display:flex; align-items:center; gap:5px; }}
     #legend .legend-note {{ color:#64748b; }}
+    #legend .legend-dot {{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; }}
+    #nodeLegendRows:not(:empty) {{ padding-bottom:6px; margin-bottom:4px; border-bottom:1px solid #dbe3ef; }}
     @media (max-width: 640px) {{
       #status {{ left:8px; right:8px; top:48px; max-width:none; }}
       #legend {{ top:8px; }}
@@ -7372,7 +7392,7 @@ def build_navigatable_cytoscape_graph(
 </head>
 <body>
   <div id=\"status\">Loading {graph_title}...</div>
-  <details id=\"legend\"><summary>Edge Legend</summary><div id=\"legendPanel\"><div id=\"legendRows\">Loading relationships...</div></div></details>
+  <details id=\"legend\"><summary>Legend</summary><div id=\"legendPanel\"><div id=\"nodeLegendRows\"></div><div id=\"legendRows\">Loading relationships...</div></div></details>
   <div id=\"cy\"></div>
   <script>
     const GRAPH_JSON = \"{graph_json_url}\";
@@ -7439,6 +7459,13 @@ def build_navigatable_cytoscape_graph(
       const rawNodes = Array.isArray(data.nodes) ? data.nodes : [];
       nodeLabels = data.node_labels && typeof data.node_labels === \"object\" ? data.node_labels : {{}};
       const edgeLabels = data.edge_labels && typeof data.edge_labels === \"object\" ? data.edge_labels : {{}};
+      const highlight = data.highlight && typeof data.highlight === \"object\" ? data.highlight : {{}};
+      function highlightIdSet(values) {{
+        return new Set((Array.isArray(values) ? values : []).map(value => sanitize(value)).filter(Boolean));
+      }}
+      const rootHighlightIds = highlightIdSet(highlight.changed_nodes || highlight.roots || []);
+      const affectedHighlightIds = highlightIdSet(highlight.affected_nodes || []);
+      const fileHighlightIds = highlightIdSet(highlight.file_nodes || []);
       const legendDefinitions = {{
         \"defines\": \"file or module defines this symbol\",
         \"imports\": \"module imports another symbol or module\",
@@ -7616,14 +7643,51 @@ def build_navigatable_cytoscape_graph(
         elements: initialElements.length ? initialElements : [nodeElement(firstRoot)],
         style: [
           {{ selector: \"node\", style: {{ \"label\":\"data(label)\", \"background-color\":\"#3267e3\", \"color\":\"#111827\", \"font-size\":\"11px\", \"text-valign\":\"bottom\", \"text-halign\":\"center\", \"text-margin-y\":8, \"text-max-width\":148, \"text-wrap\":\"wrap\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.88, \"text-background-padding\":2, \"width\":16, \"height\":16, \"border-width\":1, \"border-color\":\"#1d4ed8\", \"min-zoomed-font-size\":7 }} }},
+          {{ selector: \"node.impact-root\", style: {{ \"background-color\":\"#dc2626\", \"border-color\":\"#7f1d1d\", \"border-width\":4, \"width\":24, \"height\":24, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-affected\", style: {{ \"background-color\":\"#f59e0b\", \"border-color\":\"#92400e\", \"border-width\":3, \"width\":20, \"height\":20, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-file\", style: {{ \"background-color\":\"#10b981\", \"border-color\":\"#047857\", \"border-width\":3, \"width\":19, \"height\":19, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
           {{ selector: \"node:selected\", style: {{ \"width\":16, \"height\":16, \"overlay-opacity\":0.08, \"border-width\":2 }} }},
           {{ selector: \"node:active\", style: {{ \"width\":16, \"height\":16, \"overlay-opacity\":0.05 }} }},
           {{ selector: \"edge\", style: {{ \"label\":\"data(label)\", \"width\":1.7, \"line-color\":\"#64748b\", \"target-arrow-color\":\"#64748b\", \"target-arrow-shape\":\"triangle\", \"arrow-scale\":1.35, \"curve-style\":\"bezier\", \"font-size\":\"10px\", \"color\":\"#dc2626\", \"font-weight\":\"600\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.9, \"text-background-padding\":2, \"text-margin-y\":0, \"min-zoomed-font-size\":7 }} }},
+          {{ selector: \"edge.impact-edge\", style: {{ \"width\":3, \"line-color\":\"#f59e0b\", \"target-arrow-color\":\"#f59e0b\", \"z-index\":20 }} }},
           {{ selector: \"edge[curveDistance][curveWeight]\", style: {{ \"curve-style\":\"unbundled-bezier\", \"control-point-distances\":\"data(curveDistance)\", \"control-point-weights\":\"data(curveWeight)\" }} }},
           {{ selector: \"edge[labelOffset]\", style: {{ \"text-margin-y\":\"data(labelOffset)\" }} }}
         ],
         layout: {{ name:\"preset\", animate:false }}
       }});
+      function renderNodeLegend() {{
+        const rows = [];
+        if (rootHighlightIds.size) {{
+          rows.push([\"#dc2626\", \"Changed\", \"the function whose code changed\"]);
+        }}
+        if (affectedHighlightIds.size) {{
+          rows.push([\"#f59e0b\", \"Blast radius\", \"functions affected by the change (direct + transitive callers)\"]);
+        }}
+        if (fileHighlightIds.size) {{
+          rows.push([\"#10b981\", \"File-mapped\", \"evidence tied to a changed file rather than a direct call edge\"]);
+        }}
+        const nodeLegendRows = document.getElementById(\"nodeLegendRows\");
+        if (nodeLegendRows) {{
+          nodeLegendRows.innerHTML = rows.map(([color, label, note]) =>
+            `<div class=\"legend-row\"><span class=\"legend-key\"><span class=\"legend-dot\" style=\"background:${{color}}\"></span>${{label}}</span><span class=\"legend-note\">${{note}}</span></div>`
+          ).join(\"\");
+        }}
+      }}
+      renderNodeLegend();
+      function applyHighlightClasses() {{
+        cy.nodes().forEach(node => {{
+          const id = node.id();
+          node.toggleClass(\"impact-root\", rootHighlightIds.has(id));
+          node.toggleClass(\"impact-affected\", !rootHighlightIds.has(id) && affectedHighlightIds.has(id));
+          node.toggleClass(\"impact-file\", !rootHighlightIds.has(id) && !affectedHighlightIds.has(id) && fileHighlightIds.has(id));
+        }});
+        cy.edges().forEach(edge => {{
+          const sourceHighlighted = rootHighlightIds.has(edge.source().id()) || affectedHighlightIds.has(edge.source().id()) || fileHighlightIds.has(edge.source().id());
+          const targetHighlighted = rootHighlightIds.has(edge.target().id()) || affectedHighlightIds.has(edge.target().id()) || fileHighlightIds.has(edge.target().id());
+          edge.toggleClass(\"impact-edge\", sourceHighlighted && targetHighlighted);
+        }});
+      }}
+      applyHighlightClasses();
       const expandedNodes = new Set([firstRoot]);
       function addMissingElements(elements) {{
         const additions = [];
@@ -7632,7 +7696,10 @@ def build_navigatable_cytoscape_graph(
           if (!id || cy.getElementById(id).length) return;
           additions.push(element);
         }});
-        if (additions.length) cy.add(additions);
+        if (additions.length) {{
+          cy.add(additions);
+          applyHighlightClasses();
+        }}
         return additions.length;
       }}
       function placeRows(items, baseY, xSpacing = 280, ySpacing = 132) {{
@@ -7851,7 +7918,9 @@ def build_navigatable_cytoscape_graph(
         }}
       }});
 
-      statusEl.textContent = `${{data.title}}: showing connections from ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}} (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible). Click a node to reveal the next connected node or edge.`;
+      const highlightCount = rootHighlightIds.size + affectedHighlightIds.size + fileHighlightIds.size;
+      const highlightText = highlightCount ? ` Highlighted: ${{rootHighlightIds.size}} changed, ${{affectedHighlightIds.size}} affected, ${{fileHighlightIds.size}} file-mapped.` : \"\";
+      statusEl.textContent = `${{data.title}}: showing connections from ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}} (${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}} visible).${{highlightText}} Click a node to reveal the next connected node or edge.`;
       requestAnimationFrame(() => relayout(true, firstRoot));
     
     }}).catch(err => {{
@@ -9501,6 +9570,21 @@ def refresh_scim_for_generated_graphs(output_repo_dir, owner_name: str, repo_nam
         repo_text,
         source_dir=source_dir,
     )
+
+
+def build_scim_artifacts(
+    output_repo_dir,
+    owner="",
+    repo="",
+    repo_info=None,
+    default_branch="",
+    repo_text=None,
+    source_dir=None,
+    progress_callback=None,
+    **_ignored,
+):
+    """Feature/semantic indexing is intentionally disabled for the truth index."""
+    return {}
 
 
 def persist_ga_interactions(output_repo_dir, property_id: str, event_name: str, rows: list[dict], mapping: dict, graph_urls: dict):
@@ -13297,12 +13381,12 @@ def materialize_mirrored_analysis_output(
     owner_name: str,
     repo_name: str,
 ):
-    """Adopt a workspace codemd.dev mirror for local companion-server graphing.
+    """Adopt a workspace .codemd mirror for local companion-server graphing.
 
     The VS Code extension can generate artifacts with the one-shot CLI and
     mirror them into the workspace, then later start a fresh FastAPI companion
     whose private BASE_OUTPUT cache is empty. Copying the validated mirror back
-    under BASE_OUTPUT keeps the existing /codemd.dev static URL behavior.
+    under BASE_OUTPUT keeps the existing /.codemd static URL behavior.
     """
     mirror_dir_value = str(mirror_dir_value or "").strip()
     if not mirror_dir_value:
@@ -13349,6 +13433,23 @@ def materialize_mirrored_analysis_output(
         "mirror_dir": str(mirror_dir),
         "output_repo_dir": str(output_repo_dir),
     }
+
+
+def output_has_usable_search_callgraph(output_repo_dir: Path) -> bool:
+    artifact_root = artifact_root_for_output(Path(output_repo_dir))
+    return any(
+        (artifact_root / rel_path).exists()
+        for rel_path in (
+            Path("combined_callgraph") / "combined_ordered_call_sequence.json",
+            Path("combined_callgraph") / "combined_callgraph.json",
+            Path("combined_callgraph") / "combined_navigatable_callgraph.json",
+            Path("python") / "python_ordered_call_sequence.json",
+            Path("python") / "python_callgraph.json",
+            Path("javascript") / "javascript_ordered_call_sequence.json",
+            Path("javascript") / "javascript_callgraph.json",
+            Path("html_ui") / "html_ui_graph.json",
+        )
+    )
 
 
 
@@ -15714,25 +15815,10 @@ def static_quality_signals_path(output_repo_dir):
 
 
 def ensure_static_quality_signals(output_repo_dir):
-    path = static_quality_signals_path(output_repo_dir)
-    functions_path = find_scim_functions_path(Path(output_repo_dir))
-    artifact_root = artifact_root_for_output(Path(output_repo_dir))
-    dependencies = [dep for dep in [
-        functions_path,
-        artifact_root / "combined_callgraph" / "combined_callgraph.json",
-        *(artifact_root / rel_path for _, _, rel_path in PARSER_DIAGNOSTIC_GRAPH_PATHS),
-    ] if dep and Path(dep).exists()]
-    if path.exists() and dependencies:
-        try:
-            if path.stat().st_mtime >= max(Path(dep).stat().st_mtime for dep in dependencies):
-                return str(path)
-        except OSError:
-            pass
-    elif path.exists():
-        return str(path)
-    data = build_static_quality_signals(output_repo_dir)
-    write_json_artifact(data, output_repo_dir, "static_quality_signals.json")
-    return str(path)
+    # Disabled for now: the current structural heuristics produce false
+    # positives for dynamic/framework entry points, so new analyses should not
+    # emit static_quality_signals.json.
+    return ""
 
 
 @app.get("/quality-signals")
@@ -15746,6 +15832,13 @@ def quality_signals(owner_name: str, repo_name: str, analysis_run_id: str = ""):
             "error": "SCIM functions index not found. Run analysis until search artifacts are built.",
         }
     path = ensure_static_quality_signals(output_repo_dir)
+    if not path:
+        return {
+            "summary": {"total": 0},
+            "groups": {"bugs": [], "structural": [], "callgraph": [], "cross_file": []},
+            "disabled": True,
+            "message": "Static quality signals are disabled for this analyzer build.",
+        }
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     return merge_static_quality_bug_statuses(data, str(analysis_run_id or "").strip())
@@ -16123,9 +16216,10 @@ def load_quality_signal_for_request(output_repo_dir: Path, finding_id: str, prov
     if finding_id:
         try:
             path = ensure_static_quality_signals(output_repo_dir)
-            with open(path, "r", encoding="utf-8") as handle:
-                quality_data = json.load(handle)
-            finding = find_quality_signal_by_id(quality_data, finding_id) or provided_finding
+            if path:
+                with open(path, "r", encoding="utf-8") as handle:
+                    quality_data = json.load(handle)
+                finding = find_quality_signal_by_id(quality_data, finding_id) or provided_finding
         except Exception:
             finding = provided_finding
     if not finding:
@@ -19930,7 +20024,34 @@ def resolve_search_graph_roots(roots, functions):
     return set(resolved)
 
 
-def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="search_results_graph", depth=None, max_nodes=500):
+def normalize_search_graph_highlight(highlight, functions):
+    if not isinstance(highlight, dict):
+        return {}, set(), set(), set()
+    functions = set(functions or [])
+
+    def values_for(*keys):
+        values = []
+        for key in keys:
+            raw = highlight.get(key)
+            if isinstance(raw, (list, tuple, set)):
+                values.extend(raw)
+            elif raw:
+                values.append(raw)
+        return [str(value or "").strip() for value in values if str(value or "").strip()]
+
+    changed_nodes = resolve_search_graph_roots(values_for("changed_nodes", "roots"), functions)
+    affected_nodes = resolve_search_graph_roots(values_for("affected_nodes", "impact_nodes"), functions)
+    file_nodes = resolve_search_graph_roots(values_for("file_nodes", "impact_files", "files"), functions)
+    normalized = {
+        "changed_nodes": sorted(changed_nodes),
+        "affected_nodes": sorted(affected_nodes - changed_nodes),
+        "file_nodes": sorted(file_nodes - changed_nodes - affected_nodes),
+        "affected_files": values_for("affected_files", "impact_files", "files")[:40],
+    }
+    return normalized, changed_nodes, affected_nodes, file_nodes
+
+
+def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="search_results_graph", depth=None, max_nodes=500, highlight_data=None):
     roots = []
     for item in results:
         for key in ("graph_symbol", "fullName", "symbol", "name"):
@@ -19946,6 +20067,10 @@ def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="
     if not root_set:
         logger.warning("Search graph roots did not match callgraph nodes: roots=%s", roots[:5])
         return ""
+    highlight_payload, changed_highlight_nodes, affected_highlight_nodes, file_highlight_nodes = normalize_search_graph_highlight(
+        highlight_data,
+        functions,
+    )
 
     nodes = set(root_set)
     edges = set()
@@ -19990,6 +20115,28 @@ def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="
             edge[1],
         ))
     ]
+    highlighted_nodes = set(changed_highlight_nodes) | set(affected_highlight_nodes) | set(file_highlight_nodes)
+    if highlighted_nodes:
+        # Only impact/file nodes that are also direct callers/callees of a
+        # root (already in `nodes` from the expansion above) are shown up
+        # front. Deeper transitive impact nodes stay available via
+        # highlight_payload for coloring once reached by expanding the graph,
+        # instead of crowding the initial render.
+        visible_nodes = set(nodes)
+        highlighted_edges = [
+            (src, dst, edge_meta.get((src, dst), {}).get("order"), edge_meta.get((src, dst), {}).get("line"))
+            for src, dst in sorted(full_edge_pairs, key=lambda edge: (
+                edge_meta.get(edge, {}).get("order") if edge_meta.get(edge, {}).get("order") is not None else 10**12,
+                edge[0],
+                edge[1],
+            ))
+            if src in visible_nodes and dst in visible_nodes and (src in highlighted_nodes or dst in highlighted_nodes)
+        ][:240]
+        existing_visible_pairs = {(src, dst) for src, dst, *_ in graph_edges}
+        graph_edges.extend([
+            edge for edge in highlighted_edges
+            if (edge[0], edge[1]) not in existing_visible_pairs
+        ])
 
     return build_navigatable_cytoscape_graph(
         sorted(full_nodes or nodes),
@@ -20001,10 +20148,11 @@ def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="
         entry_points=sorted(root_set),
         initial_visible_nodes=sorted(nodes),
         initial_visible_edges=graph_edges,
+        highlight_data=highlight_payload,
     )
 
 
-def build_first_available_search_graph(output_repo_dir, results, callgraph, graph_name="search_results_graph", depth=None, max_nodes=500):
+def build_first_available_search_graph(output_repo_dir, results, callgraph, graph_name="search_results_graph", depth=None, max_nodes=500, highlight_data=None):
     for index, result in enumerate(results or []):
         url = build_search_results_graph(
             output_repo_dir,
@@ -20013,6 +20161,7 @@ def build_first_available_search_graph(output_repo_dir, results, callgraph, grap
             graph_name=graph_name,
             depth=depth,
             max_nodes=max_nodes,
+            highlight_data=highlight_data,
         )
         if url:
             return url, index, ""
@@ -20025,6 +20174,7 @@ def build_first_available_search_graph(output_repo_dir, results, callgraph, grap
             graph_name=graph_name,
             depth=depth,
             max_nodes=max_nodes,
+            highlight_data=highlight_data,
         )
         if url:
             return url, None, ""
@@ -21740,6 +21890,12 @@ def quality_signal_search_results(output_repo_dir: Path, query: str, limit: int 
     if not requested_types:
         return [], {}
     path = ensure_static_quality_signals(output_repo_dir)
+    if not path:
+        return [], {
+            "intent": "static_quality_signals",
+            "search_backend": "static_quality_signals",
+            "disabled": True,
+        }
     payload = load_json_file(path, {})
     findings = []
     for items in (payload.get("groups") or {}).values():
@@ -24850,7 +25006,6 @@ STRUCTURED_ANCHOR_PROVIDERS = (
     structured_anchor_from_named_api,
     structured_anchor_from_api_routes,
     structured_anchor_from_code_boundaries,
-    structured_anchor_from_feature_catalog,
 )
 
 
@@ -26258,9 +26413,11 @@ def search_result_graph(payload: dict):
 
     repo_id = short_id(owner, repo)
     OUTPUT_REPO_DIR = Path(BASE_OUTPUT) / repo_id
-    if not OUTPUT_REPO_DIR.exists():
+    restore_result = {}
+    mirror_artifact_path = payload.get("artifact_root_path") or payload.get("mirror_artifact_dir") or ""
+    if mirror_artifact_path and (not OUTPUT_REPO_DIR.exists() or not output_has_usable_search_callgraph(OUTPUT_REPO_DIR)):
         restore_result = materialize_mirrored_analysis_output(
-            payload.get("artifact_root_path") or payload.get("mirror_artifact_dir") or "",
+            mirror_artifact_path,
             OUTPUT_REPO_DIR,
             owner,
             repo,
@@ -26284,6 +26441,20 @@ def search_result_graph(payload: dict):
 
     search_graph_url = ""
     search_graph_error = ""
+    highlight_data = {
+        "changed_nodes": [
+            value for value in (
+                result.get("graph_symbol"),
+                result.get("fullName"),
+                result.get("symbol"),
+                result.get("name"),
+            )
+            if value
+        ],
+        "affected_nodes": result.get("impact_nodes") if isinstance(result.get("impact_nodes"), list) else [],
+        "affected_files": result.get("impact_files") if isinstance(result.get("impact_files"), list) else [],
+        "file_nodes": [result.get("file")] if result.get("file") else [],
+    }
     try:
         search_graph_url, _, search_graph_error = build_first_available_search_graph(
             artifact_root,
@@ -26292,6 +26463,7 @@ def search_result_graph(payload: dict):
             graph_name="search_results_graph",
             depth=graph_depth,
             max_nodes=graph_max_nodes,
+            highlight_data=highlight_data,
         )
     except Exception as e:
         search_graph_error = str(e)
@@ -27525,6 +27697,12 @@ def product_feature_metadata(request: Request, payload: dict):
 
 @app.post("/feature-summary")
 def feature_summary(request: Request, payload: dict):
+    return {
+        "feature_summaries": [],
+        "feature_summary_count": 0,
+        "disabled": True,
+        "message": "Feature summaries are disabled. CODE.md now publishes deterministic truth-index artifacts only.",
+    }
     owner = str(payload.get("owner_name") or payload.get("owner") or "").strip()
     repo = str(payload.get("repo_name") or payload.get("repo") or "").strip()
     if not owner or not repo:
@@ -27720,6 +27898,12 @@ def feature_summary(request: Request, payload: dict):
 
 @app.post("/summary")
 def summary(request: Request, payload: dict):
+    return {
+        "summary": "",
+        "feature_summaries": [],
+        "disabled": True,
+        "message": "Derived product and feature summaries are disabled. Use CODE.md and graph artifacts for the deterministic truth index.",
+    }
     owner = str(payload.get("owner_name") or payload.get("owner") or "").strip()
     repo = str(payload.get("repo_name") or payload.get("repo") or "").strip()
     if not owner or not repo:
@@ -30568,8 +30752,8 @@ def extract_human_text_from_file(text: str, rel_path: str, ext: str, max_chars: 
     lower_path = str(rel_path or "").lower()
     
     if ext in {".html", ".htm", ".xhtml"}:
-        features = extract_html_features_text(text, max_chars)
-        return normalize_human_text(features, max_chars), "ui_text"
+        visible_text = extract_html_visible_text(text, max_chars)
+        return normalize_human_text(visible_text, max_chars), "ui_text"
     
     
     if ext == ".xml":
@@ -30845,6 +31029,7 @@ def load_repo_text_artifact(output_repo_dir):
 
 
 def build_scim_artifacts_old(output_repo_dir, owner="", repo="", repo_info=None, default_branch="", repo_text=None, source_dir=None, progress_callback=None):
+    return {}
     scim_enabled = os.getenv("ENABLE_SCIM", "true").lower() not in {"0", "false", "no", "off"}
     if not scim_enabled:
         return {}
@@ -30931,7 +31116,7 @@ def build_scim_artifacts_old(output_repo_dir, owner="", repo="", repo_info=None,
         architecture_dir = architecture_dir_for_output(output_repo_dir)
         feature_path = architecture_dir / "feature_catalog.json"
         feature_path.write_text(json.dumps(feature_data, indent=2), encoding="utf-8")
-        progress("Checking static quality signals from parsed code and callgraphs.", current_file="")
+        progress("Skipping disabled static quality signal generation.", current_file="")
         quality_signal_path = ensure_static_quality_signals(output_repo_dir)
         progress("Writing generated evidence as architecture artifacts.", current_file="")
         evidence_result = index_typed_scim_evidence(output_repo_dir)
@@ -30970,13 +31155,21 @@ def scim_artifacts_current(scim_manifest_path):
         return False
 
 
-def latest_source_mtime(src_dir):
+def latest_source_mtime(src_dir, extensions=None):
+    """Latest mtime among files under src_dir. If `extensions` is given (a set
+    of lowercase suffixes, e.g. {".py"}), only those files count — so editing
+    a Java file doesn't make a Python-only staleness check look stale, and
+    vice versa. `extensions=None` keeps the old whole-tree behavior, for
+    checks that intentionally care about any language changing at once
+    (e.g. the combined multi-language graph_artifacts_current check)."""
     if not src_dir or not os.path.isdir(src_dir):
         return 0.0
     latest = 0.0
     for root, dirs, files in os.walk(src_dir):
         dirs[:] = [d for d in dirs if not should_skip_path(os.path.join(root, d), src_dir)]
         for filename in files:
+            if extensions is not None and os.path.splitext(filename)[1].lower() not in extensions:
+                continue
             path = os.path.join(root, filename)
             if should_skip_path(path, src_dir):
                 continue
@@ -30987,8 +31180,8 @@ def latest_source_mtime(src_dir):
     return latest
 
 
-def artifacts_newer_than_source(paths, src_dir):
-    latest_source = latest_source_mtime(src_dir)
+def artifacts_newer_than_source(paths, src_dir, extensions=None):
+    latest_source = latest_source_mtime(src_dir, extensions=extensions)
     if not latest_source:
         return True
     existing_paths = [Path(path) for path in paths if path and os.path.exists(path)]
@@ -31590,7 +31783,7 @@ def python_callgraph_current(python_callgraph_json, src_dir):
             isinstance(graph, dict)
             and graph.get("mode") == "python_semantic"
             and int(graph.get("version", 0) or 0) >= PYTHON_CALLGRAPH_VERSION
-            and artifacts_newer_than_source([python_callgraph_json], src_dir)
+            and artifacts_newer_than_source([python_callgraph_json], src_dir, extensions={".py"})
         )
     except Exception:
         return False
@@ -33095,16 +33288,6 @@ def dispatch_parsers(lang_map, repo_src, output_repo_dir, progress_callback=None
             )
             lane_results["html_ui_graph_json_path"] = html_ui_json_path
             progress("HTML UI interaction graph built.")
-
-            progress("Extracting HTML features...")
-            html_feature_path = os.path.join(output_repo_dir, "html_features.json")
-            html_features = html_extractor.extract_features(
-                repo_src,
-                output_file=html_feature_path,
-            )
-            lane_results["html_features_path"] = html_feature_path
-            lane_results["html_features"] = html_features
-            progress("HTML features extracted.")
         except Exception as e:
             logger.warning("HTML UI graph analysis failed; continuing with available graphs: %s", e)
             lane_results["html_ui_graph_error"] = str(e)
@@ -33265,11 +33448,6 @@ def dispatch_parsers(lang_map, repo_src, output_repo_dir, progress_callback=None
     build_file_graph_outputs(output_repo_dir, results)
     progress("File dependency graph built.")
 
-    progress("Building feature implementation graph.")
-    build_feature_callgraph_outputs(output_repo_dir, results)
-    progress("Feature implementation graph built.")
-
-
     # Convert json to HTML graph
     #reduced_joern_cfg_html_name = "reduced_joern_cfg.html"
     #reduced_joern_cfg_html_path = os.path.join(output_joern_dir, reduced_joern_cfg_html_name)
@@ -33334,9 +33512,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
     scim_train_pairs_path = os.path.join(architecture_dir, "train_pairs.jsonl")
     if not os.path.exists(scim_train_pairs_path):
         scim_train_pairs_path = os.path.join(scim_dir, "train_pairs.jsonl")
-    feature_catalog_path = os.path.join(architecture_dir, "feature_catalog.json")
-    if not os.path.exists(feature_catalog_path):
-        feature_catalog_path = os.path.join(scim_dir, "feature_catalog.json")
+    feature_catalog_path = ""
     callgraph_code_index_path = os.path.join(scim_dir, "callgraph_code_index.json")
     callgraph_code_index_jsonl_path = os.path.join(scim_dir, "callgraph_code_index.jsonl")
     python_dir = os.path.join(output_repo_dir, "python")
@@ -33368,9 +33544,8 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
     file_graph_json = os.path.join(file_graph_dir, "file_graph.json")
     file_graph_html = os.path.join(file_graph_dir, "file_graph_cytoscape.html")
     file_graph_navigatable_html = os.path.join(file_graph_dir, "file_graph_navigatable.html")
-    feature_graph_dir = os.path.join(output_repo_dir, "feature_graph")
-    feature_callgraph_json = os.path.join(feature_graph_dir, "feature_callgraph.json")
-    feature_callgraph_html = os.path.join(feature_graph_dir, "feature_callgraph.html")
+    feature_callgraph_json = ""
+    feature_callgraph_html = ""
     combined_callgraph_dir = os.path.join(output_repo_dir, "combined_callgraph")
     combined_callgraph_json = os.path.join(combined_callgraph_dir, "combined_callgraph.json")
     combined_navigatable_callgraph_html = os.path.join(combined_callgraph_dir, "combined_navigatable_callgraph.html")
@@ -33463,7 +33638,10 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         _, edges = _load_edge_graph(python_callgraph_json)
         write_ordered_sequence_from_edges(edges, python_ordered_sequence, "python-ast", os.path.basename(python_callgraph_json))
 
-    if cached_src_dir and not os.path.exists(javascript_callgraph_json):
+    javascript_callgraph_current = not cached_src_dir or artifacts_newer_than_source(
+        [javascript_callgraph_json], cached_src_dir, extensions=JS_SOURCE_EXTENSIONS
+    )
+    if cached_src_dir and (not os.path.exists(javascript_callgraph_json) or not javascript_callgraph_current):
         has_javascript = False
         for root, dirs, files in os.walk(cached_src_dir):
             dirs[:] = [d for d in dirs if not should_skip_path(os.path.join(root, d), cached_src_dir)]
@@ -33479,7 +33657,10 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         _, edges = _load_edge_graph(javascript_callgraph_json)
         write_ordered_sequence_from_edges(edges, javascript_ordered_sequence, "javascript-regex", os.path.basename(javascript_callgraph_json))
 
-    if cached_src_dir and not os.path.exists(csharp_callgraph_json):
+    csharp_callgraph_current = not cached_src_dir or artifacts_newer_than_source(
+        [csharp_callgraph_json], cached_src_dir, extensions={".cs"}
+    )
+    if cached_src_dir and (not os.path.exists(csharp_callgraph_json) or not csharp_callgraph_current):
         has_csharp = False
         for root, dirs, files in os.walk(cached_src_dir):
             dirs[:] = [d for d in dirs if not should_skip_path(os.path.join(root, d), cached_src_dir)]
@@ -33613,24 +33794,6 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         cached_repo_text = load_repo_text_artifact(output_repo_dir)
         build_scim_artifacts(output_repo_dir, owner, repo, repo_info, default_branch, cached_repo_text, source_dir=cached_src_dir)
 
-    if os.path.exists(feature_catalog_path) and (
-        not os.path.exists(feature_callgraph_json)
-        or not artifacts_newer_than_source([feature_callgraph_json], cached_src_dir)
-    ):
-        logger.info("Building cached feature implementation graph: %s", feature_callgraph_json)
-        build_feature_callgraph_outputs(output_repo_dir, {
-            "feature_catalog_path": feature_catalog_path,
-            "python_callgraph_json_path": python_callgraph_json if os.path.exists(python_callgraph_json) else "",
-            "javascript_callgraph_json_path": javascript_callgraph_json if os.path.exists(javascript_callgraph_json) else "",
-            "csharp_callgraph_json_path": csharp_callgraph_json if os.path.exists(csharp_callgraph_json) else "",
-            "html_ui_graph_json_path": html_ui_graph_json if os.path.exists(html_ui_graph_json) else "",
-            "combined_callgraph_json_path": combined_callgraph_json if os.path.exists(combined_callgraph_json) else "",
-            "java_merged_json_path": java_merged_json if os.path.exists(java_merged_json) else "",
-            "tree_sitter_java_json_path": tree_sitter_java_json if os.path.exists(tree_sitter_java_json) else "",
-            "callgraph_javalang_json_path": callgraph_json if os.path.exists(callgraph_json) else "",
-            "reduced_joern_callgraph_json_path": reduced_joern_callgraph_json if os.path.exists(reduced_joern_callgraph_json) else "",
-        })
-
     download_zip_path = BASE_OUTPUT / f"{Path(output_repo_dir).name}.zip"
     static_quality_signals_json = ""
     try:
@@ -33643,13 +33806,13 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         "repo_stats_path": repo_stats_path if os.path.exists(repo_stats_path) else "",
         "repo_comments_path": repo_comments_path if os.path.exists(repo_comments_path) else "",
         "repo_text_path": repo_text_path if os.path.exists(repo_text_path) else "",
-        "scim_manifest_path": scim_manifest_path if os.path.exists(scim_manifest_path) else "",
-        "scim_vector_db_path": scim_vector_db_path if os.path.exists(scim_vector_db_path) else "",
-        "scim_embedding_model_path": scim_embedding_model_path if os.path.exists(scim_embedding_model_path) else "",
-        "scim_train_pairs_path": scim_train_pairs_path if os.path.exists(scim_train_pairs_path) else "",
-        "feature_catalog_path": feature_catalog_path if os.path.exists(feature_catalog_path) else "",
-        "callgraph_code_index_path": callgraph_code_index_path if os.path.exists(callgraph_code_index_path) else "",
-        "callgraph_code_index_jsonl_path": callgraph_code_index_jsonl_path if os.path.exists(callgraph_code_index_jsonl_path) else "",
+        "scim_manifest_path": "",
+        "scim_vector_db_path": "",
+        "scim_embedding_model_path": "",
+        "scim_train_pairs_path": "",
+        "feature_catalog_path": "",
+        "callgraph_code_index_path": "",
+        "callgraph_code_index_jsonl_path": "",
         "python_callgraph_json_path": python_callgraph_json if os.path.exists(python_callgraph_json) else "",
         "python_ordered_call_sequence_path": python_ordered_sequence if os.path.exists(python_ordered_sequence) else "",
         "python_callgraph_html_path": "",
@@ -33674,7 +33837,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         "file_graph_json_path": file_graph_json if os.path.exists(file_graph_json) else "",
         "file_graph_html_path": "",
         "file_graph_navigatable_html_path": "",
-        "feature_callgraph_json_path": feature_callgraph_json if os.path.exists(feature_callgraph_json) else "",
+        "feature_callgraph_json_path": "",
         "feature_callgraph_html_path": "",
         "html_ui_graph_json_path": html_ui_graph_json if os.path.exists(html_ui_graph_json) else "",
         "html_ui_graph_html_path": "",
@@ -33815,29 +33978,7 @@ def code_md_graph_summary(graph_path: str, file_graph_path: str = "") -> dict:
 
 
 def code_md_feature_names(feature_catalog: dict, feature_summaries: list, ui_feature_seeds: list) -> list[str]:
-    names = []
-    if isinstance(feature_catalog, dict):
-        for key in ("features", "feature_names", "ui_feature_seeds"):
-            value = feature_catalog.get(key)
-            if isinstance(value, dict):
-                names.extend(str(item.get("name") or name) for name, item in value.items())
-            elif isinstance(value, list):
-                for item in value:
-                    names.append(str(item.get("name") if isinstance(item, dict) else item))
-    for item in feature_summaries or []:
-        if isinstance(item, dict):
-            names.append(str(item.get("name") or item.get("feature") or ""))
-    for item in ui_feature_seeds or []:
-        names.append(str(item.get("name") if isinstance(item, dict) else item))
-    seen = set()
-    result = []
-    for name in names:
-        cleaned = code_md_short_text(name, 80)
-        key = cleaned.lower()
-        if cleaned and key not in seen:
-            seen.add(key)
-            result.append(cleaned)
-    return result[:20]
+    return []
 
 
 @app.post("/code-md")
@@ -34074,10 +34215,13 @@ def build_code_md_artifact(
     graph_path: str,
     file_graph_path: str,
     daily_change_cache: dict | None = None,
+    source_dir: str | None = None,
 ):
     """Build Code.md from deterministic repo evidence only."""
     artifact_root = artifact_root_for_output(Path(output_repo_dir))
-    source_root = source_root_for_artifact(artifact_root)
+    source_root = Path(source_dir).resolve() if source_dir and Path(source_dir).exists() else None
+    if source_root is None:
+        source_root = source_root_for_artifact(artifact_root)
     if source_root is None:
         source_root = find_cached_source_dir(Path(output_repo_dir))
     source_root = Path(source_root) if source_root else None
@@ -34105,7 +34249,10 @@ def build_code_md_artifact(
                 parts = path.relative_to(source_root).parts
             except ValueError:
                 parts = path.parts
-            if any(part in excluded or (part.startswith(".") and part not in {".github"}) for part in parts):
+            if (
+                should_skip_path(str(path), str(source_root))
+                or any(part in excluded or (part.startswith(".") and part not in {".github"}) for part in parts)
+            ):
                 continue
             files.append(path)
         return sorted(files)
@@ -34282,14 +34429,18 @@ def build_code_md_artifact(
                     commits.append(current)
                 parts = line[len("COMMIT:"):].split("|", 2)
                 current = {"hash": parts[0], "date": parts[1] if len(parts) > 1 else "", "subject": parts[2] if len(parts) > 2 else "", "files": []}
-            elif current is not None and line.strip():
+            elif current is not None and line.strip() and not should_skip_path(line.strip(), str(source_root)):
                 current["files"].append(line.strip())
         if current:
             commits.append(current)
         recent_rows = [[item["hash"][:10], item["date"], item["subject"], ", ".join(item["files"][:8]) + (" ..." if len(item["files"]) > 8 else "")] for item in commits[:20]]
-        churn = Counter(line.strip() for line in run_git(["log", "--name-only", "--pretty=format:", "-n", "100"]).splitlines() if line.strip())
+        churn = Counter(
+            line.strip()
+            for line in run_git(["log", "--name-only", "--pretty=format:", "-n", "100"]).splitlines()
+            if line.strip() and not should_skip_path(line.strip(), str(source_root))
+        )
         high_churn_rows = [[path, count] for path, count in churn.most_common(40)]
-        stable_rows = [[path] for path in sorted(path for path in run_git(["ls-files"]).splitlines() if path.strip() and path.strip() not in churn)[:80]]
+        stable_rows = [[path] for path in sorted(path for path in run_git(["ls-files"]).splitlines() if path.strip() and path.strip() not in churn and not should_skip_path(path.strip(), str(source_root)))[:80]]
     elif isinstance(daily_change_cache, dict):
         commits = [item for item in daily_change_cache.get("commits") or [] if isinstance(item, dict)]
         recent_rows = [[str(item.get("short_sha") or item.get("sha") or "")[:10], item.get("date", ""), item.get("message", ""), ", ".join(str(file_item.get("filename") or file_item) for file_item in (item.get("changed_files") or [])[:8]) if isinstance(item.get("changed_files"), list) else ""] for item in commits[:20]]
@@ -34363,25 +34514,6 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
         repo_comments = load_json_file(Path(repo_comments_path), {})
     if repo_text_path:
         repo_text = load_json_file(Path(repo_text_path), {})
-    feature_catalog = {}
-    if feature_catalog_path:
-        feature_catalog = load_json_file(Path(feature_catalog_path), {})
-    ui_feature_seeds = []
-    if isinstance(repo_text, dict):
-        try:
-            repo_context_for_seeds = build_repo_context(owner, repo, {}, "", repo_text)
-            ui_feature_seeds = extract_ui_feature_seeds(repo_text, repo_context_for_seeds)
-        except Exception as exc:
-            logger.warning("Unable to extract UI feature seeds for analysis response: %s", exc)
-    if isinstance(feature_catalog, dict):
-        existing_seeds = feature_catalog.get("ui_feature_seeds") or []
-        if ui_feature_seeds:
-            feature_catalog["ui_feature_seeds"] = ui_feature_seeds
-        elif isinstance(existing_seeds, list):
-            ui_feature_seeds = existing_seeds
-    persisted_feature_summaries, feature_summary_path, features_text_path = load_persisted_feature_summaries(
-        artifact_root_for_output(output_repo_dir)
-    )
 
     python_callgraph_html_path = results.get("python_callgraph_html_path", "")
     python_callgraph_json_path = results.get("python_callgraph_json_path", "")
@@ -34407,8 +34539,6 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
     file_graph_html_path = results.get("file_graph_html_path", "")
     file_graph_json_path = results.get("file_graph_json_path", "")
     file_graph_navigatable_html_path = results.get("file_graph_navigatable_html_path", "")
-    feature_callgraph_html_path = results.get("feature_callgraph_html_path", "")
-    feature_callgraph_json_path = results.get("feature_callgraph_json_path", "")
     html_ui_graph_html_path = results.get("html_ui_graph_html_path", "")
     html_ui_graph_json_path = results.get("html_ui_graph_json_path", "")
     joern_callgraph_html = results.get("joern_callgraph_html", "")
@@ -34458,13 +34588,14 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
             repo_stats,
             repo_text,
             repo_comments,
-            feature_catalog,
-            persisted_feature_summaries,
-            ui_feature_seeds,
+            {},
+            [],
+            [],
             static_quality_signals,
             primary_graph_json,
             file_graph_json_path,
             daily_change_cache,
+            results.get("_source_dir"),
         )
         results["code_md_path"] = code_md_path
     except Exception as exc:
@@ -34482,7 +34613,6 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
             "python": python_graph_info,
             "combined": graph_artifact_info(combined_callgraph_json_path),
             "file": graph_artifact_info(file_graph_json_path),
-            "feature": graph_artifact_info(feature_callgraph_json_path),
             "html_ui": graph_artifact_info(html_ui_graph_json_path),
         },
         "owner_name": owner,
@@ -34506,13 +34636,6 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
         "scim_train_pairs_url": output_url(scim_train_pairs_path),
         "callgraph_code_index_url": output_url(callgraph_code_index_path),
         "callgraph_code_index_jsonl_url": output_url(callgraph_code_index_jsonl_path),
-        "feature_catalog": feature_catalog,
-        "ui_feature_seeds": ui_feature_seeds,
-        "feature_catalog_url": output_url(feature_catalog_path),
-        "feature_summaries": persisted_feature_summaries,
-        "feature_summary_count": sum(1 for item in persisted_feature_summaries if item.get("description")),
-        "feature_summary_url": output_url(feature_summary_path),
-        "features_text_url": output_url(features_text_path),
         "code_md_url": output_url(code_md_path),
         "static_quality_signals": static_quality_signals,
         "static_quality_signals_url": output_url(static_quality_signals_path_value),
@@ -34547,10 +34670,6 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
             "file_graph_json": output_url(file_graph_json_path),
             "file_graph_navigatable_html": "",
             "navigatable_file_callgraph_html": "",
-            "feature_callgraph_html": "",
-            "feature_callgraph_json": output_url(feature_callgraph_json_path),
-            "feature_implementation_graph_html": "",
-            "feature_implementation_graph_json": output_url(feature_callgraph_json_path),
             "html_ui_graph_html": "",
             "html_ui_graph_json": output_url(html_ui_graph_json_path),
             "python_graph_html": "",
@@ -34596,7 +34715,7 @@ def merge_html_features_into_repo_text(
     )
 
 def analyze_local_source(owner, repo, repo_id, output_repo_dir, src_dir, repo_info=None, default_branch="", build_download_zip=True):
-    results = {}
+    results = {"_source_dir": src_dir}
     os.makedirs(output_repo_dir, exist_ok=True)
     repo_stats = build_repo_stats(src_dir, owner, repo, repo_info, default_branch)
     write_json_artifact(repo_stats, output_repo_dir, "repo_stats.json")
@@ -34877,10 +34996,6 @@ def run_analyze_job(job_id: str, repo_url: str, github_token: str = "", github_c
             supabase_update_analysis_progress(analysis_run, "The architecture map is ready. We’re turning it into actionable product and feature insights.")
 
             # ADD THIS — extract UI seeds before SCIM runs
-            repo_context = build_repo_context(owner, repo, repo_info, default_branch, repo_text)
-            ui_feature_seeds = extract_ui_feature_seeds(repo_text, repo_context)
-            logger.info("UI feature seeds (%d): %s", len(ui_feature_seeds), ui_feature_seeds[:10])
-
             stage_started = time.monotonic()
             results.update(build_scim_artifacts(
                 output_repo_dir,
@@ -34890,7 +35005,6 @@ def run_analyze_job(job_id: str, repo_url: str, github_token: str = "", github_c
                 default_branch,
                 repo_text,
                 src_dir,
-                ui_feature_seeds=ui_feature_seeds,   # ADD THIS PARAM
                 progress_callback=lambda message, current_file=None: publish_progress(
                     message,
                     current_file=current_file,
@@ -35184,10 +35298,6 @@ def analyze_repo(req: RepoRequest, request: Request):
             results.update(dispatch_parsers(lang_map, src_dir, OUTPUT_REPO_DIR))
             
             # ADD THIS — extract UI seeds before SCIM runs
-            repo_context = build_repo_context(owner, repo, repo_info, default_branch, repo_text)
-            ui_feature_seeds = extract_ui_feature_seeds(repo_text, repo_context)
-            logger.info("UI feature seeds (%d): %s", len(ui_feature_seeds), ui_feature_seeds[:10])
-            
             results.update(build_scim_artifacts(
                 OUTPUT_REPO_DIR, 
                 owner, 
@@ -35195,8 +35305,7 @@ def analyze_repo(req: RepoRequest, request: Request):
                 repo_info, 
                 default_branch, 
                 repo_text, 
-                src_dir,
-                ui_feature_seeds=ui_feature_seeds   # ADD THIS PARAM
+                src_dir
                 ))
             
             
@@ -35290,6 +35399,7 @@ def run_local_path_analysis(owner, repo, repo_id, output_repo_dir, src_dir, repo
     with lock:
         cached_results = cached_analyze_results(output_repo_dir, owner, repo, repo_info, "local")
         if cached_results:
+            cached_results["_source_dir"] = src_dir
             logger.info("Reusing cached local-path analysis for %s (no source changes detected).", src_dir)
             return analyze_response(owner, repo, repo_id, output_repo_dir, cached_results)
         return analyze_local_source(

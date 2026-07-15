@@ -60,9 +60,9 @@ const DEFAULT_EXCLUDES = [
     '**/.next/**',
     '**/target/**',
     '**/*.pyc',
-    '**/codemd.dev/**',
+    '**/.codemd/**',
 ];
-const ARTIFACT_OUTPUT_DIR = 'codemd.dev';
+const ARTIFACT_OUTPUT_DIR = '.codemd';
 const CODEMD_DIFF_SCHEME = 'codemd-diff';
 const WORKSPACE_MCP_CONFIG_FILE = '.mcp.json';
 const WORKSPACE_CODEX_DIR = '.codex';
@@ -73,21 +73,25 @@ const WEBVIEW_SUPPORT_ARTIFACTS = [
     'lib/cytoscape/cytoscape.min.js',
 ];
 const MCP_PROVIDER_ID = 'codemdGraphs.mcp';
-const MCP_SERVER_NAME = 'CODE.md MCP';
-const LEGACY_MCP_SERVER_NAMES = ['codemd'];
+const MCP_SERVER_NAME = 'codemd';
+const MCP_SERVER_LABEL = 'codemd';
+const LEGACY_MCP_SERVER_NAMES = ['CODE.md MCP', 'codemd_mcp_server'];
 const MCP_SERVER_NAMES = [MCP_SERVER_NAME, ...LEGACY_MCP_SERVER_NAMES];
 let managedVenvSetupPromise = null;
 // Keys whose artifacts are large, binary, or interpretive rather than direct
 // analysis output (vector DBs, embeddings, training pairs) — not useful to
 // mirror into the workspace.
 const SKIPPED_ARTIFACT_KEY_PATTERN = /vector_db|embedding|train_pairs|download_zip/i;
+// combined_navigatable_callgraph.html is the only HTML artifact the panel
+// ever displays (see LOCAL_GRAPH_RELATIVE_PATH below) or the MCP server ever
+// reads. The per-language/file-graph *_cytoscape.html and
+// file_graph_navigatable.html files used to be mirrored here too, but
+// nothing in the current backend (main.py) writes them anymore — their
+// generators are either uncalled or unreferenced — so any copies on disk are
+// stale leftovers from an older build. Mirroring (and rewriting their script
+// paths on every load) them was pure wasted work for a file nothing shows.
 const MIRRORED_HTML_ARTIFACTS = new Set([
     'combined_callgraph/combined_navigatable_callgraph.html',
-    'file_graph/file_graph_cytoscape.html',
-    'file_graph/file_graph_navigatable.html',
-    'html_ui/html_ui_graph_cytoscape.html',
-    'javascript/javascript_callgraph_cytoscape.html',
-    'python/python_callgraph_cytoscape.html',
 ]);
 function shouldMirrorArtifact(entry, relPath) {
     if (SKIPPED_ARTIFACT_KEY_PATTERN.test(entry.key)) {
@@ -153,8 +157,13 @@ function trackProcess(proc) {
 function killProcessTree(pid) {
     if (process.platform === 'win32') {
         // /T kills the whole descendant tree (e.g. java.exe spawned by the python
-        // server), not just the one PID that .kill() would target.
-        (0, child_process_1.spawnSync)('taskkill', ['/PID', String(pid), '/T', '/F']);
+        // server), not just the one PID that .kill() would target. Fire-and-forget
+        // async spawn — spawnSync here would block the whole extension host until
+        // taskkill exits, and callers don't need to wait for the kill to finish.
+        const proc = (0, child_process_1.spawn)('taskkill', ['/PID', String(pid), '/T', '/F']);
+        proc.on('error', (err) => {
+            outputChannel?.appendLine(`[killProcessTree] taskkill failed for PID ${pid}: ${err.message}`);
+        });
     }
     else {
         try {
@@ -184,13 +193,28 @@ function killStaleServerOnPort(port) {
     if (process.platform !== 'win32') {
         return;
     }
-    try {
-        const result = (0, child_process_1.spawnSync)('netstat', ['-ano'], { encoding: 'utf8' });
-        if (result.status !== 0 || !result.stdout) {
+    // Async/non-blocking: spawnSync here would freeze the whole extension host
+    // (and everything else running in it) until netstat exits. Nothing in
+    // activate() depends on this finishing before it returns — our own server
+    // is only started later, on demand — so fire it and let it resolve in the
+    // background.
+    const netstatStart = Date.now();
+    outputChannel?.appendLine('[killStaleServerOnPort] spawning netstat -ano (async)...');
+    let stdout = '';
+    const proc = (0, child_process_1.spawn)('netstat', ['-ano']);
+    proc.stdout?.on('data', (chunk) => {
+        stdout += chunk.toString();
+    });
+    proc.on('error', (err) => {
+        outputChannel?.appendLine(`\n--- Stale-server cleanup on port ${port} skipped: ${err.message} ---`);
+    });
+    proc.on('close', (code) => {
+        outputChannel?.appendLine(`[killStaleServerOnPort] netstat -ano returned in ${Date.now() - netstatStart}ms (code=${code})`);
+        if (code !== 0 || !stdout) {
             return;
         }
         const pids = new Set();
-        for (const line of result.stdout.split('\n')) {
+        for (const line of stdout.split('\n')) {
             if (!line.includes(`:${port} `) && !line.includes(`:${port}\r`)) {
                 continue;
             }
@@ -206,16 +230,13 @@ function killStaleServerOnPort(port) {
             outputChannel?.appendLine(`\n--- Found a stale process (PID ${pid}) already listening on port ${port} from a previous session — killing it before starting a fresh server ---`);
             killProcessTree(pid);
         }
-    }
-    catch (err) {
-        outputChannel?.appendLine(`\n--- Stale-server cleanup on port ${port} skipped: ${err?.message || err} ---`);
-    }
+    });
 }
 function mcpServerScriptPath(context) {
     return path.join(context.extensionUri.fsPath, 'scripts', 'codemd-mcp-server.js');
 }
-function mcpServerArgs(context, workspaceRoot) {
-    return [mcpServerScriptPath(context), '--workspace', workspaceRoot];
+function mcpServerArgs(context, workspaceRoot, serverName = MCP_SERVER_NAME) {
+    return [mcpServerScriptPath(context), '--workspace', workspaceRoot, '--server-name', serverName];
 }
 function registerMcpProvider(context) {
     const register = vscode.lm?.registerMcpServerDefinitionProvider;
@@ -247,16 +268,30 @@ async function setupClaudeProjectMcp(context, folder) {
         }
     }
     config.mcpServers = config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
+    // Legacy names only need to stay in .mcp.json long enough for Claude Code's
+    // approval (keyed by name) to carry forward to the canonical name — once
+    // "codemd" itself is approved, keep them out entirely instead of
+    // re-registering duplicate servers on every activation forever.
+    const enabledClaudeServers = readEnabledMcpjsonServers(folder);
+    const approvedLegacyNames = isClaudeMcpServerApproved(folder)
+        ? []
+        : LEGACY_MCP_SERVER_NAMES.filter((name) => enabledClaudeServers.includes(name));
     for (const legacyName of LEGACY_MCP_SERVER_NAMES) {
-        delete config.mcpServers[legacyName];
+        if (!approvedLegacyNames.includes(legacyName)) {
+            delete config.mcpServers[legacyName];
+        }
     }
-    config.mcpServers[MCP_SERVER_NAME] = {
+    const serverConfigForName = (serverName) => ({
         command: 'node',
-        args: mcpServerArgs(context, folder.uri.fsPath),
+        args: mcpServerArgs(context, folder.uri.fsPath, serverName),
         env: {
             CODEMD_WORKSPACE: folder.uri.fsPath,
         },
-    };
+    });
+    config.mcpServers[MCP_SERVER_NAME] = serverConfigForName(MCP_SERVER_NAME);
+    for (const legacyName of approvedLegacyNames) {
+        config.mcpServers[legacyName] = serverConfigForName(legacyName);
+    }
     const nextText = `${JSON.stringify(config, null, 2)}\n`;
     if (nextText === existingText) {
         return false;
@@ -303,7 +338,7 @@ async function approveClaudeMcpServer(folder) {
         }
     }
     const enabled = Array.isArray(settings.enabledMcpjsonServers)
-        ? settings.enabledMcpjsonServers.filter((name) => !LEGACY_MCP_SERVER_NAMES.includes(String(name)))
+        ? settings.enabledMcpjsonServers.map((name) => String(name))
         : [];
     if (!enabled.includes(MCP_SERVER_NAME)) {
         enabled.push(MCP_SERVER_NAME);
@@ -312,10 +347,24 @@ async function approveClaudeMcpServer(folder) {
     await safeWorkspaceCreateDirectory(vscode.Uri.joinPath(folder.uri, WORKSPACE_CLAUDE_DIR));
     await safeWorkspaceWriteFile(settingsUri, Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, 'utf8'));
 }
+async function migrateClaudeLegacyMcpApproval(folder) {
+    if (isClaudeMcpServerApproved(folder)) {
+        return false;
+    }
+    const enabled = readEnabledMcpjsonServers(folder);
+    if (LEGACY_MCP_SERVER_NAMES.some((name) => enabled.includes(name))) {
+        await approveClaudeMcpServer(folder);
+        return true;
+    }
+    return false;
+}
 // Asks the user before pre-approving the codemd MCP server for Claude Code,
 // so CODE.md never grants itself trust silently. Returns true only if the
 // user said yes and the approval was written.
 async function requestClaudeMcpApproval(folder) {
+    if (await migrateClaudeLegacyMcpApproval(folder)) {
+        return true;
+    }
     if (isClaudeMcpServerApproved(folder)) {
         return false;
     }
@@ -326,7 +375,7 @@ async function requestClaudeMcpApproval(folder) {
         await approveClaudeMcpServer(folder);
         return true;
     }
-    const choice = await vscode.window.showInformationMessage(`CODE.md: allow the "${MCP_SERVER_NAME}" server to run automatically with Claude Code in "${folder.name}"? ` +
+    const choice = await vscode.window.showInformationMessage(`CODE.md: allow the "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) server to run automatically with Claude Code in "${folder.name}"? ` +
         'This skips the manual /mcp approval step in Claude Code for this one server.', 'Allow', 'Not now');
     if (choice !== 'Allow') {
         return false;
@@ -343,12 +392,17 @@ function tomlStringArray(values) {
 function tomlKey(value) {
     return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
 }
-function codexMcpBlock(context, workspaceRoot) {
+// "auto" means Codex runs codemd's tools without a per-call prompt, mirroring
+// what approveClaudeMcpServer does for Claude Code's enabledMcpjsonServers gate.
+// Must be one of Codex's actual accepted variants (auto/prompt/writes/approve) —
+// "never" is not valid and makes config.toml fail to load.
+function codexMcpBlock(context, workspaceRoot, approvalMode = 'prompt') {
     const block = [
         '# BEGIN CODE.md MCP',
         `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}]`,
         'command = "node"',
         `args = ${tomlStringArray(mcpServerArgs(context, workspaceRoot))}`,
+        `default_tools_approval_mode = ${tomlString(approvalMode)}`,
         '',
         `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}.env]`,
         `CODEMD_WORKSPACE = ${tomlString(workspaceRoot)}`,
@@ -356,6 +410,26 @@ function codexMcpBlock(context, workspaceRoot) {
         '',
     ].join('\n');
     return block;
+}
+// Reads the codemd table's current approval mode out of a Codex config.toml's
+// text so re-running Set Up MCP doesn't silently downgrade an "auto" approval
+// back to "prompt". Also recognizes the legacy invalid "never" value written
+// by older versions of this extension, so it's treated as already-approved.
+function codexApprovalModeInConfig(configText) {
+    const match = configText.match(/# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP/);
+    const scoped = match ? match[0] : configText;
+    return /default_tools_approval_mode\s*=\s*"(auto|never)"/.test(scoped) ? 'auto' : 'prompt';
+}
+function isCodexConfigApproved(configPath) {
+    if (!fs.existsSync(configPath)) {
+        return false;
+    }
+    try {
+        return codexApprovalModeInConfig(fs.readFileSync(configPath, 'utf8')) === 'auto';
+    }
+    catch {
+        return false;
+    }
 }
 function removeCodexMcpServerTables(existing) {
     const markerPattern = /# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP\r?\n?/;
@@ -391,7 +465,7 @@ async function setupCodexProjectMcp(context, folder) {
             throw new Error(`Could not read ${WORKSPACE_CODEX_CONFIG_FILE}: ${err?.message || String(err)}`);
         }
     }
-    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath));
+    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath, codexApprovalModeInConfig(existing)));
     if (next === existing) {
         return false;
     }
@@ -414,7 +488,7 @@ async function setupCodexUserMcp(context, folder) {
             throw new Error(`Could not read Codex user config ${configPath}: ${err?.message || String(err)}`);
         }
     }
-    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath));
+    const next = codexConfigWithMcp(existing, codexMcpBlock(context, folder.uri.fsPath, codexApprovalModeInConfig(existing)));
     if (next === existing) {
         return { changed: false, path: configPath };
     }
@@ -422,13 +496,37 @@ async function setupCodexUserMcp(context, folder) {
     await fs.promises.writeFile(configPath, next, 'utf8');
     return { changed: true, path: configPath };
 }
+// Flips the codemd table's approval mode to "auto" in both the project and
+// user Codex configs, same idea as approveClaudeMcpServer but Codex has no
+// separate allowlist file — the mode lives inline in config.toml.
+async function approveCodexMcpServer(context, folder) {
+    const codexDir = vscode.Uri.joinPath(folder.uri, WORKSPACE_CODEX_DIR);
+    const projectConfigUri = vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CODEX_CONFIG_FILE.split('/'));
+    let existingProject = '';
+    if (fs.existsSync(projectConfigUri.fsPath)) {
+        existingProject = fs.readFileSync(projectConfigUri.fsPath, 'utf8');
+    }
+    await safeWorkspaceCreateDirectory(codexDir);
+    await safeWorkspaceWriteFile(projectConfigUri, Buffer.from(codexConfigWithMcp(existingProject, codexMcpBlock(context, folder.uri.fsPath, 'auto')), 'utf8'));
+    const userConfigPath = codexUserConfigPath();
+    let existingUser = '';
+    if (fs.existsSync(userConfigPath)) {
+        existingUser = fs.readFileSync(userConfigPath, 'utf8');
+    }
+    await fs.promises.mkdir(path.dirname(userConfigPath), { recursive: true });
+    await fs.promises.writeFile(userConfigPath, codexConfigWithMcp(existingUser, codexMcpBlock(context, folder.uri.fsPath, 'auto')), 'utf8');
+}
+function isCodexMcpServerApproved(folder) {
+    const projectConfigPath = vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CODEX_CONFIG_FILE.split('/')).fsPath;
+    return isCodexConfigApproved(projectConfigPath) || isCodexConfigApproved(codexUserConfigPath());
+}
 async function setupProjectMcpConfigs(context, options) {
     const folders = vscode.workspace.workspaceFolders || [];
     if (folders.length === 0) {
         if (!options.quiet) {
             vscode.window.showErrorMessage('CODE.md: Open a workspace before setting up MCP.');
         }
-        return;
+        return false;
     }
     const failures = [];
     const changedFolders = [];
@@ -440,7 +538,7 @@ async function setupProjectMcpConfigs(context, options) {
             const changedCodexUser = await setupCodexUserMcp(context, folder);
             // Only ask for MCP approval on explicit, user-initiated setup — never
             // during the quiet background pass on activation.
-            const approvedClaude = options.quiet ? false : await requestClaudeMcpApproval(folder);
+            const approvedClaude = options.quiet ? await migrateClaudeLegacyMcpApproval(folder) : await requestClaudeMcpApproval(folder);
             if (changedCodexUser.changed) {
                 changedCodexUserConfigs.add(changedCodexUser.path);
             }
@@ -463,27 +561,141 @@ async function setupProjectMcpConfigs(context, options) {
         const codexUserConfigNote = changedCodexUserConfigs.size
             ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
             : '';
-        const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}".`;
+        const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`;
         outputChannel?.appendLine(message);
         vscode.window.showInformationMessage(message);
     }
     else if (!options.quiet) {
-        vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date in the workspace and Codex user config. Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}".`);
+        vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date in the workspace and Codex user config, and "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is approved. No client restart needed.`);
     }
+    return !failures.length && changedFolders.length > 0;
 }
-function commandExists(command) {
+function resolveBundledCodexCli() {
+    if (process.platform !== 'win32') {
+        return null;
+    }
+    const extensionRoot = path.join(os.homedir(), '.vscode', 'extensions');
     try {
-        const result = process.platform === 'win32'
-            ? (0, child_process_1.spawnSync)('where.exe', [command], { encoding: 'utf8', timeout: 3000 })
-            : (0, child_process_1.spawnSync)('sh', ['-lc', `command -v ${JSON.stringify(command)}`], { encoding: 'utf8', timeout: 3000 });
-        return result.status === 0;
+        const candidates = fs.readdirSync(extensionRoot)
+            .filter((name) => /^openai\.chatgpt-/i.test(name))
+            .sort()
+            .reverse();
+        for (const candidate of candidates) {
+            const binDir = path.join(extensionRoot, candidate, 'bin');
+            if (!fs.existsSync(binDir)) {
+                continue;
+            }
+            const platformBins = fs.readdirSync(binDir).sort().reverse();
+            for (const platformBin of platformBins) {
+                const codexPath = path.join(binDir, platformBin, 'codex.exe');
+                if (fs.existsSync(codexPath)) {
+                    return codexPath;
+                }
+            }
+        }
     }
     catch {
-        return false;
+        return null;
     }
+    return null;
+}
+// Mirrors resolveBundledCodexCli: the Claude Code VS Code extension ships its
+// own native-binary/claude.exe, which `where.exe claude` won't find unless the
+// standalone CLI is also separately installed and on PATH. Without this,
+// claudeDetected (and MCP setup's terminal-launch dialog) reports "missing"
+// even when Claude Code is demonstrably running.
+function resolveBundledClaudeCli() {
+    if (process.platform !== 'win32') {
+        return null;
+    }
+    const extensionRoot = path.join(os.homedir(), '.vscode', 'extensions');
+    try {
+        const candidates = fs.readdirSync(extensionRoot)
+            .filter((name) => /^anthropic\.claude-code-/i.test(name))
+            .sort()
+            .reverse();
+        for (const candidate of candidates) {
+            const claudePath = path.join(extensionRoot, candidate, 'resources', 'native-binary', 'claude.exe');
+            if (fs.existsSync(claudePath)) {
+                return claudePath;
+            }
+        }
+    }
+    catch {
+        return null;
+    }
+    return null;
+}
+// Async/non-blocking (was spawnSync) — this runs on every panel resolve via
+// mcpSetupStatus, and a synchronous spawn there froze the extension host for
+// up to 3s (the timeout) per client checked whenever PATH lookup was slow.
+function resolveCommand(command) {
+    const fallback = () => {
+        if (command === 'codex') {
+            return resolveBundledCodexCli();
+        }
+        if (command === 'claude') {
+            return resolveBundledClaudeCli();
+        }
+        return null;
+    };
+    return new Promise((resolve) => {
+        const proc = process.platform === 'win32'
+            ? (0, child_process_1.spawn)('where.exe', [command])
+            : (0, child_process_1.spawn)('sh', ['-lc', `command -v ${JSON.stringify(command)}`]);
+        let stdout = '';
+        let settled = false;
+        const finish = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        };
+        const timer = setTimeout(() => {
+            if (proc.pid) {
+                killProcessTree(proc.pid);
+            }
+            finish(fallback());
+        }, 3000);
+        proc.stdout?.on('data', (chunk) => {
+            stdout += chunk.toString();
+        });
+        proc.on('error', () => finish(fallback()));
+        proc.on('close', (code) => {
+            if (code === 0) {
+                const firstMatch = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+                finish(firstMatch || command);
+                return;
+            }
+            finish(fallback());
+        });
+    });
+}
+async function commandExists(command) {
+    return Boolean(await resolveCommand(command));
 }
 function mcpClientDisplayName(client) {
     return client === 'claude' ? 'Claude Code' : 'Codex';
+}
+function shellQuotedPath(value) {
+    return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+function terminalLaunchCommand(commandPath) {
+    if (!commandPath.includes(path.sep)) {
+        return commandPath;
+    }
+    if (process.platform === 'win32' && !/\s/.test(commandPath)) {
+        return commandPath;
+    }
+    const quoted = shellQuotedPath(commandPath);
+    return process.platform === 'win32' ? `& ${quoted}` : quoted;
+}
+function openMcpApprovalCommand(terminal) {
+    setTimeout(() => {
+        terminal.sendText('/mcp');
+    }, 1500);
 }
 function fileContains(filePath, needle) {
     try {
@@ -493,7 +705,7 @@ function fileContains(filePath, needle) {
         return false;
     }
 }
-function mcpSetupStatus(folder) {
+async function mcpSetupStatus(folder) {
     const workspaceConfigPath = vscode.Uri.joinPath(folder.uri, WORKSPACE_MCP_CONFIG_FILE).fsPath;
     const codexProjectConfigPath = vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CODEX_CONFIG_FILE.split('/')).fsPath;
     const userConfigPath = codexUserConfigPath();
@@ -511,43 +723,52 @@ function mcpSetupStatus(folder) {
     ]);
     const codexProjectConfig = codexServerNeedles.some((needle) => fileContains(codexProjectConfigPath, needle));
     const codexUserConfig = codexServerNeedles.some((needle) => fileContains(userConfigPath, needle));
+    const [codexDetected, claudeDetected] = await Promise.all([commandExists('codex'), commandExists('claude')]);
     return {
         registered: workspaceConfig || codexProjectConfig || codexUserConfig,
         workspaceConfig,
         claudeApproved: isClaudeMcpServerApproved(folder),
+        codexApproved: isCodexMcpServerApproved(folder),
         codexProjectConfig,
         codexUserConfig,
         codexUserConfigPath: userConfigPath,
-        codexDetected: commandExists('codex'),
-        claudeDetected: commandExists('claude'),
+        codexDetected,
+        claudeDetected,
     };
 }
-function openMcpClientTerminal(client, folder) {
-    if (!commandExists(client)) {
+async function openMcpClientTerminal(client, folder) {
+    const commandPath = await resolveCommand(client);
+    if (!commandPath) {
         const displayName = mcpClientDisplayName(client);
-        vscode.window.showWarningMessage(`CODE.md: ${displayName} CLI "${client}" was not found on PATH. Install ${displayName} or add "${client}" to PATH, then run Setup MCP again.`);
+        vscode.window.showWarningMessage(`CODE.md: MCP config is ready, but ${displayName} CLI "${client}" was not found by VS Code. Install ${displayName}, add "${client}" to PATH, or restart VS Code after updating PATH.`);
         return;
     }
     const terminal = vscode.window.createTerminal({
         name: `CODE.md ${mcpClientDisplayName(client)}`,
         cwd: folder.uri.fsPath,
+        env: client === 'codex' ? { CODEX_HOME: path.dirname(codexUserConfigPath()) } : undefined,
     });
     terminal.show();
-    terminal.sendText(client);
+    terminal.sendText(terminalLaunchCommand(commandPath));
+    openMcpApprovalCommand(terminal);
     if (client === 'claude') {
         const message = isClaudeMcpServerApproved(folder)
-            ? `CODE.md: "${MCP_SERVER_NAME}" is pre-approved for this workspace, Claude Code should pick it up automatically.`
-            : `CODE.md: In Claude Code, type /mcp and approve "${MCP_SERVER_NAME}" if it is pending.`;
+            ? `CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for this workspace, Claude Code should pick it up automatically.`
+            : `CODE.md: Claude Code started and CODE.md will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`;
         vscode.window.showInformationMessage(message);
     }
     else {
-        vscode.window.showInformationMessage(`CODE.md: Codex started in a fresh workspace terminal. Approve "${MCP_SERVER_NAME}" if Codex prompts for MCP access.`);
+        vscode.window.showInformationMessage(`CODE.md: Codex started and CODE.md will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`);
     }
 }
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('CODE.md');
     context.subscriptions.push(outputChannel);
+    outputChannel.appendLine('[activate] begin');
     const config = vscode.workspace.getConfiguration('codemdGraphs');
+    // Fire-and-forget: killStaleServerOnPort spawns netstat/taskkill
+    // asynchronously now and returns immediately; it no longer blocks
+    // activation. See its own [killStaleServerOnPort] logs for timing.
     killStaleServerOnPort(Number(config.get('port') || 8100));
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'codemdGraphs.open';
@@ -555,9 +776,15 @@ function activate(context) {
     statusBarItem.tooltip = 'CODE.md';
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
+    outputChannel.appendLine('[activate] constructing GraphsViewProvider');
     const provider = new GraphsViewProvider(context);
+    outputChannel.appendLine('[activate] GraphsViewProvider constructed');
     registerMcpProvider(context);
-    context.subscriptions.push(vscode.window.registerWebviewViewProvider('codemdGraphs.panel', provider));
+    outputChannel.appendLine('[activate] registerMcpProvider done');
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('codemdGraphs.panel', provider, {
+        webviewOptions: { retainContextWhenHidden: true },
+    }));
+    outputChannel.appendLine('[activate] webview view provider registered');
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(CODEMD_DIFF_SCHEME, new GitShowContentProvider()));
     context.subscriptions.push(vscode.commands.registerCommand('codemd', () => provider.reveal()));
     context.subscriptions.push(vscode.commands.registerCommand('codemdGraphs.open', () => provider.reveal()));
@@ -569,6 +796,9 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand('codemdGraphs.stopServer', stopServer));
     // Kick off an initial background analysis so the graph is already there by
     // the time the user opens the panel — no manual "Generate" click needed.
+    // ensureLocalGraphLoaded() (called from the provider's constructor above)
+    // already showed whatever graph was mirrored on disk before this runs, so
+    // this only ever builds/refreshes — it never blocks that first paint.
     if (vscode.workspace.workspaceFolders?.length) {
         if (config.get('autoWriteProjectMcpConfig') !== false) {
             setupProjectMcpConfigs(context, { quiet: true });
@@ -579,7 +809,8 @@ function activate(context) {
         // discover and click the new "CODE.md" activity bar icon, so the
         // callgraph never actually appeared unless they knew to look for it.
         if (config.get('autoReveal') !== false) {
-            provider.reveal();
+            outputChannel.appendLine('[activate] calling provider.reveal()');
+            provider.reveal().then(() => outputChannel.appendLine('[activate] provider.reveal() resolved'), (err) => outputChannel.appendLine(`[activate] provider.reveal() REJECTED: ${err?.message || err}`));
         }
         startupAnalysis
             .catch((err) => {
@@ -587,6 +818,7 @@ function activate(context) {
         })
             .then(() => provider.runStartupChangesCheck());
     }
+    outputChannel.appendLine('[activate] end (synchronous portion returning)');
 }
 function deactivate() {
     stopServer();
@@ -666,23 +898,56 @@ function venvPythonPath(venvDir) {
         ? path.join(venvDir, 'Scripts', 'python.exe')
         : path.join(venvDir, 'bin', 'python');
 }
-function runCommand(cmd, args, cwd, onOutput) {
+// Backend setup steps (venv creation, pip installs — one of which pulls PyCG
+// straight from git+https) and the analyzer run itself have no other way to
+// fail: a stalled network fetch, a hung git-credential prompt, etc. would
+// otherwise wait on proc.on('exit') forever, leaving the webview stuck on
+// whatever status text was last posted with no way to recover short of
+// reloading the window. Every spawn here is timeout-bounded and tree-killed
+// (killProcessTree, not proc.kill()) so a wedged child can't survive past it.
+const VENV_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const ANALYZE_CLI_TIMEOUT_MS = 20 * 60 * 1000;
+function runCommand(cmd, args, cwd, onOutput, options = {}) {
     return new Promise((resolve, reject) => {
-        const proc = (0, child_process_1.spawn)(cmd, args, { cwd });
+        const proc = (0, child_process_1.spawn)(cmd, args, { cwd, env: options.env, detached: options.detached });
+        trackProcess(proc);
+        let timedOut = false;
+        const timer = options.timeoutMs
+            ? setTimeout(() => {
+                timedOut = true;
+                if (proc.pid) {
+                    killProcessTree(proc.pid);
+                }
+            }, options.timeoutMs)
+            : null;
         proc.stdout?.on('data', (chunk) => onOutput(chunk.toString()));
         proc.stderr?.on('data', (chunk) => onOutput(chunk.toString()));
-        proc.on('error', reject);
-        proc.on('exit', (code) => resolve(code ?? 1));
+        proc.on('error', (err) => {
+            if (timer) {
+                clearTimeout(timer);
+            }
+            reject(err);
+        });
+        proc.on('exit', (code) => {
+            if (timer) {
+                clearTimeout(timer);
+            }
+            if (timedOut) {
+                reject(new Error(`"${cmd} ${args.join(' ')}" timed out after ${Math.round(options.timeoutMs / 1000)}s and was killed. Check the "CODE.md" output channel for what it was doing.`));
+                return;
+            }
+            resolve(code ?? 1);
+        });
     });
 }
 async function ensureVenvPip(pythonExe, backendDir, onStatus) {
-    const pipVersionCode = await runCommand(pythonExe, ['-m', 'pip', '--version'], backendDir, (text) => outputChannel.append(text));
+    const pipVersionCode = await runCommand(pythonExe, ['-m', 'pip', '--version'], backendDir, (text) => outputChannel.append(text), { timeoutMs: VENV_SETUP_TIMEOUT_MS });
     if (pipVersionCode === 0) {
         return;
     }
     onStatus('Bootstrapping pip in the managed Python environment...');
     outputChannel.appendLine(`\n--- Bootstrapping pip in ${path.dirname(path.dirname(pythonExe))} ---`);
-    const ensurePipCode = await runCommand(pythonExe, ['-m', 'ensurepip', '--upgrade'], backendDir, (text) => outputChannel.append(text));
+    const ensurePipCode = await runCommand(pythonExe, ['-m', 'ensurepip', '--upgrade'], backendDir, (text) => outputChannel.append(text), { timeoutMs: VENV_SETUP_TIMEOUT_MS });
     if (ensurePipCode !== 0) {
         throw new Error(`Failed to bootstrap pip in the managed Python environment (exit code ${ensurePipCode}). ` +
             'Repair your Python installation so "py -3 -m ensurepip --upgrade" succeeds, or set codemdGraphs.pythonPath to an interpreter with backend/requirements.txt installed.');
@@ -717,7 +982,7 @@ async function ensureManagedVenvUnlocked(context, backendDir, onStatus) {
         }
         onStatus('Setting up an isolated Python environment for the backend (first run only)…');
         outputChannel.appendLine(`\n--- Creating venv at ${venvDir} using ${systemPython.cmd} ${systemPython.args.join(' ')} ---`);
-        const code = await runCommand(systemPython.cmd, [...systemPython.args, '-m', 'venv', venvDir], backendDir, (text) => outputChannel.append(text));
+        const code = await runCommand(systemPython.cmd, [...systemPython.args, '-m', 'venv', venvDir], backendDir, (text) => outputChannel.append(text), { timeoutMs: VENV_SETUP_TIMEOUT_MS });
         if (code !== 0 || !fs.existsSync(pythonExe)) {
             throw new Error(`Failed to create a Python virtual environment at "${venvDir}" (exit code ${code}). ` +
                 'Check the "CODE.md" output channel.');
@@ -727,7 +992,7 @@ async function ensureManagedVenvUnlocked(context, backendDir, onStatus) {
     if (requirementsHash && existingHash !== requirementsHash) {
         onStatus('Installing backend dependencies (first run only, this can take a minute)…');
         outputChannel.appendLine(`\n--- Installing requirements.txt into ${venvDir} ---`);
-        const code = await runCommand(pythonExe, ['-m', 'pip', 'install', '-q', '-r', requirementsPath], backendDir, (text) => outputChannel.append(text));
+        const code = await runCommand(pythonExe, ['-m', 'pip', 'install', '-q', '-r', requirementsPath], backendDir, (text) => outputChannel.append(text), { timeoutMs: VENV_SETUP_TIMEOUT_MS });
         if (code !== 0) {
             throw new Error(`Failed to install backend dependencies (exit code ${code}). Check the "CODE.md" output channel. ` +
                 `If this repeats after closing VS Code, delete "${venvDir}" so CODE.md can recreate a clean environment.`);
@@ -895,8 +1160,8 @@ function localAnalysisResultFileUri(outDirUri) {
 function localMcpUsageFileUri(outDirUri) {
     return vscode.Uri.joinPath(outDirUri, MCP_USAGE_FILE);
 }
-function readMcpUsage(folder) {
-    const setup = mcpSetupStatus(folder);
+async function readMcpUsage(folder) {
+    const setup = await mcpSetupStatus(folder);
     const configured = setup.registered;
     try {
         const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
@@ -908,6 +1173,21 @@ function readMcpUsage(folder) {
         const clients = Object.entries(clientCounts)
             .map(([name, calls]) => ({ name, calls: Number(calls) || 0 }))
             .sort((a, b) => b.calls - a.calls);
+        const toolsByClientRaw = usage?.tools_by_client && typeof usage.tools_by_client === 'object' ? usage.tools_by_client : {};
+        const toolsByClient = {};
+        for (const [clientName, tools] of Object.entries(toolsByClientRaw)) {
+            if (!tools || typeof tools !== 'object') {
+                continue;
+            }
+            toolsByClient[String(clientName)] = Object.entries(tools)
+                .reduce((normalized, [toolName, calls]) => {
+                const callCount = Number(calls) || 0;
+                if (callCount > 0) {
+                    normalized[toolName] = callCount;
+                }
+                return normalized;
+            }, {});
+        }
         const recordedTotal = Number(usage?.total_calls || 0);
         const toolCalls = Object.values(usage?.tools && typeof usage.tools === 'object' ? usage.tools : {})
             .reduce((sum, calls) => sum + (Number(calls) || 0), 0);
@@ -919,12 +1199,13 @@ function readMcpUsage(folder) {
             updatedAt: String(usage?.updated_at || ''),
             stale: !usage?.updated_at || (Date.now() - Date.parse(String(usage.updated_at || ''))) > 24 * 60 * 60 * 1000,
             clients,
+            toolsByClient,
             setup,
             restartNeeded: configured && (!usage?.updated_at || (Date.now() - Date.parse(String(usage.updated_at || ''))) > 24 * 60 * 60 * 1000),
         };
     }
     catch {
-        return { configured, totalCalls: 0, updatedAt: '', stale: true, clients: [], setup, restartNeeded: configured };
+        return { configured, totalCalls: 0, updatedAt: '', stale: true, clients: [], toolsByClient: {}, setup, restartNeeded: configured };
     }
 }
 // ---------------------------------------------------------------------------
@@ -1125,17 +1406,34 @@ async function repairMirroredArtifactsForWebview(context, outDirUri) {
 /**
  * Cheap proxy for "the workspace changed since the last analysis": the
  * current commit plus tracked/untracked file status, excluding our own
- * generated codemd.dev/ output (which changes on every run and would
+ * generated .codemd/ output (which changes on every run and would
  * otherwise make this always report "changed"). Returns null when the
  * workspace isn't a git repo (or has no commits yet) — callers should treat
  * that as "can't tell, so don't skip."
  */
-function computeGitStateHash(workspaceRoot) {
-    const head = (0, child_process_1.spawnSync)('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot, encoding: 'utf8' });
+/**
+ * Runs git asynchronously (never spawnSync) — this can be called from the
+ * extension host's shared, single-threaded event loop, and a slow git
+ * invocation (e.g. under heavy concurrent disk I/O from a venv/pip install)
+ * must not freeze every webview in the window while it waits.
+ */
+function execGitAsync(args, cwd) {
+    return new Promise((resolve) => {
+        const proc = (0, child_process_1.spawn)('git', args, { cwd });
+        let stdout = '';
+        let stderr = '';
+        proc.stdout?.on('data', (chunk) => { stdout += chunk.toString(); });
+        proc.stderr?.on('data', (chunk) => { stderr += chunk.toString(); });
+        proc.on('error', () => resolve({ status: null, stdout, stderr }));
+        proc.on('exit', (code) => resolve({ status: code, stdout, stderr }));
+    });
+}
+async function computeGitStateHash(workspaceRoot) {
+    const head = await execGitAsync(['rev-parse', 'HEAD'], workspaceRoot);
     if (head.status !== 0) {
         return null;
     }
-    const status = (0, child_process_1.spawnSync)('git', ['status', '--porcelain', '--', '.', `:!${ARTIFACT_OUTPUT_DIR}/**`], { cwd: workspaceRoot, encoding: 'utf8' });
+    const status = await execGitAsync(['status', '--porcelain', '--', '.', `:!${ARTIFACT_OUTPUT_DIR}/**`], workspaceRoot);
     const statusText = status.status === 0 ? status.stdout : '';
     return crypto.createHash('sha256').update(head.stdout.trim() + '\n' + statusText).digest('hex');
 }
@@ -1284,17 +1582,10 @@ async function analyzeLocalPathCli(context, outDirUri, folderPath, workspaceName
     outputChannel.appendLine(`\n--- Running local analyzer CLI: ${pythonPath} ${args.join(' ')} (cwd: ${backendDir}) ---`);
     outputChannel.show(true);
     report('Analyzing locally with the CODE.md CLI (no FastAPI server needed for generation)...');
-    const exitCode = await new Promise((resolve, reject) => {
-        const proc = (0, child_process_1.spawn)(pythonPath, args, {
-            cwd: backendDir,
-            env: localBackendEnv(context),
-            detached: process.platform !== 'win32',
-        });
-        trackProcess(proc);
-        proc.stdout.on('data', (chunk) => outputChannel.append(chunk.toString()));
-        proc.stderr.on('data', (chunk) => outputChannel.append(chunk.toString()));
-        proc.on('error', reject);
-        proc.on('exit', (code) => resolve(code ?? 1));
+    const exitCode = await runCommand(pythonPath, args, backendDir, (text) => outputChannel.append(text), {
+        env: localBackendEnv(context),
+        detached: process.platform !== 'win32',
+        timeoutMs: ANALYZE_CLI_TIMEOUT_MS,
     });
     if (exitCode !== 0) {
         throw new Error(`Local analyzer CLI failed with exit code ${exitCode}. Check the "CODE.md" output channel.`);
@@ -1341,6 +1632,44 @@ function impactedFilesFromChange(change) {
 function impactedNodesFromChange(change) {
     return (change?.impact_radius || []).map((item) => String(item || '')).filter(Boolean);
 }
+// node_confidence (from get_impact_radius in helpers.py) tags each reached
+// node "high" if it's reached via at least one resolved, parsed call edge,
+// "low" if every path to it is a heuristic/name-matched edge (e.g. dynamic
+// dispatch). Nodes missing from the map (older cached reports, or the
+// no-callgraph fallback) are treated as unconfirmed rather than assumed safe.
+function nodeConfidenceFromChange(change) {
+    const raw = change?.node_confidence;
+    return raw && typeof raw === 'object' ? raw : {};
+}
+function confirmedAndInferredNodes(impactedNodes, nodeConfidence) {
+    const confirmed = [];
+    const inferred = [];
+    for (const node of impactedNodes) {
+        if (nodeConfidence[node] === 'high') {
+            confirmed.push(node);
+        }
+        else {
+            inferred.push(node);
+        }
+    }
+    return { confirmed, inferred };
+}
+function directCallersFromLevels(change) {
+    return Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+}
+function impactScoreForModifiedChange(change) {
+    const impactedNodes = impactedNodesFromChange(change).length;
+    const impactedFiles = impactedFilesFromChange(change).length;
+    const directCallers = directCallersFromLevels(change);
+    const lowConfidenceEdges = Number(change?.confidence?.low || 0);
+    return (directCallers * 20) + (impactedNodes * 8) + (impactedFiles * 12) + (lowConfidenceEdges * 2);
+}
+function impactScoreForDeletedChange(change) {
+    const directCallers = Number(change?.direct_callers || 0);
+    const directCallees = Number(change?.direct_callees || 0);
+    const stillReferenced = change?.still_referenced ? 100 : 0;
+    return stillReferenced + (directCallers * 25) + (directCallees * 5);
+}
 function fileTypeLabel(file) {
     const ext = path.extname(file).replace(/^\./, '').toUpperCase();
     return ext ? `${ext} files` : 'changed files';
@@ -1348,30 +1677,42 @@ function fileTypeLabel(file) {
 function checksForChange(change) {
     const impactedFiles = impactedFilesFromChange(change);
     const impactedNodes = impactedNodesFromChange(change);
-    const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
-    const confidence = change?.confidence || {};
-    const lowEdges = Number(confidence.low || 0);
+    const levels = (change?.levels || {});
+    const directCallerNames = impactedNodes.filter((node) => Number(levels[node]) === 1);
+    const transitiveCallerNames = impactedNodes.filter((node) => Number(levels[node]) > 1);
+    const { inferred } = confirmedAndInferredNodes(impactedNodes, nodeConfidenceFromChange(change));
     const checks = new Set();
-    if (directCallers > 0) {
-        checks.add('Direct caller behavior');
+    const callSiteIssues = callSiteIssuesFromChange(change);
+    if (callSiteIssues.length) {
+        checks.add(`Fix ${callSiteIssues.length} broken call site(s) before committing — see Evidence`);
     }
-    if (impactedNodes.length > directCallers) {
-        checks.add('Transitive caller behavior');
+    for (const node of directCallerNames.slice(0, 3)) {
+        checks.add(compactSymbolName(node));
     }
-    if (impactedFiles.length) {
-        checks.add('Impacted file workflows');
-        for (const file of impactedFiles.slice(0, 3)) {
-            checks.add(fileTypeLabel(file));
-        }
+    if (directCallerNames.length > 3) {
+        checks.add(`+${directCallerNames.length - 3} more direct caller(s)`);
     }
-    if (lowEdges > 0) {
-        checks.add('Inferred dependency paths');
+    if (transitiveCallerNames.length > 0) {
+        const shown = transitiveCallerNames.slice(0, 2).map(compactSymbolName).join(', ');
+        const rest = transitiveCallerNames.length > 2 ? `, +${transitiveCallerNames.length - 2} more` : '';
+        checks.add(`Transitive: ${shown}${rest}`);
+    }
+    for (const file of impactedFiles.slice(0, 3)) {
+        checks.add(file);
+    }
+    if (impactedFiles.length > 3) {
+        checks.add(`+${impactedFiles.length - 3} more impacted file(s)`);
+    }
+    if (inferred.length > 0) {
+        // Unconfirmed on purpose: only ever reached via a heuristic/name-matched
+        // edge (e.g. dynamic dispatch), never a resolved, parsed call site.
+        checks.add(`? Possible/inferred paths (${inferred.length}) — worth a manual check`);
     }
     if (!checks.size) {
         checks.add('Changed behavior at call sites');
         checks.add('Nearby tests or examples');
     }
-    return Array.from(checks).slice(0, 5);
+    return Array.from(checks).slice(0, 9);
 }
 function checksForFiles(files) {
     const checks = new Set();
@@ -1405,7 +1746,60 @@ function checksForRemovedChange(change) {
 function riskRank(level) {
     return { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 }[level] ?? 4;
 }
+// cosmetic_only (from python_function_ast_unchanged in helpers.py) is only
+// ever true/false when the parser could locate the same function in both
+// the old and new source and successfully parse both — anything else
+// (non-Python file, parse error, renamed symbol) comes through as null/
+// undefined, which must fall through to the normal impact heuristic below
+// rather than being treated as "confirmed cosmetic."
+function isCosmeticOnlyChange(change) {
+    return change?.cosmetic_only === true;
+}
+function signatureDiffFromChange(change) {
+    const raw = change?.signature_diff;
+    if (!raw || typeof raw !== 'object') {
+        return { changed: false, addedRequired: [], addedOptional: [], removed: [], starArgsChanged: false, starKwargsChanged: false };
+    }
+    const toStrings = (v) => (Array.isArray(v) ? v.map((item) => String(item || '')).filter(Boolean) : []);
+    return {
+        changed: Boolean(raw.changed),
+        addedRequired: toStrings(raw.added_required),
+        addedOptional: toStrings(raw.added_optional),
+        removed: toStrings(raw.removed),
+        starArgsChanged: Boolean(raw.star_args_changed),
+        starKwargsChanged: Boolean(raw.star_kwargs_changed),
+    };
+}
+// call_site_issues (from check_call_sites in scripts/deletion-report.py) are
+// statically PROVEN incompatible — a caller's call expression was parsed and
+// checked against the new signature, not guessed at. Every other outcome
+// (call not found, *args/**kwargs spread, non-Python caller) is left out of
+// this list entirely rather than reported as fine or broken.
+function callSiteIssuesFromChange(change) {
+    const raw = Array.isArray(change?.call_site_issues) ? change.call_site_issues : [];
+    return raw
+        .map((item) => ({
+        caller: String(item?.caller || ''),
+        file: String(item?.file || ''),
+        line: item?.line ? Number(item.line) : undefined,
+        reason: String(item?.reason || ''),
+    }))
+        .filter((issue) => issue.caller && issue.reason);
+}
 function modifiedRisk(change) {
+    if (callSiteIssuesFromChange(change).length > 0) {
+        // Not a heuristic: a call site was parsed and statically proven
+        // incompatible with the new signature. This outranks every fan-in-based
+        // bucket below because it isn't a guess about risk, it's a found bug.
+        return { label: 'Breaking change', level: 'critical' };
+    }
+    if (isCosmeticOnlyChange(change)) {
+        // A git-diff hunk touched the function's line span, but the parsed body
+        // is byte-for-byte identical — whitespace/comments/formatting only.
+        // Fan-in doesn't matter here: nothing behavioral changed, so this never
+        // outranks a real modification regardless of caller count.
+        return { label: 'Cosmetic only', level: 'low' };
+    }
     const impactedNodes = impactedNodesFromChange(change).length;
     const impactedFiles = impactedFilesFromChange(change).length;
     const lowConfidence = Number(change?.confidence?.low || 0);
@@ -1421,14 +1815,17 @@ function modifiedRisk(change) {
     }
     return { label: 'Low', level: 'low' };
 }
-function evidenceConfidence(confidence) {
-    const high = Number(confidence?.high || 0);
-    const low = Number(confidence?.low || 0);
-    const total = high + low;
-    if (!total) {
-        return 'Confidence: no call-edge evidence';
+// Inferred nodes are real signal, not deleted — but they're never allowed to
+// share a headline number with confirmed nodes (a blended "16% confidence"
+// or an equally-sized "116 possible" tile both read as noise). They only
+// ever show up as a secondary, clearly-labeled aside.
+function confirmedEvidenceLines(impactedNodes, nodeConfidence) {
+    const { confirmed, inferred } = confirmedAndInferredNodes(impactedNodes, nodeConfidence);
+    const lines = [`${confirmed.length} confirmed node(s) — reached via a resolved, parsed call edge`];
+    if (inferred.length) {
+        lines.push(`(+ ${inferred.length} more possible/unconfirmed — heuristic or name-matched edges, e.g. dynamic dispatch; not a traced call site)`);
     }
-    return `Confidence: ${Math.round((high / total) * 100)}%`;
+    return lines;
 }
 function changeResultSnippet(change) {
     const impactedFiles = impactedFilesFromChange(change);
@@ -1444,36 +1841,77 @@ function changeResultSnippet(change) {
     }
     return lines.join('\n');
 }
+function signatureDiffLine(diff) {
+    if (!diff.changed) {
+        return null;
+    }
+    const parts = [];
+    if (diff.addedRequired.length) {
+        parts.push(`+required ${diff.addedRequired.join(', ')}`);
+    }
+    if (diff.addedOptional.length) {
+        parts.push(`+optional ${diff.addedOptional.join(', ')}`);
+    }
+    if (diff.removed.length) {
+        parts.push(`-removed ${diff.removed.join(', ')}`);
+    }
+    if (diff.starArgsChanged) {
+        parts.push('*args changed');
+    }
+    if (diff.starKwargsChanged) {
+        parts.push('**kwargs changed');
+    }
+    return `Signature changed: ${parts.length ? parts.join('; ') : 'parameter shape changed'}`;
+}
 function buildModifiedChangeCard(change) {
     const symbol = String(change?.symbol || '');
     const impactedFiles = impactedFilesFromChange(change);
     const impactedNodes = impactedNodesFromChange(change);
-    const confidence = change?.confidence || {};
-    const highEdges = Number(confidence.high || 0);
-    const lowEdges = Number(confidence.low || 0);
+    const nodeConfidence = nodeConfidenceFromChange(change);
+    const { confirmed } = confirmedAndInferredNodes(impactedNodes, nodeConfidence);
     const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
     const risk = modifiedRisk(change);
+    const sigDiff = signatureDiffFromChange(change);
+    const callSiteIssues = callSiteIssuesFromChange(change);
+    const metrics = [
+        { label: 'Files', value: String(impactedFiles.length) },
+        { label: 'Direct callers', value: String(directCallers) },
+        { label: 'Confirmed impact', value: String(confirmed.length) },
+    ];
+    if (callSiteIssues.length) {
+        metrics.push({ label: 'Broken call sites', value: String(callSiteIssues.length) });
+    }
     return {
         kind: 'modified',
         title: 'Modified function',
         symbol,
-        change: 'Function body changed; callers may observe different behavior.',
+        change: callSiteIssues.length
+            ? `Signature change breaks ${callSiteIssues.length} existing call site(s) — see Evidence.`
+            : isCosmeticOnlyChange(change)
+                ? 'Only whitespace, comments, or formatting changed — the parsed body is identical, so behavior is unaffected.'
+                : sigDiff.changed
+                    ? 'Function signature changed; verify all call sites still match.'
+                    : 'Function body changed; callers may observe different behavior.',
         risk: risk.label,
         riskLevel: risk.level,
-        metrics: [
-            { label: 'Files', value: String(impactedFiles.length) },
-            { label: 'Direct callers', value: String(directCallers) },
-            { label: 'Impacted nodes', value: String(impactedNodes.length) },
-            { label: 'Inferred edges', value: String(lowEdges) },
-        ],
+        // Confirmed impact leads the metrics — the only reachable-node count
+        // shown as a headline number. Inferred/possible nodes are real but only
+        // ever surface as a secondary aside (see confirmedEvidenceLines), never
+        // as an equally-weighted tile next to this one.
+        metrics,
+        // Broken call sites are a proven fact (a parsed call checked against the
+        // new signature), so they lead Evidence — ahead of the signature-diff
+        // summary and the reachable-node counts, which are risk signals, not
+        // findings.
         evidence: [
-            `${highEdges} parser-confirmed edge(s)`,
-            `${lowEdges} inferred edge(s)`,
-            evidenceConfidence(confidence),
+            ...callSiteIssues.map((issue) => `Broken call: ${compactSymbolName(issue.caller)} (${issue.file}${issue.line ? ':' + issue.line : ''}) — ${issue.reason}`),
+            ...(signatureDiffLine(sigDiff) ? [signatureDiffLine(sigDiff)] : []),
+            ...confirmedEvidenceLines(impactedNodes, nodeConfidence),
         ],
         checks: checksForChange(change),
         actions: ['View diff', 'View impact graph'],
         startCollapsed: true,
+        cosmeticOnly: isCosmeticOnlyChange(change),
     };
 }
 function buildDeletedChangeCard(change) {
@@ -1536,7 +1974,11 @@ function blastRadiusEntriesFromReport(report) {
     const modified = Array.isArray(report?.modified) ? report.modified : [];
     const entries = [];
     for (const change of modified) {
-        const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+        const directCallers = directCallersFromLevels(change);
+        // Which changes get flagged stays based on total reachable nodes
+        // (confirmed + inferred) on purpose — filtering this to confirmed-only
+        // would silently drop wide-but-mostly-inferred changes from the report
+        // entirely (a recall regression), not just declutter the display.
         const totalUpstream = impactedNodesFromChange(change).length;
         if (directCallers >= BLAST_RADIUS_DIRECT_CALLER_THRESHOLD || totalUpstream >= BLAST_RADIUS_TOTAL_UPSTREAM_THRESHOLD) {
             entries.push({
@@ -1545,6 +1987,8 @@ function blastRadiusEntriesFromReport(report) {
                 directCallers,
                 totalUpstream,
                 affectedFiles: impactedFilesFromChange(change),
+                affectedNodes: impactedNodesFromChange(change),
+                nodeConfidence: nodeConfidenceFromChange(change),
             });
         }
     }
@@ -1557,6 +2001,7 @@ function buildBlastRadiusCard(entry) {
     const affects = shownFiles.length
         ? `Affects: ${shownFiles.join(', ')}${moreFiles > 0 ? `, +${moreFiles} more` : ''}`
         : 'Affects: no file mapping available for the callgraph nodes reached';
+    const { confirmed } = confirmedAndInferredNodes(entry.affectedNodes, entry.nodeConfidence);
     return {
         kind: 'blastRadius',
         title: 'High blast radius',
@@ -1564,17 +2009,19 @@ function buildBlastRadiusCard(entry) {
         change: 'Function body changed and has enough callers that a behavior change could ripple widely.',
         risk: 'High',
         riskLevel: 'high',
+        // Same rule as buildModifiedChangeCard: confirmed impact is the headline
+        // number; inferred/possible nodes stay out of the metrics grid.
         metrics: [
             { label: 'Direct callers', value: String(entry.directCallers) },
-            { label: 'Total upstream-affected', value: String(entry.totalUpstream) },
+            { label: 'Confirmed impact', value: String(confirmed.length) },
             { label: 'Files affected', value: String(entry.affectedFiles.length) },
         ],
-        evidence: [affects],
+        evidence: [affects, ...confirmedEvidenceLines(entry.affectedNodes, entry.nodeConfidence)],
         checks: checksForChange({
             impact_files: entry.affectedFiles,
-            impact_radius: Array.from({ length: entry.totalUpstream }, (_, index) => String(index)),
+            impact_radius: entry.affectedNodes,
             levels: Object.fromEntries(Array.from({ length: entry.directCallers }, (_, index) => [`caller-${index}`, 1])),
-            confidence: {},
+            node_confidence: entry.nodeConfidence,
         }),
         actions: ['View diff', 'View impact graph'],
         startCollapsed: true,
@@ -1590,7 +2037,22 @@ function buildChangesAnswer(report) {
             impactedFileSet.add(file);
         }
     }
-    const lines = [`${modified.length + deleted.length} analyzed function change(s).`];
+    // These three counts are statically PROVEN facts (from python_function_
+    // signature_diff / check_call_sites), not heuristic risk scores — lead
+    // with them so the one or two changes actually worth opening aren't
+    // buried under the raw "118 functions changed" count.
+    const breaking = modified.filter((m) => callSiteIssuesFromChange(m).length > 0);
+    const cosmeticOnly = modified.filter((m) => isCosmeticOnlyChange(m));
+    const unprovenSignatureChanges = modified.filter((m) => !isCosmeticOnlyChange(m) && callSiteIssuesFromChange(m).length === 0 && signatureDiffFromChange(m).changed);
+    const lines = [];
+    if (breaking.length) {
+        lines.push(`${breaking.length} breaking change(s) found — a call site is provably incompatible with a new signature.`);
+    }
+    if (unprovenSignatureChanges.length) {
+        lines.push(`${unprovenSignatureChanges.length} other signature change(s) — worth a manual look; no incompatible call site was proven.`);
+    }
+    const cosmeticNote = cosmeticOnly.length ? ` (${cosmeticOnly.length} cosmetic-only, collapsed below)` : '';
+    lines.push(`${modified.length + deleted.length} analyzed function change(s)${cosmeticNote}.`);
     if (impactedFileSet.size) {
         lines.push(`${impactedFileSet.size} impacted file(s) found by the callgraph.`);
     }
@@ -1612,15 +2074,16 @@ function mcpSetupHelpText(folder, context) {
             'Claude Code:',
             `1. Close any running Claude Code session for ${workspace}.`,
             `2. Open a terminal in ${workspace} and run: claude`,
-            `"${MCP_SERVER_NAME}" was already approved for this workspace (.claude/settings.local.json), no /mcp approval needed.`,
+            `3. The CODE.md button can open Claude Code and send /mcp automatically.`,
+            `"${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) was already approved for this workspace (.claude/settings.local.json), so no /mcp approval should be needed.`,
             'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
         ]
         : [
             'Claude Code:',
             `1. Close any running Claude Code session for ${workspace}.`,
             `2. Open a terminal in ${workspace} and run: claude`,
-            '3. In Claude Code, type: /mcp',
-            `4. If "${MCP_SERVER_NAME}" is pending approval, approve it there. You can also check from a terminal with: claude mcp list`,
+            '3. In Claude Code, type: /mcp. The CODE.md button can do this automatically after launching Claude Code.',
+            `4. If "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pending approval, approve it there. You can also check from a terminal with: claude mcp list`,
             'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
         ];
     return [
@@ -1631,13 +2094,13 @@ function mcpSetupHelpText(folder, context) {
         'Codex CLI:',
         `1. Close the current Codex session for ${workspace}.`,
         `2. Open a new terminal in ${workspace} and run: codex`,
-        `3. Codex should read "${MCP_SERVER_NAME}" from: ${codexUserConfigPath()}`,
+        `3. Codex should read "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) from: ${codexUserConfigPath()}`,
         '4. The current session will not hot-reload MCP config; it must be a new session.',
-        `5. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
+        `5. Type /mcp, or use the CODE.md button to send it automatically after launching Codex. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
         'If Windows says "codex is not recognized", install the Codex CLI or add it to PATH first.',
         '',
         'Other MCP clients:',
-        `Use a stdio MCP server named "${MCP_SERVER_NAME}".`,
+        `Use a stdio MCP server named "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`,
         `Command: node ${mcpServerArgs(context, workspace).join(' ')}`,
         'Approval is controlled by the MCP client. CODE.md can register the server, but the user must approve/trust it inside the client when prompted.',
         '',
@@ -1691,7 +2154,7 @@ class GraphsViewProvider {
     busy = false;
     hasGenerated = false;
     // Preferred graph source: the mirrored HTML file already sitting in
-    // codemd.dev/, which renders instantly without needing the local server up.
+    // .codemd/, which renders instantly without needing the local server up.
     lastGraphFileUri = null;
     displayedGraphFileUri = null;
     // Fallback for graphs the local mirror doesn't cover (e.g. search results),
@@ -1726,29 +2189,36 @@ class GraphsViewProvider {
     startupChangesCheckStarted = false;
     constructor(context) {
         this.context = context;
+        outputChannel?.appendLine('[GraphsViewProvider.ctor] begin');
         this.ensureLocalGraphLoaded();
         this.captureSessionStartGitRef();
+        outputChannel?.appendLine('[GraphsViewProvider.ctor] end');
     }
     captureSessionStartGitRef() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
             return;
         }
-        const result = (0, child_process_1.spawnSync)('git', ['rev-parse', 'HEAD'], { cwd: folder.uri.fsPath, encoding: 'utf8' });
-        this.sessionStartGitRef = result.status === 0 ? result.stdout.trim() : null;
+        execGitAsync(['rev-parse', 'HEAD'], folder.uri.fsPath).then((result) => {
+            this.sessionStartGitRef = result.status === 0 ? result.stdout.trim() : null;
+        });
     }
     runStartupChangesCheck() {
         if (this.startupChangesCheckStarted) {
             return;
         }
         this.startupChangesCheckStarted = true;
-        this.runChangesCheck({ focusLatestChange: true });
+        this.runChangesCheck({ focusHighestImpact: true });
     }
     async reveal() {
+        outputChannel?.appendLine('[reveal] executing workbench.view.extension.codemdGraphs');
         await vscode.commands.executeCommand('workbench.view.extension.codemdGraphs');
+        outputChannel?.appendLine('[reveal] executing codemdGraphs.panel.focus');
         await vscode.commands.executeCommand('codemdGraphs.panel.focus');
+        outputChannel?.appendLine('[reveal] done');
     }
     resolveWebviewView(webviewView) {
+        outputChannel?.appendLine('[resolveWebviewView] panel is being resolved.');
         this.view = webviewView;
         const folder = vscode.workspace.workspaceFolders?.[0];
         webviewView.webview.options = {
@@ -1775,6 +2245,7 @@ class GraphsViewProvider {
         }
         this.refreshMcpUsage(folder);
         this.ensureMcpUsageWatcher(folder);
+        outputChannel?.appendLine('[resolveWebviewView] panel resolution finished.');
     }
     openEditorPanel() {
         const folder = vscode.workspace.workspaceFolders?.[0];
@@ -1827,12 +2298,12 @@ class GraphsViewProvider {
         this.graphPanel.webview.html = getFullGraphHtml(url, this.graphPanel.webview.cspSource);
         this.graphPanel.reveal(vscode.ViewColumn.Active, false);
     }
-    refreshMcpUsage(folder = vscode.workspace.workspaceFolders?.[0]) {
+    async refreshMcpUsage(folder = vscode.workspace.workspaceFolders?.[0]) {
         if (!folder) {
-            this.post({ type: 'mcpUsage', serverName: MCP_SERVER_NAME, configured: false, totalCalls: 0, updatedAt: '', stale: true, clients: [], setup: null, restartNeeded: false });
+            this.post({ type: 'mcpUsage', serverName: MCP_SERVER_NAME, configured: false, totalCalls: 0, updatedAt: '', stale: true, clients: [], toolsByClient: {}, setup: null, restartNeeded: false });
             return;
         }
-        const usage = readMcpUsage(folder);
+        const usage = await readMcpUsage(folder);
         this.post({
             type: 'mcpUsage',
             serverName: MCP_SERVER_NAME,
@@ -1841,6 +2312,7 @@ class GraphsViewProvider {
             updatedAt: usage.updatedAt,
             stale: usage.stale,
             clients: usage.clients,
+            toolsByClient: usage.toolsByClient,
             setup: usage.setup,
             restartNeeded: usage.restartNeeded,
         });
@@ -1875,20 +2347,33 @@ class GraphsViewProvider {
     ensureLocalGraphLoaded(folder) {
         folder = folder || vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
+            outputChannel?.appendLine('[ensureLocalGraphLoaded] no workspace folder available yet — skipping.');
             return;
         }
         const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
         const candidate = localGraphFileUri(outDirUri);
-        if (!this.lastGraphFileUri && !this.localGraphReadyPromise && fs.existsSync(candidate.fsPath)) {
-            this.lastStatus = `Found an existing ${ARTIFACT_OUTPUT_DIR}/ callgraph — preparing it for display…`;
-            statusBarItem.text = '$(sync~spin) CODE.md: preparing existing callgraph';
-            statusBarItem.tooltip = 'CODE.md: preparing existing callgraph for display';
+        const candidateExists = fs.existsSync(candidate.fsPath);
+        outputChannel?.appendLine(`[ensureLocalGraphLoaded] candidate=${candidate.fsPath} exists=${candidateExists} `
+            + `lastGraphFileUri=${!!this.lastGraphFileUri} localGraphReadyPromise=${!!this.localGraphReadyPromise}`);
+        if (!this.lastGraphFileUri && !this.localGraphReadyPromise && candidateExists) {
+            this.hasGenerated = true;
+            this.lastGraphFileUri = candidate;
+            this.lastDisplayedServerGraphUrl = '';
+            this.displayedGraphFileUri = candidate;
+            this.lastStatus = `Showing existing ${ARTIFACT_OUTPUT_DIR}/ callgraph.`;
+            statusBarItem.text = '$(check) CODE.md: graph ready';
+            statusBarItem.tooltip = 'CODE.md: showing existing callgraph';
+            outputChannel?.appendLine(`[ensureLocalGraphLoaded] adopting on-disk graph, posting to webview (view=${!!this.view} viewReady=${this.viewReady}).`);
             this.post({ type: 'status', text: this.lastStatus });
+            this.postDisplayedGraph();
+            const index = this.getLocalSearchIndex();
+            outputChannel?.appendLine(`[ensureLocalGraphLoaded] search index ${index ? `loaded (${index.nodes.length} nodes)` : 'FAILED to load'}.`);
             this.localGraphReadyPromise = repairMirroredArtifactsForWebview(this.context, outDirUri)
                 .catch((err) => {
                 outputChannel?.appendLine(`Skipped startup graph repair: ${err?.message || String(err)}`);
             })
                 .then(() => {
+                outputChannel?.appendLine(`[ensureLocalGraphLoaded] repair finished, re-posting graph (view=${!!this.view} viewReady=${this.viewReady}).`);
                 this.hasGenerated = true;
                 this.lastGraphFileUri = candidate;
                 // A search performed earlier in this session (or a leftover from
@@ -1939,9 +2424,13 @@ class GraphsViewProvider {
     postGraph() {
         if (this.view && this.viewReady) {
             const url = this.resolveGraphUrlForWebview(this.view.webview);
+            outputChannel?.appendLine(`[postGraph] view ready, resolved url=${url ? url.slice(0, 120) : '(empty)'}`);
             if (url) {
                 this.view.webview.postMessage({ type: 'graph', url });
             }
+        }
+        else {
+            outputChannel?.appendLine(`[postGraph] skipped — view=${!!this.view} viewReady=${this.viewReady}`);
         }
         if (this.sidePanel && this.sidePanelReady) {
             const url = this.resolveGraphUrlForWebview(this.sidePanel.webview);
@@ -1985,8 +2474,18 @@ class GraphsViewProvider {
     }
     handleMessage(message, source = 'view') {
         if (!message || typeof message.type !== 'string') {
+            outputChannel?.appendLine(`[handleMessage] dropped malformed message from ${source}: ${JSON.stringify(message)}`);
             return;
         }
+        outputChannel?.appendLine(`[handleMessage] received type="${message.type}" from ${source}.`);
+        try {
+            this.handleMessageInner(message, source);
+        }
+        catch (err) {
+            outputChannel?.appendLine(`[handleMessage] threw while handling type="${message.type}": ${err?.stack || err?.message || String(err)}`);
+        }
+    }
+    handleMessageInner(message, source = 'view') {
         if (message.type === 'generate') {
             this.runGenerate({ quiet: false });
         }
@@ -2014,11 +2513,20 @@ class GraphsViewProvider {
         else if (message.type === 'setupMcp') {
             this.setupMcpFromPanel();
         }
+        else if (message.type === 'approveClaude') {
+            this.approveClaudeFromPanel();
+        }
+        else if (message.type === 'approveCodex') {
+            this.approveCodexFromPanel();
+        }
         else if (message.type === 'openMcpClient') {
             this.openMcpClient(String(message.client || ''));
         }
         else if (message.type === 'viewDiff') {
             this.viewDiff(String(message.file || ''));
+        }
+        else if (message.type === 'clientError') {
+            outputChannel?.appendLine(`[webview error] ${message.message || ''} (${message.source || ''}:${message.line || ''})\n${message.stack || ''}`);
         }
         else if (message.type === 'ready') {
             // The webview's script has just attached its message listener — resend
@@ -2037,10 +2545,13 @@ class GraphsViewProvider {
                 this.post({ type: 'generated' });
             }
             this.refreshMcpUsage();
+            if (source === 'view') {
+                setTimeout(() => this.runStartupChangesCheck(), 250);
+            }
         }
     }
     async setupMcpFromPanel() {
-        await setupProjectMcpConfigs(this.context, { quiet: false });
+        const changed = await setupProjectMcpConfigs(this.context, { quiet: false });
         this.refreshMcpUsage();
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (folder) {
@@ -2054,16 +2565,54 @@ class GraphsViewProvider {
             };
             this.rememberSearchResult(resultMessage);
             this.post(resultMessage);
-            const choice = await vscode.window.showInformationMessage('CODE.md: MCP config is ready. Start a fresh client session from this workspace to approve/use codemd.', 'Open Codex', 'Open Claude Code');
-            if (choice === 'Open Codex') {
+            // Always offer to launch a client terminal on this explicit,
+            // user-initiated button press. Gating this on `changed` used to assume
+            // an already-approved server is already connected in some running
+            // session, but approval and actual connection are independent — a
+            // client can be approved yet still show the server as failed/missing
+            // (e.g. its CLI isn't on PATH), so the user needs this action every time.
+            const choice = await vscode.window.showInformationMessage(changed
+                ? 'CODE.md: MCP config is ready. Start a fresh client session and open /mcp to approve/use codemd.'
+                : 'CODE.md: MCP config is already up to date. Open a client terminal to connect/reconnect codemd.', 'Open Codex /mcp', 'Open Claude Code /mcp');
+            if (choice === 'Open Codex /mcp') {
                 openMcpClientTerminal('codex', folder);
             }
-            else if (choice === 'Open Claude Code') {
+            else if (choice === 'Open Claude Code /mcp') {
                 openMcpClientTerminal('claude', folder);
             }
             return;
         }
         vscode.window.showInformationMessage('CODE.md: MCP config is ready. See the CODE.md panel for exact Claude Code and Codex restart/check steps.');
+    }
+    async approveClaudeFromPanel() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            vscode.window.showWarningMessage('CODE.md: Open a workspace before approving an MCP client.');
+            return;
+        }
+        try {
+            await approveClaudeMcpServer(folder);
+            this.refreshMcpUsage();
+            vscode.window.showInformationMessage(`CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for Claude Code in "${folder.name}". Start a new Claude Code session to pick it up.`);
+        }
+        catch (err) {
+            vscode.window.showErrorMessage(`CODE.md: Could not approve Claude MCP: ${err?.message || String(err)}`);
+        }
+    }
+    async approveCodexFromPanel() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            vscode.window.showWarningMessage('CODE.md: Open a workspace before approving an MCP client.');
+            return;
+        }
+        try {
+            await approveCodexMcpServer(this.context, folder);
+            this.refreshMcpUsage();
+            vscode.window.showInformationMessage(`CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) tools are auto-approved for Codex in "${folder.name}". Start a new Codex session to pick it up.`);
+        }
+        catch (err) {
+            vscode.window.showErrorMessage(`CODE.md: Could not approve Codex MCP: ${err?.message || String(err)}`);
+        }
     }
     openMcpClient(client) {
         const folder = vscode.workspace.workspaceFolders?.[0];
@@ -2168,7 +2717,7 @@ class GraphsViewProvider {
         // reload — skip them entirely when git shows no changes since the last
         // completed analysis. An explicit "Generate" click always runs for real.
         if (quiet && fs.existsSync(graphFileUri.fsPath)) {
-            const currentHash = computeGitStateHash(folder.uri.fsPath);
+            const currentHash = await computeGitStateHash(folder.uri.fsPath);
             const storedHash = readStoredGitStateHash(outDirUri);
             if (currentHash && storedHash && currentHash === storedHash) {
                 const resultPath = localAnalysisResultFileUri(outDirUri).fsPath;
@@ -2252,7 +2801,7 @@ class GraphsViewProvider {
                     this.displayedGraphFileUri = this.lastGraphFileUri;
                 }
                 this.postGraph();
-                const newGitHash = computeGitStateHash(folder.uri.fsPath);
+                const newGitHash = await computeGitStateHash(folder.uri.fsPath);
                 if (newGitHash) {
                     await writeStoredGitStateHash(outDirUri, newGitHash);
                 }
@@ -2310,12 +2859,15 @@ class GraphsViewProvider {
         if (!trimmed) {
             return;
         }
+        outputChannel?.appendLine(`[runSearch] query="${trimmed}"`);
         const index = this.getLocalSearchIndex();
         if (!index) {
+            outputChannel?.appendLine('[runSearch] no local search index available.');
             this.post({ type: 'searchResult', error: 'No local callgraph found yet — click Regenerate to build one, then search again.' });
             return;
         }
         const results = searchLocalCallgraph(index, trimmed, 12);
+        outputChannel?.appendLine(`[runSearch] ${results.length} result(s), posting (view=${!!this.view} viewReady=${this.viewReady}).`);
         const resultMessage = {
             type: 'searchResult',
             query: trimmed,
@@ -2365,6 +2917,9 @@ class GraphsViewProvider {
                         fullName: result?.fullName || '',
                         symbol: result?.symbol || '',
                         name: result?.name || '',
+                        file: result?.file || '',
+                        impact_nodes: Array.isArray(result?.impactNodes) ? result.impactNodes : [],
+                        impact_files: Array.isArray(result?.impactFiles) ? result.impactFiles : [],
                     },
                 }),
             });
@@ -2377,7 +2932,7 @@ class GraphsViewProvider {
             if (graphUrl) {
                 this.lastDisplayedServerGraphUrl = `${this.baseUrl}${graphUrl}`;
                 this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
-                this.post({ type: 'status', text: 'Ready.' });
+                this.post({ type: 'status', text: (result?.impactNodes || result?.impactFiles) ? 'Showing highlighted impact graph.' : 'Ready.' });
             }
             else {
                 // No callgraph node matched this result — fall back to whichever
@@ -2459,7 +3014,7 @@ class GraphsViewProvider {
         this.changesBusy = true;
         this.post({ type: 'status', text: 'Checking what changed since this session started…' });
         try {
-            const { report, usingSessionStart } = await this.runDeletionReportScript(folder);
+            const { report } = await this.runDeletionReportScript(folder);
             if (report.error) {
                 this.post({ type: 'status', text: `Error checking changes: ${report.error}` });
                 return;
@@ -2480,6 +3035,9 @@ class GraphsViewProvider {
                     fullName: symbol,
                     symbol: tail,
                     name: tail,
+                    impactNodes: impactedNodesFromChange(d),
+                    impactFiles: impactedFilesFromChange(d),
+                    impactScore: impactScoreForDeletedChange(d),
                     changeTime: this.changeTimeForFile(folder, file),
                 });
             }
@@ -2498,6 +3056,14 @@ class GraphsViewProvider {
                     fullName: symbol,
                     symbol: tail,
                     name: tail,
+                    // Only confirmed (resolved, parsed call edge) nodes seed the initial
+                    // cytoscape view — inferred/possible nodes are real but would drown
+                    // the diagram (e.g. 30 confirmed vs. 93 heuristic). They're still
+                    // reachable by clicking through the graph since the full callgraph
+                    // stays loaded underneath.
+                    impactNodes: confirmedAndInferredNodes(impactedNodesFromChange(m), nodeConfidenceFromChange(m)).confirmed,
+                    impactFiles: impactedFilesFromChange(m),
+                    impactScore: impactScoreForModifiedChange(m),
                     changeTime: this.changeTimeForFile(folder, file),
                 });
             }
@@ -2514,6 +3080,9 @@ class GraphsViewProvider {
                     fullName: 'other changed files',
                     symbol: 'other changed files',
                     name: 'other changed files',
+                    impactNodes: [],
+                    impactFiles: unsupportedFiles,
+                    impactScore: unsupportedFiles.length * 3,
                     changeTime: Math.max(0, ...unsupportedFiles.map((file) => this.changeTimeForFile(folder, file))),
                 });
             }
@@ -2521,31 +3090,22 @@ class GraphsViewProvider {
                 const riskDelta = riskRank(a.changeCard?.riskLevel || 'unknown') - riskRank(b.changeCard?.riskLevel || 'unknown');
                 return riskDelta || ((b.changeTime || 0) - (a.changeTime || 0));
             });
-            let answer = (report.summary || []).join('\n');
-            if (!report.callgraph_available) {
-                answer += '\n(No callgraph found yet — severities are unscored. Regenerate CODE.md for full scoring.)';
-            }
-            if ((report.unsupported_files || []).length) {
-                const files = (report.unsupported_files || []).map((f) => String(f)).filter(Boolean);
-                const shown = files.slice(0, 8).join(', ');
-                const more = files.length > 8 ? `, +${files.length - 8} more` : '';
-                answer += `\nChanged files not function-analyzed yet (${files.length}): ${shown}${more}`;
-            }
-            answer = buildChangesAnswer(report);
+            const answer = buildChangesAnswer(report);
             const resultMessage = {
                 type: 'searchResult',
                 kind: 'changes',
                 replace: true,
-                query: usingSessionStart ? 'Latest edits since this session started' : 'Latest edits since HEAD',
+                query: 'Uncommitted Edits',
                 answer,
+                defaultSort: 'impact',
                 results,
             };
             this.rememberSearchResult(resultMessage);
             this.post(resultMessage);
-            if (options.focusLatestChange && results.length) {
-                const latest = results[0];
-                this.post({ type: 'status', text: `Showing latest change in the graph: ${latest.symbol || latest.name || latest.label}` });
-                await this.runResultGraph(latest);
+            if (options.focusHighestImpact && results.length) {
+                const highestImpact = [...results].sort((a, b) => (b.impactScore || 0) - (a.impactScore || 0))[0];
+                this.post({ type: 'status', text: `Showing highest-impact change in the graph: ${highestImpact.symbol || highestImpact.name || highestImpact.label}` });
+                await this.runResultGraph(highestImpact);
             }
             else {
                 this.post({ type: 'status', text: 'Ready.' });
@@ -2597,6 +3157,12 @@ class GraphsViewProvider {
                     fullName: entry.symbol,
                     symbol: tail,
                     name: tail,
+                    // Same confirmed-only filtering as the modified-change graph above —
+                    // the blast radius card's own headline count already excludes
+                    // inferred nodes, so the graph it links to should match.
+                    impactNodes: confirmedAndInferredNodes(entry.affectedNodes, entry.nodeConfidence).confirmed,
+                    impactFiles: entry.affectedFiles,
+                    impactScore: (entry.directCallers * 20) + (entry.totalUpstream * 8) + (entry.affectedFiles.length * 12),
                     changeTime: this.changeTimeForFile(folder, entry.file),
                 };
             });
@@ -2610,6 +3176,7 @@ class GraphsViewProvider {
                 replace: true,
                 query: 'Blast Radius Report',
                 answer,
+                defaultSort: 'impact',
                 results,
             };
             this.rememberSearchResult(resultMessage);
@@ -2623,7 +3190,7 @@ class GraphsViewProvider {
             this.changesBusy = false;
         }
     }
-    runLatestCommitsCheck() {
+    async runLatestCommitsCheck() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
             return;
@@ -2635,7 +3202,7 @@ class GraphsViewProvider {
         this.commitsBusy = true;
         this.post({ type: 'status', text: 'Checking latest commits...' });
         try {
-            const result = (0, child_process_1.spawnSync)('git', [
+            const result = await execGitAsync([
                 'log',
                 '--date=short',
                 '--name-status',
@@ -2643,7 +3210,7 @@ class GraphsViewProvider {
                 '-n',
                 '8',
                 '--',
-            ], { cwd: folder.uri.fsPath, encoding: 'utf8' });
+            ], folder.uri.fsPath);
             if (result.status !== 0) {
                 this.post({ type: 'status', text: `Error checking latest commits: ${(result.stderr || '').trim() || result.status}` });
                 return;
@@ -2735,17 +3302,19 @@ function getHtml(host, port, cspSource) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; frame-src ${cspSource} ${frameOrigin} http://127.0.0.1:* http://localhost:*;">
 <style>
   html, body { height: 100%; margin: 0; padding: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-sideBar-background); }
-  body { display: flex; flex-direction: column; }
+  body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   #graphPane { flex: 3 1 0; min-height: 120px; border-bottom: 1px solid var(--vscode-panel-border); position: relative; }
   #graphFrame { width: 100%; height: 100%; border: none; display: none; }
   #emptyState { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 12px; }
   #emptyState p { margin: 0; opacity: 0.8; font-size: 12px; }
+  #emptyState p.emptyStateError { opacity: 1; color: var(--vscode-errorForeground); }
+  #emptyStateRetryBtn { display: none; }
   button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 12px; border-radius: 2px; cursor: pointer; }
   button:hover { background: var(--vscode-button-hoverBackground); }
-  #chatPane { flex: 2 1 0; display: flex; flex-direction: column; min-height: 100px; }
+  #chatPane { flex: 2 1 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   #statusRow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
   #statusLine { flex: 1 1 150px; min-width: 120px; font-size: 11px; opacity: 0.7; }
-  #statusRow button { flex: 0 0 auto; max-width: 124px; padding: 2px 8px; font-size: 11px; line-height: 1.2; white-space: normal; }
+  #statusRow button { flex: 0 0 auto; max-width: none; padding: 2px 8px; font-size: 11px; line-height: 1.2; white-space: nowrap; }
   body.graph-expanded #graphPane { flex: 1 1 auto; min-height: 100%; border-bottom: 0; }
   body.graph-expanded #chatPane { display: none; }
   #graphToolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
@@ -2769,12 +3338,21 @@ function getHtml(host, port, cspSource) {
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
   #setupMcpBtn { margin-left: auto; flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
-  #messages { flex: 1; overflow-y: auto; padding: 8px; }
+  body.has-results #mcpUsageCard { margin: 6px 8px; padding: 6px 10px; }
+  body.has-results #mcpUsageLabel { font-size: 12px; }
+  body.has-results #mcpUsageSubtitle,
+  body.has-results #mcpSetupStatus,
+  body.has-results #mcpActionRow,
+  body.has-results #mcpUsageByClient { display: none; }
+  #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
   .msg .query { font-weight: 600; margin-bottom: 4px; }
   .msg .answer { white-space: pre-wrap; font-size: 12px; margin-bottom: 6px; }
   .msg .error { color: var(--vscode-errorForeground); font-size: 12px; }
-  .result { font-size: 11px; padding: 3px 6px; border-radius: 2px; margin-bottom: 3px; cursor: pointer; background: var(--vscode-list-hoverBackground); }
+  .resultToolbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0 0 8px; font-size: 11px; opacity: 0.9; }
+  .resultToolbar label { opacity: 0.8; }
+  .resultToolbar select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 2px 6px; font-size: 11px; }
+  .result { font-size: 12px; padding: 6px 8px; border-radius: 3px; margin-bottom: 5px; cursor: pointer; background: var(--vscode-list-hoverBackground); }
   .result:hover { background: var(--vscode-list-activeSelectionBackground); }
   .result .label { font-weight: 600; }
   .result .loc { opacity: 0.7; }
@@ -2798,10 +3376,18 @@ function getHtml(host, port, cspSource) {
   .actionChip { border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 1px 5px; opacity: 0.88; }
   .actionChipClickable { cursor: pointer; }
   .actionChipClickable:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  .evidenceFileLink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .evidenceFileLink:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
   .detailsToggle { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 0 4px; font-size: 10px; line-height: 16px; cursor: pointer; }
   .detailsToggle:hover { background: var(--vscode-list-hoverBackground); }
-  #searchForm { display: flex; gap: 4px; padding: 8px; border-top: 1px solid var(--vscode-panel-border); }
+  .changeGroupBody { display: grid; gap: 5px; margin-top: 2px; }
+  .changeGroupBody .result { margin-bottom: 0; }
+  #searchForm { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
   #queryInput { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 6px; }
+  @media (max-width: 480px) {
+    #statusRow button { flex: 1 1 calc(50% - 6px); white-space: normal; }
+    #setupMcpBtn { margin-left: 0; }
+  }
 </style>
 </head>
 <body>
@@ -2811,7 +3397,8 @@ function getHtml(host, port, cspSource) {
       <button id="expandGraphBtn" title="Make the graph fill this side window">Expand</button>
     </div>
     <div id="emptyState">
-      <p>Analyzing this workspace in the background — the callgraph will appear here automatically.</p>
+      <p id="emptyStateText">Analyzing this workspace in the background — the callgraph will appear here automatically.</p>
+      <button id="emptyStateRetryBtn" title="Try generating the callgraph again">Retry</button>
     </div>
     <iframe id="graphFrame"></iframe>
   </div>
@@ -2823,17 +3410,19 @@ function getHtml(host, port, cspSource) {
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
     </div>
-    <div id="mcpUsageCard" title="Claude/Codex MCP accesses observed by the CODE.md wrapper.">
+    <div id="mcpUsageCard" title="Claude/Codex CODE.md callgraph usage observed by the MCP wrapper.">
       <div id="mcpUsageHeadline">
         <span class="mcpDot"></span>
-        <span id="mcpUsageLabel">CODE.md MCP accesses: 0</span>
+        <span id="mcpUsageLabel">CODE.md callgraph: Codex 0, Claude 0</span>
         <button id="setupMcpBtn" title="Write Claude/Codex MCP config for this workspace. You may still need to approve the server in your client.">Set Up MCP</button>
       </div>
       <div id="mcpUsageSubtitle"></div>
       <div id="mcpSetupStatus"></div>
       <div id="mcpActionRow">
-        <button id="openCodexBtn" title="Start a fresh Codex session in this workspace.">Open Codex</button>
-        <button id="openClaudeBtn" title="Start Claude Code in this workspace.">Open Claude Code</button>
+        <button id="approveCodexBtn" title="Auto-approve codemd's tools in Codex so it stops prompting per call.">Approve Codex MCP</button>
+        <button id="approveClaudeBtn" title="Pre-approve codemd for Claude Code via .claude/settings.local.json.">Approve Claude MCP</button>
+        <button id="openCodexBtn" title="Start a fresh Codex session in this workspace and open /mcp.">Open Codex /mcp</button>
+        <button id="openClaudeBtn" title="Start Claude Code in this workspace and open /mcp.">Open Claude Code /mcp</button>
       </div>
       <div id="mcpUsageByClient"></div>
     </div>
@@ -2845,8 +3434,26 @@ function getHtml(host, port, cspSource) {
   </div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
+  window.addEventListener('error', (event) => {
+    vscode.postMessage({
+      type: 'clientError',
+      message: String(event?.message || 'unknown error'),
+      source: String(event?.filename || ''),
+      line: event?.lineno,
+      stack: event?.error?.stack ? String(event.error.stack) : '',
+    });
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    vscode.postMessage({
+      type: 'clientError',
+      message: 'Unhandled promise rejection: ' + String(event?.reason?.message || event?.reason || 'unknown'),
+      stack: event?.reason?.stack ? String(event.reason.stack) : '',
+    });
+  });
   const graphFrame = document.getElementById('graphFrame');
   const emptyState = document.getElementById('emptyState');
+  const emptyStateText = document.getElementById('emptyStateText');
+  const emptyStateRetryBtn = document.getElementById('emptyStateRetryBtn');
   const statusLine = document.getElementById('statusLine');
   const mcpUsageCard = document.getElementById('mcpUsageCard');
   const mcpUsageLabel = document.getElementById('mcpUsageLabel');
@@ -2854,6 +3461,8 @@ function getHtml(host, port, cspSource) {
   const mcpSetupStatus = document.getElementById('mcpSetupStatus');
   const openCodexBtn = document.getElementById('openCodexBtn');
   const openClaudeBtn = document.getElementById('openClaudeBtn');
+  const approveCodexBtn = document.getElementById('approveCodexBtn');
+  const approveClaudeBtn = document.getElementById('approveClaudeBtn');
   const mcpUsageByClient = document.getElementById('mcpUsageByClient');
   const setupMcpBtn = document.getElementById('setupMcpBtn');
   const messages = document.getElementById('messages');
@@ -2870,6 +3479,10 @@ function getHtml(host, port, cspSource) {
     vscode.postMessage({ type: 'generate' });
   });
 
+  emptyStateRetryBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'generate' });
+  });
+
   setupMcpBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'setupMcp' });
   });
@@ -2880,6 +3493,14 @@ function getHtml(host, port, cspSource) {
 
   openClaudeBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'openMcpClient', client: 'claude' });
+  });
+
+  approveCodexBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'approveCodex' });
+  });
+
+  approveClaudeBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'approveClaude' });
   });
 
   checkChangesBtn.addEventListener('click', () => {
@@ -2928,6 +3549,40 @@ function getHtml(host, port, cspSource) {
     section.appendChild(heading);
     const body = document.createElement('div');
     body.textContent = items.join(' • ');
+    section.appendChild(body);
+    parent.appendChild(section);
+  }
+
+  // Files bucketed into the "Other changed files" card have no single graph
+  // node to hang a "View diff" action chip off of, but each entry is still a
+  // real file — so make the evidence list itself clickable instead.
+  function renderEvidenceFiles(parent, title, files) {
+    if (!files || !files.length) { return; }
+    const section = document.createElement('div');
+    section.className = 'changeSection';
+    const heading = document.createElement('div');
+    heading.className = 'changeSectionTitle';
+    heading.textContent = title;
+    section.appendChild(heading);
+    const body = document.createElement('div');
+    files.forEach((file, index) => {
+      if (index > 0) {
+        body.appendChild(document.createTextNode(' • '));
+      }
+      if (file.startsWith('+') && file.endsWith(' more')) {
+        body.appendChild(document.createTextNode(file));
+        return;
+      }
+      const link = document.createElement('span');
+      link.className = 'evidenceFileLink';
+      link.textContent = file;
+      link.title = 'View diff for ' + file;
+      link.addEventListener('click', (event) => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'viewDiff', file });
+      });
+      body.appendChild(link);
+    });
     section.appendChild(body);
     parent.appendChild(section);
   }
@@ -3009,7 +3664,11 @@ function getHtml(host, port, cspSource) {
       details.appendChild(metrics);
     }
 
-    renderListSection(details, 'Evidence', card.evidence || []);
+    if (card.kind === 'files') {
+      renderEvidenceFiles(details, 'Evidence', card.evidence || []);
+    } else {
+      renderListSection(details, 'Evidence', card.evidence || []);
+    }
     renderListSection(details, 'Recommended checks', card.checks || []);
 
     if (card.actions && card.actions.length) {
@@ -3044,10 +3703,179 @@ function getHtml(host, port, cspSource) {
     mcpSetupStatus.appendChild(chip);
   }
 
+  function resultRiskRank(r) {
+    const ranks = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
+    return ranks[(r.changeCard && r.changeCard.riskLevel) || 'unknown'] ?? 4;
+  }
+
+  function resultImpactValue(r) {
+    return Number(r.impactScore || 0);
+  }
+
+  function resultDateValue(r) {
+    return Number(r.changeTime || 0);
+  }
+
+  function sortedChangeResults(results, mode) {
+    const copy = (results || []).slice();
+    if (mode === 'date') {
+      copy.sort((a, b) => resultDateValue(b) - resultDateValue(a) || resultImpactValue(b) - resultImpactValue(a));
+    } else {
+      copy.sort((a, b) => {
+        const riskDelta = resultRiskRank(a) - resultRiskRank(b);
+        return riskDelta || resultImpactValue(b) - resultImpactValue(a) || resultDateValue(b) - resultDateValue(a);
+      });
+    }
+    return copy;
+  }
+
+  function appendResultItem(parent, r) {
+    const item = document.createElement('div');
+    item.className = 'result';
+    item.dataset.label = r.label || '';
+    const changedAt = resultDateValue(r);
+    if (changedAt || resultImpactValue(r)) {
+      const parts = [];
+      if (changedAt) { parts.push('Last modified: ' + new Date(changedAt).toLocaleString()); }
+      if (resultImpactValue(r)) { parts.push('Impact score: ' + resultImpactValue(r)); }
+      item.title = parts.join(' | ');
+    }
+    if (r.changeCard) {
+      renderChangeCard(item, r.changeCard, r);
+    } else {
+      const loc = r.file ? (r.file + (r.line ? ':' + r.line : '')) : '';
+      item.innerHTML = '<span class="label">' + escapeHtml(r.label) + '</span>' +
+        (loc ? ' <span class="loc">' + escapeHtml(loc) + '</span>' : '');
+    }
+    if (r.snippet && !r.changeCard) {
+      const snippet = document.createElement('div');
+      snippet.className = 'snippet';
+      snippet.textContent = String(r.snippet);
+      item.appendChild(snippet);
+    }
+    const graphable = r.graphSymbol || r.fullName || r.symbol || r.name;
+    if (r.file || graphable) {
+      item.addEventListener('click', () => {
+        if (r.file) {
+          vscode.postMessage({ type: 'openFile', file: r.file, line: r.line });
+        }
+        if (graphable) {
+          vscode.postMessage({ type: 'graphForResult', result: r });
+        }
+      });
+    }
+    parent.appendChild(item);
+  }
+
+  function appendResultItems(parent, results) {
+    parent.textContent = '';
+    (results || []).forEach((r) => appendResultItem(parent, r));
+  }
+
+  // Low-impact and cosmetic-only change cards are individually collapsed
+  // already, but a page full of them still buries the few cards worth
+  // looking at. Fold a bucket into one row, collapsed the same way a single
+  // card is, so it takes one line of scan space instead of N.
+  function appendCollapsedGroup(parent, results, title, pillLabel, pillClass) {
+    const item = document.createElement('div');
+    item.className = 'result changeResult';
+    const root = document.createElement('div');
+    root.className = 'changeCard changeGroup is-collapsed';
+
+    const top = document.createElement('div');
+    top.className = 'changeTop';
+    const titleBlock = document.createElement('div');
+    const titleRow = document.createElement('div');
+    titleRow.className = 'changeTitleRow';
+
+    const showLabel = 'Show ' + title.toLowerCase();
+    const hideLabel = 'Hide ' + title.toLowerCase();
+    const detailsToggle = document.createElement('button');
+    detailsToggle.type = 'button';
+    detailsToggle.className = 'detailsToggle';
+    detailsToggle.textContent = '+';
+    detailsToggle.title = showLabel;
+    detailsToggle.setAttribute('aria-expanded', 'false');
+    detailsToggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const collapsed = root.classList.toggle('is-collapsed');
+      detailsToggle.textContent = collapsed ? '+' : '-';
+      detailsToggle.title = collapsed ? showLabel : hideLabel;
+      detailsToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+    titleRow.appendChild(detailsToggle);
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'changeTitle';
+    titleEl.textContent = title;
+    titleRow.appendChild(titleEl);
+
+    const symbol = document.createElement('div');
+    symbol.className = 'changeSymbol';
+    symbol.textContent = results.length + (results.length === 1 ? ' function' : ' functions');
+    titleBlock.appendChild(titleRow);
+    titleBlock.appendChild(symbol);
+
+    const risk = document.createElement('span');
+    risk.className = 'riskPill risk-' + pillClass;
+    risk.textContent = pillLabel;
+
+    top.appendChild(titleBlock);
+    top.appendChild(risk);
+    root.appendChild(top);
+
+    const details = document.createElement('div');
+    details.className = 'changeDetails changeGroupBody';
+    results.forEach((r) => appendResultItem(details, r));
+    root.appendChild(details);
+
+    item.appendChild(root);
+    parent.appendChild(item);
+  }
+
+  // Change-list results carry a riskLevel (derived from impact score) that
+  // plain search results don't, so only that list gets grouped. Cosmetic-only
+  // changes get their own group, separate from "Low Impact Functions" —
+  // they're a stronger, provable claim ("nothing behavioral changed") than
+  // "probably low impact", and burying a real (if small) change in the same
+  // bucket as a confirmed no-op would undersell the real one.
+  function appendGroupedChangeResultItems(parent, results) {
+    parent.textContent = '';
+    const primary = [];
+    const low = [];
+    const cosmetic = [];
+    (results || []).forEach((r) => {
+      const card = r.changeCard;
+      if (card && card.cosmeticOnly) {
+        cosmetic.push(r);
+        return;
+      }
+      const level = (card && card.riskLevel) || 'unknown';
+      if (level === 'low') {
+        low.push(r);
+      } else {
+        primary.push(r);
+      }
+    });
+    primary.forEach((r) => appendResultItem(parent, r));
+    if (low.length === 1) {
+      appendResultItem(parent, low[0]);
+    } else if (low.length > 1) {
+      appendCollapsedGroup(parent, low, 'Low Impact Functions', 'Low', 'low');
+    }
+    if (cosmetic.length === 1) {
+      appendResultItem(parent, cosmetic[0]);
+    } else if (cosmetic.length > 1) {
+      appendCollapsedGroup(parent, cosmetic, 'Cosmetic-only Changes', 'Cosmetic', 'low');
+    }
+  }
+
   function renderSearchResult(msg) {
     if (msg.replace) {
       messages.textContent = '';
     }
+    const hasResults = Boolean((msg.results && msg.results.length) || msg.answer || msg.error);
+    document.body.classList.toggle('has-results', hasResults || messages.children.length > 0);
     const wrapper = document.createElement('div');
     wrapper.className = 'msg';
     if (msg.query) {
@@ -3068,36 +3896,34 @@ function getHtml(host, port, cspSource) {
         a.textContent = msg.answer;
         wrapper.appendChild(a);
       }
-      (msg.results || []).forEach((r) => {
-        const item = document.createElement('div');
-        item.className = 'result';
-        item.dataset.label = r.label || '';
-        if (r.changeCard) {
-          renderChangeCard(item, r.changeCard, r);
-        } else {
-          const loc = r.file ? (r.file + (r.line ? ':' + r.line : '')) : '';
-          item.innerHTML = '<span class="label">' + escapeHtml(r.label) + '</span>' +
-            (loc ? ' <span class="loc">' + escapeHtml(loc) + '</span>' : '');
-        }
-        if (r.snippet && !r.changeCard) {
-          const snippet = document.createElement('div');
-          snippet.className = 'snippet';
-          snippet.textContent = String(r.snippet);
-          item.appendChild(snippet);
-        }
-        const graphable = r.graphSymbol || r.fullName || r.symbol || r.name;
-        if (r.file || graphable) {
-          item.addEventListener('click', () => {
-            if (r.file) {
-              vscode.postMessage({ type: 'openFile', file: r.file, line: r.line });
-            }
-            if (graphable) {
-              vscode.postMessage({ type: 'graphForResult', result: r });
-            }
-          });
-        }
-        wrapper.appendChild(item);
-      });
+      const resultList = document.createElement('div');
+      const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius';
+      if (isChangeList && (msg.results || []).length > 1) {
+        const toolbar = document.createElement('div');
+        toolbar.className = 'resultToolbar';
+        const label = document.createElement('label');
+        label.textContent = 'Sort';
+        const select = document.createElement('select');
+        const impactOption = document.createElement('option');
+        impactOption.value = 'impact';
+        impactOption.textContent = 'Highest impact';
+        const dateOption = document.createElement('option');
+        dateOption.value = 'date';
+        dateOption.textContent = 'Most recent';
+        select.appendChild(impactOption);
+        select.appendChild(dateOption);
+        select.value = msg.defaultSort || 'impact';
+        select.addEventListener('change', () => {
+          appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value));
+        });
+        toolbar.appendChild(label);
+        toolbar.appendChild(select);
+        wrapper.appendChild(toolbar);
+        appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value));
+      } else {
+        appendResultItems(resultList, msg.results || []);
+      }
+      wrapper.appendChild(resultList);
     }
     messages.appendChild(wrapper);
     messages.scrollTop = messages.scrollHeight;
@@ -3107,6 +3933,15 @@ function getHtml(host, port, cspSource) {
     const msg = event.data;
     if (msg.type === 'status') {
       statusLine.textContent = msg.text;
+      const isError = /^Error:/.test(String(msg.text || ''));
+      // Only overwrite the big centered pane while it's still the one showing
+      // (i.e. no graph has loaded yet) — once a graph is up, background
+      // regenerate status belongs in the small statusLine only.
+      if (emptyState.style.display !== 'none') {
+        emptyStateText.textContent = msg.text;
+        emptyStateText.classList.toggle('emptyStateError', isError);
+        emptyStateRetryBtn.style.display = isError ? '' : 'none';
+      }
     } else if (msg.type === 'mcpUsage') {
       const total = Number(msg.totalCalls || 0);
       const configured = Boolean(msg.configured);
@@ -3115,6 +3950,21 @@ function getHtml(host, port, cspSource) {
       const serverName = msg.serverName || 'CODE.md MCP';
       const restartNeeded = Boolean(msg.restartNeeded);
       const updatedAt = msg.updatedAt ? new Date(msg.updatedAt).toLocaleString() : '';
+      const toolsByClient = msg.toolsByClient && typeof msg.toolsByClient === 'object' ? msg.toolsByClient : {};
+      const callgraphTools = new Set([
+        'codemd_get_call_paths',
+        'codemd_get_impact_radius',
+        'codemd_get_callers',
+        'codemd_get_callees',
+      ]);
+      const clientLabel = (name) => /claude/i.test(String(name || '')) ? 'Claude' : /codex/i.test(String(name || '')) ? 'Codex' : String(name || 'Unknown');
+      const callgraphCountFor = (label) => Object.entries(toolsByClient)
+        .filter(([clientName]) => clientLabel(clientName) === label)
+        .reduce((sum, [, tools]) => sum + Object.entries(tools || {})
+          .filter(([toolName]) => callgraphTools.has(toolName))
+          .reduce((toolSum, [, calls]) => toolSum + Number(calls || 0), 0), 0);
+      const codexCallgraph = callgraphCountFor('Codex');
+      const claudeCallgraph = callgraphCountFor('Claude');
       const usageTitle = !configured
         ? 'MCP is not set up for this workspace. Click Set Up MCP, then approve "' + serverName + '" in Claude/Codex if prompted.'
         : total > 0
@@ -3122,9 +3972,9 @@ function getHtml(host, port, cspSource) {
             ? ('Last observed MCP access: ' + (updatedAt || msg.updatedAt) + ' (stale; start a new Claude Code/Codex session and check /mcp).')
             : ('Last observed MCP access: ' + (updatedAt || msg.updatedAt))
           : 'MCP config exists. If Claude/Codex still cannot see "' + serverName + '", restart the client and approve it when prompted.';
-      mcpUsageLabel.textContent = 'CODE.md MCP accesses: ' + total;
-      mcpUsageSubtitle.textContent = usageTitle;
-      mcpUsageCard.title = usageTitle + ' Counts CODE.md MCP resource reads and tool calls only.';
+      mcpUsageLabel.textContent = 'CODE.md callgraph: Codex ' + codexCallgraph + ', Claude ' + claudeCallgraph;
+      mcpUsageSubtitle.textContent = total > 0 ? ('Total historical calls: ' + total + '. ' + usageTitle) : usageTitle;
+      mcpUsageCard.title = usageTitle + ' Counts CODE.md MCP resource reads and tool calls only. Callgraph means callers, callees, call paths, or impact radius.';
       mcpSetupStatus.textContent = '';
       addMcpChip(configured ? 'Registered' : 'Not registered', configured ? 'ok' : 'missing',
         configured ? '"' + serverName + '" is present in at least one MCP config file.' : 'Click Set Up MCP to write client config.');
@@ -3133,7 +3983,9 @@ function getHtml(host, port, cspSource) {
       addMcpChip(setup.claudeDetected ? 'Claude detected' : 'Claude missing', setup.claudeDetected ? 'ok' : 'warn',
         setup.claudeDetected ? 'The claude command is available on PATH.' : 'Claude Code is not installed or not on PATH.');
       addMcpChip(setup.claudeApproved ? 'Claude approved' : 'Claude approval needed', setup.claudeApproved ? 'ok' : 'warn',
-        setup.claudeApproved ? 'Claude Code is pre-approved through .claude/settings.local.json.' : 'Approve in the setup prompt or later inside Claude Code with /mcp.');
+        setup.claudeApproved ? 'Claude Code is pre-approved through .claude/settings.local.json.' : 'Click Approve Claude MCP, or approve in Claude Code with /mcp.');
+      addMcpChip(setup.codexApproved ? 'Codex approved' : 'Codex approval needed', setup.codexApproved ? 'ok' : 'warn',
+        setup.codexApproved ? 'Codex will run "' + serverName + '" tools without a per-call prompt.' : 'Click Approve Codex MCP, or approve tool calls in Codex when prompted.');
       addMcpChip(!configured ? 'Set up first' : restartNeeded ? 'Restart needed' : 'Connected recently', !configured || restartNeeded ? 'warn' : 'ok',
         !configured ? 'Click Set Up MCP before starting a client.' : restartNeeded ? 'Start a fresh client session and approve "' + serverName + '" if prompted.' : 'A client accessed CODE.md recently.');
       if (setup.codexUserConfigPath) {
@@ -3141,6 +3993,8 @@ function getHtml(host, port, cspSource) {
       }
       openCodexBtn.disabled = !setup.codexDetected;
       openClaudeBtn.disabled = !setup.claudeDetected;
+      approveCodexBtn.disabled = !configured || setup.codexApproved;
+      approveClaudeBtn.disabled = !configured || setup.claudeApproved;
       mcpUsageCard.classList.remove('mcp-active', 'mcp-idle');
       if (configured) {
         mcpUsageCard.classList.add(total > 0 && !stale ? 'mcp-active' : 'mcp-idle');
@@ -3151,7 +4005,12 @@ function getHtml(host, port, cspSource) {
       clients.forEach((c) => {
         const line = document.createElement('span');
         line.className = 'clientLine';
-        line.textContent = 'CODE.md used by ' + (c.name || 'unknown') + ': ' + c.calls + (c.calls === 1 ? ' access' : ' accesses');
+        const label = clientLabel(c.name);
+        const tools = toolsByClient[c.name] || {};
+        const callgraphCalls = Object.entries(tools)
+          .filter(([toolName]) => callgraphTools.has(toolName))
+          .reduce((sum, [, calls]) => sum + Number(calls || 0), 0);
+        line.textContent = label + ': ' + callgraphCalls + ' callgraph, ' + Number(c.calls || 0) + ' total';
         mcpUsageByClient.appendChild(line);
       });
     } else if (msg.type === 'graph') {

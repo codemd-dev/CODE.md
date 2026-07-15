@@ -11,8 +11,6 @@ PyJWT[crypto]
 cryptography
 sentry-sdk[fastapi]
 
-beautifulsoup4
-
 libcst
 pyan3
 javalang
@@ -24,7 +22,6 @@ tree-sitter-typescript
 networkx
 pydot
 pyvis
-graphviz
 
 playwright
 

@@ -84,22 +84,6 @@ def feature_catalog_path_for_output(output_repo_dir):
     )
 
 
-def feature_summaries_path_for_output(output_repo_dir):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
-        artifact_root / "architecture" / "feature_summaries.json",
-        artifact_root / "scim" / "feature_summaries.json",
-    )
-
-
-def features_text_path_for_output(output_repo_dir):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
-        artifact_root / "architecture" / "features.txt",
-        artifact_root / "scim" / "features.txt",
-    )
-
-
 def typed_evidence_paths_for_output(output_repo_dir):
     architecture_dir = architecture_dir_for_output(output_repo_dir)
     return architecture_dir / "typed_evidence.jsonl", architecture_dir / "typed_evidence_edges.jsonl"
@@ -341,10 +325,8 @@ def scim_artifact_source_type(path: Path) -> str:
         return "quality_signal"
     if name in {"daily_change_cache.json", "daily_commit_graph.json"} or "daily_change_graph" in name:
         return "commit_history"
-    if name in {"feature_summaries.json", "features.txt"}:
-        return "generated_feature_summary"
-    if name == "answers.jsonl" or "/derived_memory/" in rel:
-        return "derived_summary"
+    if name in {"feature_summaries.json", "features.txt", "answers.jsonl"} or "/derived_memory/" in rel:
+        return "ignored_derived_artifact"
     if name == "ga_interactions.json" or name.startswith("ga_"):
         return "ga_summary"
     if "callgraph" in name or "graph" in name:
@@ -378,70 +360,6 @@ def chunk_scim_artifact_text(text: str, chunk_chars: int = SCIM_ARTIFACT_EVIDENC
             chunks.append(chunk)
         start = max(end, start + 1)
     return chunks
-
-def build_feature_summary_evidence(output_repo_dir: Path):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    feature_data = load_json_file(feature_catalog_path_for_output(artifact_root), {})
-    generated_data = load_json_file(feature_summaries_path_for_output(artifact_root), {})
-    features = feature_data.get("features", []) if isinstance(feature_data, dict) else []
-    generated_features = generated_data.get("feature_summaries", []) if isinstance(generated_data, dict) else []
-    if not features and not generated_features:
-        return []
-    lines = [
-        "Repository feature summary from SCIM feature catalog.",
-        f"Product name: {feature_data.get('product_name', '')}.",
-        f"Product type: {feature_data.get('product_type', '')}.",
-        "Generated feature explanations are derived summaries, not original repository truth.",
-        "Detected feature candidates:",
-    ]
-    for feature in features[:50]:
-        lines.append(f"- {feature.get('feature', '')}: matches {feature.get('match_count', 0)}; status {feature.get('status', '')}; visibility {feature.get('visibility', '')}.")
-    if generated_features:
-        lines.append("Generated feature summaries:")
-        for feature in generated_features[:50]:
-            description = " ".join(str(feature.get("description") or "").split())
-            lines.append(f"- {feature.get('feature', '')}: {description}")
-    records = [
-        scim_evidence_record(
-            "evidence.features.summary",
-            "feature_summary",
-            "Repository Feature Summary",
-            "architecture/feature_catalog.json",
-            "\n".join(lines),
-            {"feature_count": len(features), "generated_feature_summary_count": len(generated_features)},
-        )
-    ]
-    for index, feature in enumerate(generated_features[:80], start=1):
-        name = str(feature.get("feature") or f"Feature {index}").strip()
-        description = " ".join(str(feature.get("description") or "").split())
-        if not description:
-            continue
-        references = feature.get("references") or []
-        reference_text = "; ".join(
-            f"{ref.get('short_symbol') or ref.get('symbol') or ''} {ref.get('file') or ref.get('path') or ''}:{ref.get('start_line') or ''}".strip()
-            for ref in references[:5]
-            if isinstance(ref, dict)
-        )
-        records.append(scim_evidence_record(
-            f"evidence.features.generated.{index:03d}.{safe_filename(name).lower()}",
-            "generated_feature_summary",
-            name,
-            "architecture/feature_summaries.json",
-            (
-                "Generated feature summary derived from SCIM evidence and LLM review.\n"
-                "Truth status: derived_not_original_truth.\n"
-                f"Feature: {name}\n"
-                f"Description: {description}\n"
-                f"References: {reference_text}"
-            ),
-            {
-                "feature": name,
-                "references": references[:10],
-                "truth_status": "derived_not_original_truth",
-            },
-        ))
-    return records
-
 
 
 
@@ -565,7 +483,6 @@ def build_typed_scim_evidence_records(output_repo_dir: Path):
     records = []
     edges = []
     records.extend(build_repo_overview_evidence(output_repo_dir))
-    records.extend(build_feature_summary_evidence(output_repo_dir))
     ga_records, ga_edges = build_ga_summary_evidence(output_repo_dir)
     records.extend(ga_records)
     edges.extend(ga_edges)
@@ -710,11 +627,6 @@ def write_scim_layer_manifest(output_repo_dir: Path, evidence_result: dict | Non
                 "artifacts": ["language callgraphs", "combined_callgraph", "file_graph", "html_ui_graph", "graph JSON artifacts"],
                 "note": "Control-flow graphs are included when extractor artifacts exist; otherwise callgraph/dependency graph evidence is used.",
             },
-            "semantic": {
-                "status": "implemented",
-                "artifacts": ["feature_summaries.json", "derived_memory/answers.jsonl", "product summaries", "daily summaries"],
-                "truth_policy": "Generated summaries are derived evidence, not original source truth.",
-            },
             "embedding": {
                 "status": "implemented",
                 "artifacts": ["scim/vectors.sqlite", "scim/embedding_model.json", "scim/functions.jsonl"],
@@ -726,8 +638,8 @@ def write_scim_layer_manifest(output_repo_dir: Path, evidence_result: dict | Non
                 "artifacts": ["retrieval planner", "source-type boosts", "callgraph-aware search", "text/code/evidence retrieval"],
             },
             "synthesis": {
-                "status": "implemented_via_external_llm",
-                "artifacts": ["search-answer", "summary", "feature-summary", "daily-summary prompts"],
+                "status": "disabled_for_truth_index",
+                "artifacts": [],
             },
         },
     }
@@ -1056,4 +968,212 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
 
     visit(tree)
     return spans
-    return str(manifest_path)
+
+
+def _find_function_node(tree, module_name: str, symbol: str):
+    """Locate the ast.FunctionDef/AsyncFunctionDef node whose dotted
+    module.Class.func path — built the same way get_function_spans() builds
+    it — equals `symbol`. Returns None if no such node exists in `tree`."""
+    target = None
+
+    def visit(node, class_stack, function_stack):
+        nonlocal target
+        for child in ast.iter_child_nodes(node):
+            if target is not None:
+                return
+            if isinstance(child, ast.ClassDef):
+                visit(child, class_stack + [child.name], function_stack)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parts = [module_name] + class_stack + function_stack + [child.name]
+                candidate = ".".join(part for part in parts if part)
+                if candidate == symbol:
+                    target = child
+                    return
+                visit(child, class_stack, function_stack + [child.name])
+            else:
+                visit(child, class_stack, function_stack)
+
+    visit(tree, [], [])
+    return target
+
+
+def python_function_ast_unchanged(old_source: str, new_source: str, rel_path: str, symbol: str) -> Optional[bool]:
+    """True when `symbol`'s parsed body is identical between old_source and
+    new_source — i.e. a git-diff-confirmed "modification" that turns out to
+    be whitespace, comments, or blank-line-only, nothing ast.parse cares
+    about. False when the body genuinely differs. None when either side
+    fails to parse or `symbol` can't be located in both trees (renamed,
+    moved, or a span/callgraph mismatch) — callers must treat None as "can't
+    tell", never as "changed", since flipping it to False by default would
+    silently misclassify unrelated failures as real edits."""
+    try:
+        old_tree = ast.parse(old_source)
+        new_tree = ast.parse(new_source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    old_node = _find_function_node(old_tree, module_name, symbol)
+    new_node = _find_function_node(new_tree, module_name, symbol)
+    if old_node is None or new_node is None:
+        return None
+    return ast.dump(old_node, annotate_fields=True, include_attributes=False) == \
+        ast.dump(new_node, annotate_fields=True, include_attributes=False)
+
+
+def python_function_signature(source: str, rel_path: str, symbol: str) -> Optional[dict]:
+    """Structural call signature of `symbol`: parameter names split into
+    required-positional / optional-positional / keyword-only (required vs
+    optional), plus whether *args/**kwargs soak up extra call-site
+    arguments. `self`/`cls` is stripped from the front of the required list
+    (call sites never pass it explicitly) — this is a naming heuristic, not
+    a class-membership check, matching the heuristic character of the rest
+    of this file. Returns None if `symbol` can't be parsed/located."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    node = _find_function_node(tree, module_name, symbol)
+    if node is None:
+        return None
+    args = node.args
+    posonly = [p.arg for p in getattr(args, "posonlyargs", [])]
+    positional = posonly + [p.arg for p in args.args]
+    defaults_count = len(args.defaults)
+    split = max(len(positional) - defaults_count, 0)
+    required_positional = positional[:split]
+    optional_positional = positional[split:]
+    if required_positional and required_positional[0] in ("self", "cls"):
+        required_positional = required_positional[1:]
+    return {
+        "required_positional": required_positional,
+        "optional_positional": optional_positional,
+        "kwonly_required": [p.arg for p, d in zip(args.kwonlyargs, args.kw_defaults) if d is None],
+        "kwonly_optional": [p.arg for p, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None],
+        "has_star_args": args.vararg is not None,
+        "has_star_kwargs": args.kwarg is not None,
+    }
+
+
+def python_function_signature_diff(old_source: str, new_source: str, rel_path: str, symbol: str) -> Optional[dict]:
+    """Structural diff between `symbol`'s signature in old_source and
+    new_source. None when either side can't be parsed/located — same
+    contract as python_function_ast_unchanged, callers must not treat None
+    as "no change". `new_signature` is included so callers checking
+    call-site compatibility (python_check_call_compatibility) don't have to
+    re-derive it."""
+    old_sig = python_function_signature(old_source, rel_path, symbol)
+    new_sig = python_function_signature(new_source, rel_path, symbol)
+    if old_sig is None or new_sig is None:
+        return None
+    old_all = set(
+        old_sig["required_positional"] + old_sig["optional_positional"]
+        + old_sig["kwonly_required"] + old_sig["kwonly_optional"]
+    )
+    new_all = set(
+        new_sig["required_positional"] + new_sig["optional_positional"]
+        + new_sig["kwonly_required"] + new_sig["kwonly_optional"]
+    )
+    added_required = [p for p in (new_sig["required_positional"] + new_sig["kwonly_required"]) if p not in old_all]
+    added_optional = [p for p in (new_sig["optional_positional"] + new_sig["kwonly_optional"]) if p not in old_all]
+    removed = [p for p in old_all if p not in new_all]
+    star_args_changed = old_sig["has_star_args"] != new_sig["has_star_args"]
+    star_kwargs_changed = old_sig["has_star_kwargs"] != new_sig["has_star_kwargs"]
+    return {
+        "changed": bool(added_required or added_optional or removed or star_args_changed or star_kwargs_changed),
+        "added_required": added_required,
+        "added_optional": added_optional,
+        "removed": removed,
+        "star_args_changed": star_args_changed,
+        "star_kwargs_changed": star_kwargs_changed,
+        "new_signature": new_sig,
+    }
+
+
+def python_find_calls_in_function(source: str, rel_path: str, caller_symbol: str, callee_tail: str) -> Optional[list]:
+    """Call-expression shapes for every call to a function/method named
+    `callee_tail` (the changed symbol's last dotted segment) found inside
+    `caller_symbol`'s body in `source`. Matches by final identifier only —
+    `foo()`, `self.foo()`, and `mod.foo()` all match, but so would an
+    unrelated same-named function, and an aliased import (`from x import
+    foo as bar`) would be missed entirely; this is the same
+    heuristic/name-matched character the rest of the callgraph already
+    admits to (see node_confidence). Returns None if `caller_symbol` can't
+    be parsed/located; [] if it parses but contains no matching call."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    node = _find_function_node(tree, module_name, caller_symbol)
+    if node is None:
+        return None
+    calls = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        if name != callee_tail:
+            continue
+        positional = [a for a in child.args if not isinstance(a, ast.Starred)]
+        calls.append({
+            "line": getattr(child, "lineno", None),
+            "positional_count": len(positional),
+            "keywords": [kw.arg for kw in child.keywords if kw.arg is not None],
+            "has_star_args": any(isinstance(a, ast.Starred) for a in child.args),
+            "has_star_kwargs": any(kw.arg is None for kw in child.keywords),
+        })
+    return calls
+
+
+def python_check_call_compatibility(signature: dict, call: dict) -> dict:
+    """Compares one call-site shape (from python_find_calls_in_function)
+    against a callee signature (from python_function_signature /
+    python_function_signature_diff's `new_signature`). Returns
+    {"status": "compatible"|"incompatible"|"unverifiable", "reason": str}.
+    Errs toward "unverifiable" rather than a false "incompatible" whenever
+    the call spreads *args/**kwargs, since the actual argument count/names
+    aren't knowable statically in that case."""
+    if call.get("has_star_args") or call.get("has_star_kwargs"):
+        return {"status": "unverifiable", "reason": "Call unpacks *args/**kwargs — argument count not known statically."}
+
+    positional_count = call.get("positional_count", 0)
+    keywords = set(call.get("keywords") or [])
+    required_positional = signature.get("required_positional", [])
+    optional_positional = signature.get("optional_positional", [])
+    all_positional = required_positional + optional_positional
+    max_positional = None if signature.get("has_star_args") else len(all_positional)
+
+    if max_positional is not None and positional_count > max_positional:
+        return {
+            "status": "incompatible",
+            "reason": f"Passes {positional_count} positional argument(s); the function now accepts at most {max_positional}.",
+        }
+
+    filled_by_position = set(all_positional[:positional_count])
+    duplicate = filled_by_position & keywords
+    if duplicate:
+        return {
+            "status": "incompatible",
+            "reason": f"Passes {', '.join(sorted(duplicate))} both positionally and by keyword.",
+        }
+
+    still_required = [p for p in required_positional if p not in filled_by_position and p not in keywords]
+    still_required += [p for p in signature.get("kwonly_required", []) if p not in keywords]
+    if still_required:
+        return {
+            "status": "incompatible",
+            "reason": f"Missing required argument(s): {', '.join(still_required)}.",
+        }
+
+    if not signature.get("has_star_kwargs"):
+        allowed_keywords = set(all_positional) | set(signature.get("kwonly_required", [])) | set(signature.get("kwonly_optional", []))
+        unknown_keywords = [k for k in keywords if k not in allowed_keywords]
+        if unknown_keywords:
+            return {
+                "status": "incompatible",
+                "reason": f"Passes unknown keyword argument(s): {', '.join(unknown_keywords)}.",
+            }
+
+    return {"status": "compatible", "reason": ""}

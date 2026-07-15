@@ -13,7 +13,7 @@ err.txt
 
 # Generated analysis output from running this extension against its own repo
 # during development — never ship it inside the packaged extension.
-codemd.dev/**
+.codemd/**
 
 # Runtime output from the bundled backend (BASE_OUTPUT) if the local server
 # was ever run from this folder before packaging — never ship analysis output.

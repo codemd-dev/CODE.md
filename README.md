@@ -30,7 +30,7 @@ Open a graph in the side panel, expand it to fill the window, or pop it out into
 2. Click the CODE.md icon in the Activity Bar.
 3. Run **Generate CODE.md** to analyze the current workspace.
 4. Use the **Search** box to query your codebase, or open the generated graphs to explore visually.
-5. Point your coding agent's context (e.g. `AGENTS.md` / `CLAUDE.md`) at the generated `codemd.dev/` folder so it can use the structured graphs instead of re-reading the whole repo.
+5. Point your coding agent's context (e.g. `AGENTS.md` / `CLAUDE.md`) at the generated `.codemd/` folder so it can use the structured graphs instead of re-reading the whole repo.
 
 ## Requirements
 

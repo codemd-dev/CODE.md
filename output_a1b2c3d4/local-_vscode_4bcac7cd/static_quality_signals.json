@@ -1,0 +1,94 @@
+{
+  "generated_at": "2026-07-13T10:20:33.779045",
+  "summary": {
+    "total": 3,
+    "high_confidence": 3,
+    "medium_confidence": 0,
+    "low_confidence": 0,
+    "high_severity": 0,
+    "medium_severity": 3,
+    "low_severity": 0,
+    "confirmed": 0,
+    "needs_validation": 3,
+    "not_checked": 0,
+    "suppressed_unverified_cycles": 4
+  },
+  "groups": {
+    "bugs": [],
+    "structural": [
+      {
+        "id": "1c770f70e068",
+        "group": "structural",
+        "type": "dead_function",
+        "title": "Function is isolated in the callgraph",
+        "message": "`extension.activate` is parsed as code but has no callers or callees in the static callgraph.",
+        "severity": "medium",
+        "confidence": "high",
+        "symbol": "extension.activate",
+        "path": "extension.ts",
+        "line": 334,
+        "evidence": [
+          "graph node: src.extension.activate"
+        ],
+        "recommendation": "Confirm whether this is a dynamic entry point, test helper, or code that can be removed.",
+        "validation_status": "needs_validation",
+        "validation_label": "Needs validation"
+      },
+      {
+        "id": "91e7dd0706ba",
+        "group": "structural",
+        "type": "dead_function",
+        "title": "Function has no callers in the callgraph",
+        "message": "`extension.deactivate` is parsed as code and calls 1 function(s), but no parsed code calls it.",
+        "severity": "medium",
+        "confidence": "high",
+        "symbol": "extension.deactivate",
+        "path": "extension.ts",
+        "line": 399,
+        "evidence": [
+          "graph node: src.extension.deactivate",
+          "outgoing calls: 1"
+        ],
+        "recommendation": "Confirm whether this is a dynamic entry point, test helper, or code that can be removed.",
+        "validation_status": "needs_validation",
+        "validation_label": "Needs validation"
+      },
+      {
+        "id": "19eca5dbc483",
+        "group": "structural",
+        "type": "dead_function",
+        "title": "Function is isolated in the callgraph",
+        "message": "`extension.check` is parsed as code but has no callers or callees in the static callgraph.",
+        "severity": "medium",
+        "confidence": "high",
+        "symbol": "extension.check",
+        "path": "extension.ts",
+        "line": 731,
+        "evidence": [
+          "graph node: src.extension.check"
+        ],
+        "recommendation": "Confirm whether this is a dynamic entry point, test helper, or code that can be removed.",
+        "validation_status": "needs_validation",
+        "validation_label": "Needs validation"
+      }
+    ],
+    "callgraph": [],
+    "cross_file": []
+  },
+  "graph_sources": [
+    "combined_callgraph/combined_callgraph.json",
+    "python/python_callgraph.json",
+    "javascript/javascript_callgraph.json"
+  ],
+  "parser_diagnostics": {
+    "parse_error_count": 0,
+    "files_with_parse_errors": []
+  },
+  "functions_index": "/output_a1b2c3d4/local-_vscode_4bcac7cd/scim/functions.jsonl",
+  "limitations": [
+    "These checks are static. They do not execute the application.",
+    "High-confidence graph facts are stronger than heuristic source checks.",
+    "Dynamic imports, reflection, dependency injection, framework routing, generated code, and runtime configuration can hide valid paths from static analysis.",
+    "Type and argument compatibility checks need language-specific type information for high accuracy."
+  ]
+}

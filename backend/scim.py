@@ -4326,6 +4326,12 @@ def list_feature_catalog(dataset_dir: Path, repo_id: str | None, examples: int, 
 
 
 def feature_catalog_payload(dataset_dir: Path, repo_id: str | None = None, examples: int = 5, repo_context: dict | None = None) -> dict:
+    return {
+        "features": [],
+        "feature_count": 0,
+        "disabled": True,
+        "reason": "Feature catalog generation is disabled; CODE.md publishes deterministic truth-index artifacts only.",
+    }
     records = load_feature_records(dataset_dir, repo_id)
     product_name, product_type, product_name_source = infer_product_name(records, repo_id, repo_context)
     evidence_features = evidence_feature_candidates(records, product_name, product_type, examples, repo_context)

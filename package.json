@@ -2,7 +2,7 @@
   "name": "codeval-codemd-graphs",
   "displayName": "CODE.md",
   "description": "Search this workspace with local CODE.md analysis and interactive graph browsing.",
-  "version": "0.0.40",
+  "version": "0.0.73",
   "publisher": "codeval",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -19,16 +19,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:codemd",
-    "onCommand:codemdGraphs.open",
-    "onCommand:codemdGraphs.openEditor",
-    "onCommand:codemdGraphs.generate",
-    "onCommand:codemdGraphs.setupMcp",
-    "onCommand:codemdGraphs.stopServer",
-    "onCommand:codemdlocal.generate",
-    "onCommand:codemdLocal.generate",
-    "onView:codemdGraphs.panel"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -97,7 +88,7 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "codemdGraphs.mcp",
-        "label": "CODE.md MCP"
+        "label": "codemd"
       }
     ],
     "configuration": {

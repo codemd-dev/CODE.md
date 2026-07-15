@@ -7,92 +7,105 @@ Only deterministic sections requested by the user are included.
 
 ## api_routes
 Evidence: deterministic Python decorator parsing plus exact JavaScript/TypeScript route-call parsing from source files.
-_No rows found from the available direct evidence._
+| Method | Path | Handler | File | Line |
+| --- | --- | --- | --- | --- |
+| POST | /test-suite/generate | test_suite_generate | backend/main.py | 1436 |
+| GET | / | root | backend/main.py | 4152 |
+| GET | /index.html | index_alias | backend/main.py | 4156 |
+| GET | /favicon.ico | favicon | backend/main.py | 4161 |
+| GET | /robots.txt | robots_txt | backend/main.py | 4166 |
+| GET | /sitemap.xml | sitemap_xml | backend/main.py | 4178 |
+| GET,HEAD | /dashboard | dashboard | backend/main.py | 4199 |
+| GET,HEAD | /dashboard.html | dashboard | backend/main.py | 4200 |
+| GET,HEAD | /dashboard.xml | dashboard | backend/main.py | 4201 |
+| GET | /sample.html | sample_page | backend/main.py | 4205 |
+| GET | /sample | sample_page | backend/main.py | 4206 |
+| GET | /demo.html | demo_page | backend/main.py | 4210 |
+| GET | /demo | demo_page | backend/main.py | 4211 |
+| GET | /api | api_docs | backend/main.py | 4218 |
+| GET | /api.html | api_docs | backend/main.py | 4219 |
+| GET | /artifact/render | render_external_html_artifact | backend/main.py | 4224 |
+| GET | /debug/output/{repo}/{folder}/{filename} | debug_output_file | backend/main.py | 4252 |
+| GET | /debug/output-files | debug_output_files | backend/main.py | 4287 |
+| GET | /files | list_output_zips | backend/main.py | 4305 |
+| GET | /output-zips | list_output_zips | backend/main.py | 4306 |
+| GET | /zip_files | list_output_zips | backend/main.py | 4307 |
+| POST | /github/webhook | github_webhook | backend/main.py | 4316 |
+| GET | /github/login | github_login | backend/main.py | 4333 |
+| GET | /github/reconnect | github_reconnect | backend/main.py | 4366 |
+| GET | /debug/github-oauth | debug_github_oauth | backend/main.py | 4389 |
+| GET | /github/callback | github_callback | backend/main.py | 4409 |
+| GET | /github/me | github_me | backend/main.py | 4492 |
+| POST | /github/logout | github_logout | backend/main.py | 4502 |
+| GET | /github/repos | github_repos | backend/main.py | 4513 |
+| GET | /github/saved-analyses | github_saved_analyses | backend/main.py | 4579 |
+| GET | /github/saved-analyses/latest | github_latest_saved_analysis | backend/main.py | 4615 |
+| GET | /sample-analysis | sample_analysis | backend/main.py | 4679 |
+| GET | /github/daily-commits | github_daily_commits | backend/main.py | 4837 |
+| GET | /github/daily-commit-graph | github_daily_commit_graph | backend/main.py | 4844 |
+| GET | /github/daily-change-graph | github_daily_change_graph | backend/main.py | 6075 |
+| GET | /github/daily-summary-prompt | github_daily_summary_prompt | backend/main.py | 6090 |
+| POST | /github/daily-summary | github_daily_summary | backend/main.py | 6106 |
+| POST | /github/analyze | github_analyze_selected | backend/main.py | 6141 |
+| GET | /google-analytics/login | google_analytics_login | backend/main.py | 6193 |
+| GET | /google-analytics/reconnect | google_analytics_reconnect | backend/main.py | 6226 |
+| GET | /debug/google-analytics-oauth | debug_google_analytics_oauth | backend/main.py | 6242 |
+| GET | /google-analytics/callback | google_analytics_callback | backend/main.py | 6255 |
+| GET | /google-analytics/me | google_analytics_me | backend/main.py | 6325 |
+| POST | /google-analytics/logout | google_analytics_logout | backend/main.py | 6335 |
+| GET | /google-analytics/properties | google_analytics_properties | backend/main.py | 6346 |
+| POST | /google-analytics/register-error-dimensions | google_analytics_register_error_dimensions | backend/main.py | 6354 |
+| POST | /mixpanel/connect | mixpanel_connect | backend/main.py | 9799 |
+| GET | /mixpanel/connection-status | mixpanel_connection_status | backend/main.py | 9856 |
+| POST | /mixpanel/load-user-activity | mixpanel_load_user_activity | backend/main.py | 9986 |
+| POST | /sentry/connect | sentry_connect | backend/main.py | 10117 |
+| POST | /sentry/load-errors | sentry_load_errors | backend/main.py | 10224 |
+| POST | /analytics/map-activity-to-code | analytics_map_activity_to_code | backend/main.py | 10344 |
+| GET | /self-healing/ga-errors | self_healing_ga_errors | backend/main.py | 11711 |
+| POST | /self-healing/analyze | self_healing_analyze | backend/main.py | 11727 |
+| POST | /self-healing/evaluate | self_healing_evaluate | backend/main.py | 11795 |
+| POST | /self-healing/apply | self_healing_apply | backend/main.py | 11844 |
+| POST | /google-analytics/rebuild-event-traces | google_analytics_rebuild_event_traces | backend/main.py | 12105 |
+| POST | /google-analytics/event-callgraph | google_analytics_event_callgraph | backend/main.py | 12110 |
+| POST | /mixpanel/event-callgraph | mixpanel_event_callgraph | backend/main.py | 12118 |
+| GET | /google-analytics/callgraph-events | google_analytics_callgraph_events | backend/main.py | 12126 |
+| POST | /contact | contact | backend/main.py | 12582 |
+| POST | /code-notes | add_code_note | backend/main.py | 12616 |
+| GET | /todo-targets | todo_targets | backend/main.py | 12815 |
+| POST | /user-todos | add_user_todo | backend/main.py | 12900 |
+| GET | /user-todos | list_user_todos | backend/main.py | 12999 |
+| POST | /user-todos/delete | delete_user_todo | backend/main.py | 13043 |
+| POST | /scoped-callgraph | scoped_callgraph | backend/main.py | 13080 |
+| GET | /quality-signals | quality_signals | backend/main.py | 15824 |
+| POST | /quality-signals/validate | validate_quality_signal | backend/main.py | 16230 |
+| POST | /quality-signals/analyze | analyze_quality_signal | backend/main.py | 16297 |
+| POST | /quality-signals/evaluate | evaluate_quality_signal_fix | backend/main.py | 16392 |
+| POST | /quality-signals/apply | apply_quality_signal_fix | backend/main.py | 16441 |
+| POST | /quality-signals/resolve | resolve_quality_signal | backend/main.py | 16462 |
+| GET | /unused-functions | list_unused_functions | backend/main.py | 16527 |
+| POST | /unused-functions/ack | ack_unused_functions | backend/main.py | 16590 |
+| POST | /search | search | backend/main.py | 25376 |
+| POST | /search-result-graph | search_result_graph | backend/main.py | 26393 |
+| GET | /function-summaries | function_summaries | backend/main.py | 26482 |
+| POST | /searchOLD | search | backend/main.py | 26501 |
+| POST | /search-answer | search_answer | backend/main.py | 26813 |
+| POST | /search-answer-feedback | search_answer_feedback | backend/main.py | 26884 |
+| POST | /product-feature-metadata | product_feature_metadata | backend/main.py | 27645 |
+| POST | /feature-summary | feature_summary | backend/main.py | 27698 |
+| POST | /summary | summary | backend/main.py | 27899 |
+| POST | /code-md | code_md_endpoint | backend/main.py | 33972 |
+| POST | /analyze/start | analyze_start | backend/main.py | 35048 |
+| POST | /playwright/start | playwright_start | backend/main.py | 35081 |
+| GET | /playwright/status/{job_id} | playwright_status | backend/main.py | 35108 |
+| GET | /analyze/status/{job_id} | analyze_status | backend/main.py | 35116 |
+| POST | /analyze | analyze_repo | backend/main.py | 35191 |
+| POST | /analyze/upload | analyze_upload | backend/main.py | 35315 |
+| POST | /analyze/local_path | analyze_local_path | backend/main.py | 35405 |
+| POST | /analyze/local_path/start | analyze_local_path_start | backend/main.py | 35449 |
 
 ## entry_points
 Evidence: exact `entry_points` array from the selected callgraph artifact.
-| Node | Out-degree | In-degree |
-| --- | --- | --- |
-| api.analytics_map-activity-to-code | 1 | 2 |
-| api.analyze | 1 | 11 |
-| api.analyze_local_path | 1 | 0 |
-| api.analyze_local_path_start | 1 | 0 |
-| api.analyze_start | 1 | 1 |
-| api.analyze_status_job_id | 1 | 0 |
-| api.analyze_upload | 1 | 8 |
-| api.api | 1 | 0 |
-| api.api.html | 1 | 0 |
-| api.artifact_render | 1 | 1 |
-| api.code-md | 1 | 2 |
-| api.code-notes | 1 | 9 |
-| api.contact | 1 | 10 |
-| api.dashboard | 1 | 4 |
-| api.dashboard.html | 1 | 0 |
-| api.dashboard.xml | 1 | 0 |
-| api.debug_github-oauth | 1 | 0 |
-| api.debug_google-analytics-oauth | 1 | 0 |
-| api.debug_output-files | 1 | 0 |
-| api.debug_output_repo_folder_filename | 1 | 0 |
-| api.demo | 1 | 0 |
-| api.demo.html | 1 | 0 |
-| api.favicon.ico | 1 | 0 |
-| api.feature-summary | 1 | 11 |
-| api.files | 1 | 0 |
-| api.function-summaries | 1 | 3 |
-| api.github_analyze | 1 | 1 |
-| api.github_callback | 1 | 0 |
-| api.github_daily-change-graph | 1 | 8 |
-| api.github_daily-commit-graph | 1 | 1 |
-| api.github_daily-commits | 1 | 0 |
-| api.github_daily-summary | 1 | 8 |
-| api.github_daily-summary-prompt | 1 | 8 |
-| api.github_login | 1 | 0 |
-| api.github_logout | 1 | 0 |
-| api.github_me | 1 | 10 |
-| api.github_reconnect | 1 | 1 |
-| api.github_repos | 1 | 10 |
-| api.github_saved-analyses | 1 | 0 |
-| api.github_saved-analyses_latest | 1 | 8 |
-| api.github_webhook | 1 | 0 |
-| api.google-analytics_callback | 1 | 0 |
-| api.google-analytics_callgraph-events | 1 | 8 |
-| api.google-analytics_event-callgraph | 1 | 8 |
-| api.google-analytics_login | 1 | 0 |
-| api.google-analytics_logout | 1 | 0 |
-| api.google-analytics_me | 1 | 10 |
-| api.google-analytics_properties | 1 | 10 |
-| api.google-analytics_rebuild-event-traces | 1 | 0 |
-| api.google-analytics_reconnect | 1 | 1 |
-| api.google-analytics_register-error-dimensions | 1 | 8 |
-| api.index.html | 1 | 0 |
-| api.mixpanel_connect | 1 | 1 |
-| api.mixpanel_connection-status | 1 | 1 |
-| api.mixpanel_event-callgraph | 1 | 1 |
-| api.mixpanel_load-user-activity | 1 | 1 |
-| api.output-zips | 1 | 0 |
-| api.playwright_start | 1 | 7 |
-| api.playwright_status_job_id | 1 | 0 |
-| api.product-feature-metadata | 1 | 10 |
-| api.quality-signals | 1 | 8 |
-| api.quality-signals_analyze | 1 | 7 |
-| api.quality-signals_apply | 1 | 6 |
-| api.quality-signals_evaluate | 1 | 6 |
-| api.quality-signals_resolve | 1 | 8 |
-| api.quality-signals_validate | 1 | 6 |
-| api.robots.txt | 1 | 0 |
-| api.root | 1 | 0 |
-| api.sample | 1 | 0 |
-| api.sample-analysis | 1 | 6 |
-| api.sample.html | 1 | 0 |
-| api.scoped-callgraph | 1 | 9 |
-| api.search | 1 | 15 |
-| api.search-answer | 1 | 10 |
-| api.search-answer-feedback | 1 | 0 |
-| api.search-result-graph | 1 | 0 |
-| api.searchOLD | 1 | 0 |
-| api.self-healing_analyze | 1 | 8 |
-| api.self-healing_apply | 1 | 8 |
-| api.self-healing_evaluate | 1 | 8 |
+_No rows found from the available direct evidence._
 
 ## risky_functions
 Evidence: callgraph in-degree count only. Higher in-degree means more callers in the extracted graph.
@@ -144,7 +157,7 @@ Evidence: total callgraph degree count only.
 | backend__main__search | 111 | 53 | 58 |
 | url.link | 67 | 67 | 0 |
 | backend__features__core__helpers__artifact_root_for_output | 62 | 62 | 0 |
-| backend.main.search | 56 | 2 | 54 |
+| backend.main.search | 54 | 0 | 54 |
 | js.togglePanel | 54 | 54 | 0 |
 | backend__main__repo_output_dir | 49 | 47 | 2 |
 | backend.main.repo_output_dir | 48 | 47 | 1 |
@@ -152,7 +165,6 @@ Evidence: total callgraph degree count only.
 | backend__main | 44 | 0 | 44 |
 | backend__main__build_javascript_tree_sitter_callgraphX__walk | 44 | 39 | 5 |
 | backend__main__build_tree_sitter_java_callgraphX__walk | 44 | 39 | 5 |
-| js.renderInlineMarkdown | 43 | 0 | 43 |
 | backend__main__cached_analyze_results | 42 | 3 | 39 |
 | backend_static_dashboard_html.inline_script | 42 | 0 | 42 |
 | backend_static_demo_html.inline_script | 42 | 0 | 42 |
@@ -163,6 +175,7 @@ Evidence: total callgraph degree count only.
 | backend__main__run_analyze_job | 39 | 3 | 36 |
 | backend__main__search_scim_dataset | 35 | 4 | 31 |
 | backend.main.cached_analyze_results | 34 | 3 | 31 |
+| backend.main.supabase_execute | 34 | 34 | 0 |
 
 ## complex_functions
 Evidence: callgraph out-degree count only. Higher out-degree means the node calls more extracted targets.
@@ -176,10 +189,9 @@ Evidence: callgraph out-degree count only. Higher out-degree means the node call
 | backend_static_example_html.file | 168 | 0 | 168 |
 | backend_static_sample_html.file | 158 | 0 | 158 |
 | backend__main__search | 58 | 53 | 111 |
-| backend.main.search | 54 | 2 | 56 |
+| backend.main.search | 54 | 0 | 54 |
 | backend_static_experiment_html.inline_script | 45 | 0 | 45 |
 | backend__main | 44 | 0 | 44 |
-| js.renderInlineMarkdown | 43 | 0 | 43 |
 | backend_static_dashboard_html.inline_script | 42 | 0 | 42 |
 | backend_static_demo_html.inline_script | 42 | 0 | 42 |
 | backend_static_example_html.inline_script | 42 | 0 | 42 |
@@ -198,6 +210,7 @@ Evidence: callgraph out-degree count only. Higher out-degree means the node call
 | backend.main.build_static_quality_signals | 27 | 1 | 28 |
 | backend.main.search_scim_dataset | 27 | 4 | 31 |
 | backend__main__build_code_md_artifact | 26 | 2 | 28 |
+| backend.scim.evidence_feature_candidates | 25 | 1 | 26 |
 
 ## file_dependencies
 Evidence: direct file graph edges from the file graph artifact.
@@ -207,49 +220,38 @@ Evidence: direct file graph edges from the file graph artifact.
 | backend/main.py | backend/features/feature_detection/ui/html_extractor.py | function call, inferred call |
 | backend/main.py | backend/scim.py | function call, inferred call |
 | backend/main.py | backend/supabase_client.py | function call, inferred call |
-| backend/static/BACKUP/dash.html | backend/main.py | fetch/API |
 | backend/static/BACKUP/dash.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
 | backend/static/BACKUP/dash.html | backend/static/dashboard.html | event handler, onclick handler, inferred call |
 | backend/static/BACKUP/dash.html | backend/static/demo.html | onclick handler, inferred call |
 | backend/static/BACKUP/dash.html | backend/static/experiment.html | onclick handler, inferred call |
 | backend/static/BACKUP/dash.html | openapi.json | link href: /openapi.json, inferred call |
-| backend/static/BACKUP/dashboardv1.html | backend/main.py | fetch/API |
 | backend/static/BACKUP/dashboardv1.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
 | backend/static/BACKUP/dashboardv1.html | backend/static/dashboard.html | onclick handler, event handler, inferred call |
 | backend/static/BACKUP/dashboardv1.html | backend/static/demo.html | onclick handler, inferred call |
 | backend/static/BACKUP/dashboardv1.html | backend/static/experiment.html | onclick handler, inferred call |
 | backend/static/BACKUP/dashboardv1.html | openapi.json | link href: /openapi.json, inferred call |
-| backend/static/BACKUP/indexMAIN.html | backend/main.py | fetch/API |
 | backend/static/BACKUP/indexMAIN.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
-| backend/static/api.codemd.html | backend/main.py | fetch/API |
-| backend/static/api.codeval.html | backend/main.py | fetch/API |
 | backend/static/api.codeval.html | backend/static/api.codemd.html | onclick handler, event handler, inferred call |
 | backend/static/autotrack.js | backend/static/mixpanel.js | function call, inferred call |
 | backend/static/autotrack_mixpanel.js | backend/static/mixpanel.js | function call, inferred call |
-| backend/static/dashboard.html | backend/main.py | fetch/API |
 | backend/static/dashboard.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
 | backend/static/dashboard.html | backend/static/mixpanel.js | script src: /static/mixpanel.js, inferred call |
-| backend/static/demo.html | backend/main.py | fetch/API |
 | backend/static/demo.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
-| backend/static/demo.html | backend/static/dashboard.html | onclick handler, event handler, inferred call |
+| backend/static/demo.html | backend/static/dashboard.html | event handler, onclick handler, inferred call |
 | backend/static/demo.html | backend/static/mixpanel.js | script src: /static/mixpanel.js, inferred call |
-| backend/static/example.html | backend/main.py | fetch/API |
 | backend/static/example.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
-| backend/static/example.html | backend/static/dashboard.html | onclick handler, event handler, inferred call |
+| backend/static/example.html | backend/static/dashboard.html | event handler, onclick handler, inferred call |
 | backend/static/example.html | backend/static/demo.html | onclick handler, inferred call |
 | backend/static/example.html | backend/static/mixpanel.js | script src: /static/mixpanel.js, inferred call |
-| backend/static/experiment.html | backend/main.py | fetch/API |
 | backend/static/experiment.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
-| backend/static/experiment.html | backend/static/dashboard.html | event handler, onclick handler, inferred call |
+| backend/static/experiment.html | backend/static/dashboard.html | onclick handler, event handler, inferred call |
 | backend/static/experiment.html | backend/static/demo.html | onclick handler, inferred call |
 | backend/static/experiment.html | backend/static/example.html | onclick handler, inferred call |
 | backend/static/experiment.html | backend/static/mixpanel-integration.js | script src: /static/mixpanel-integration.js, inferred call |
 | backend/static/experiment.html | backend/static/mixpanel.js | script src: /static/mixpanel.js, inferred call |
 | backend/static/experiment.html | openapi.json | link href: /openapi.json, inferred call |
-| backend/static/mixpanel-integration.js | backend/main.py | fetch/API |
-| backend/static/sample.html | backend/main.py | fetch/API |
 | backend/static/sample.html | backend/static/autotrack.js | script src: /static/autotrack.js, inferred call |
-| backend/static/sample.html | backend/static/dashboard.html | onclick handler, event handler, inferred call |
+| backend/static/sample.html | backend/static/dashboard.html | event handler, onclick handler, inferred call |
 | backend/static/sample.html | backend/static/demo.html | onclick handler, inferred call |
 | backend/static/sample.html | backend/static/mixpanel.js | script src: /static/mixpanel.js, inferred call |
 | scripts/local-analyze.py | backend/main.py | function call, inferred call |
@@ -258,35 +260,101 @@ Evidence: direct file graph edges from the file graph artifact.
 Evidence: file graph degree count only.
 | File | Total degree | In-degree | Out-degree |
 | --- | --- | --- | --- |
-| backend/main.py | 15 | 12 | 3 |
-| backend/static/experiment.html | 10 | 2 | 8 |
 | backend/static/autotrack.js | 9 | 8 | 1 |
-| backend/static/dashboard.html | 9 | 6 | 3 |
-| backend/static/demo.html | 9 | 5 | 4 |
+| backend/static/experiment.html | 9 | 2 | 7 |
+| backend/static/dashboard.html | 8 | 6 | 2 |
+| backend/static/demo.html | 8 | 5 | 3 |
 | backend/static/mixpanel.js | 7 | 7 | 0 |
-| backend/static/BACKUP/dash.html | 6 | 0 | 6 |
-| backend/static/BACKUP/dashboardv1.html | 6 | 0 | 6 |
-| backend/static/example.html | 6 | 1 | 5 |
-| backend/static/sample.html | 5 | 0 | 5 |
+| backend/static/BACKUP/dash.html | 5 | 0 | 5 |
+| backend/static/BACKUP/dashboardv1.html | 5 | 0 | 5 |
+| backend/static/example.html | 5 | 1 | 4 |
+| backend/main.py | 4 | 1 | 3 |
+| backend/static/sample.html | 4 | 0 | 4 |
 | openapi.json | 3 | 3 | 0 |
 | backend/scim.py | 2 | 2 | 0 |
-| backend/static/BACKUP/indexMAIN.html | 2 | 0 | 2 |
-| backend/static/api.codemd.html | 2 | 1 | 1 |
-| backend/static/api.codeval.html | 2 | 0 | 2 |
-| backend/static/mixpanel-integration.js | 2 | 1 | 1 |
 | backend/features/feature_detection/feature_detection.py | 1 | 0 | 1 |
 | backend/features/feature_detection/ui/html_extractor.py | 1 | 1 | 0 |
+| backend/static/BACKUP/indexMAIN.html | 1 | 0 | 1 |
+| backend/static/api.codemd.html | 1 | 1 | 0 |
+| backend/static/api.codeval.html | 1 | 0 | 1 |
 | backend/static/autotrack_mixpanel.js | 1 | 0 | 1 |
+| backend/static/mixpanel-integration.js | 1 | 1 | 0 |
 | backend/supabase_client.py | 1 | 1 | 0 |
 | scripts/local-analyze.py | 1 | 0 | 1 |
 
 ## database_writes
 Evidence: actual source matches to `table/from/collection` write operations, plus caller count for the enclosing Python callgraph function when available. No name-only matching is used.
-_No rows found from the available direct evidence._
+| File | Line | Operation | Enclosing function | Caller count | Source line |
+| --- | --- | --- | --- | --- | --- |
+| backend/main.py | 2041 | insert | supabase_insert_row_with_schema_fallback | 1 | return client.table(table).insert(payload).execute() |
+| backend/main.py | 2052 | insert | supabase_insert_row_with_schema_fallback | 1 | lambda: client.table(table).insert(fallback_payload).execute(), |
+| backend/main.py | 2062 | update | supabase_update_row_with_schema_fallback | 3 | return client.table(table).update(attempted_payload).eq("id", row_id).execute() |
+| backend/main.py | 2092 | update | supabase_update_row_with_schema_fallback | 3 | lambda: client.table(table).update(fallback_payload).eq("id", row_id).execute() |
+| backend/main.py | 2108 | upsert | supabase_upsert_user_repo | 2 | lambda: client.table("codeval_github_users").upsert(user_payload, on_conflict="github_user_id").execute(), |
+| backend/main.py | 2113 | upsert | supabase_upsert_user_repo | 2 | lambda: client.table("codeval_repositories").upsert(repo_payload, on_conflict="codeval_repo_key").execute(), |
+| backend/main.py | 2177 | update | supabase_update_analysis_progress | 3 | lambda: client.table("codeval_analysis_runs").update({ |
+| backend/main.py | 2195 | upsert | supabase_link_user_repository | 2 | lambda: client.table("codeval_user_repositories").upsert({ |
+| backend/main.py | 2211 | update | supabase_mark_analysis_failed | 1 | lambda: client.table("codeval_analysis_runs").update({ |
+| backend/main.py | 2269 | upsert | supabase_persist_static_quality_bugs | 1 | lambda: client.table("codeval_bugs").upsert( |
+| backend/main.py | 2558 | upsert | supabase_persist_analysis_artifacts | 1 | lambda: client.table("codeval_artifacts").upsert( |
+| backend/main.py | 2629 | update | saved_user_metadata_for_repo | 0 | preserved.update({key: value for key, value in summary_payload.items() if value not in (None, "", [])}) |
+| backend/main.py | 3243 | upsert | supabase_persist_daily_commit_snapshots | 2 | .upsert(rows, on_conflict="repository_id,snapshot_date,commit_key,selected_sha") |
+| backend/main.py | 3337 | upsert | supabase_upload_generated_artifacts_for_latest | 4 | lambda: client.table("codeval_artifacts").upsert( |
+| backend/main.py | 3702 | update | supabase_restore_analysis_payload | 3 | payload.update(summary_payload) |
+| backend/main.py | 9843 | upsert | mixpanel_connect | 0 | lambda: client.table("codeval_mixpanel_connections").upsert(row, on_conflict="owner_name,repo_name").execute(), |
+| backend/main.py | 10156 | upsert | sentry_connect | 0 | lambda: client.table("codeval_sentry_connections").upsert(row, on_conflict="owner_name,repo_name").execute(), |
+| backend/main.py | 10291 | upsert | sentry_load_errors | 0 | .upsert(rows, on_conflict="issue_id") |
+| backend/main.py | 10403 | update | analytics_map_activity_to_code | 0 | .update({"mapped": True}) |
+| backend/main.py | 12963 | insert | add_user_todo | 0 | lambda: client.table("codeval_todos").insert(todo_row).execute(), |
+| backend/main.py | 13059 | delete | delete_user_todo | 0 | .delete() |
+| backend/main.py | 16491 | update | resolve_quality_signal | 0 | .update(update_payload) |
+| backend/main.py | 16508 | update | resolve_quality_signal | 0 | row[0].update(update_payload) |
+| backend/main.py | 16512 | upsert | resolve_quality_signal | 0 | .upsert(row[0], on_conflict="analysis_run_id,finding_id") |
+| backend/main.py | 34971 | update | run_analyze_job | 0 | results.update(dispatch_parsers( |
+| backend/main.py | 34988 | update | run_analyze_job | 0 | results.update(build_scim_artifacts( |
 
 ## external_calls
 Evidence: direct Python/JavaScript/TypeScript import detection, excluding stdlib and local top-level modules.
-_No rows found from the available direct evidence._
+| Package/module | Import count | Examples |
+| --- | --- | --- |
+| fastapi | 9 | backend/main.py:55, backend/main.py:61, backend/main.py:64, backend/main.py:172, backend/main.py:173 |
+| libcst | 8 | backend/main.py:84, backend/main.py:85, backend/main.py:90, backend/main.py:91, backend/main.py:92 |
+| features | 5 | backend/main.py:94, backend/main.py:95, backend/main.py:96, backend/main.py:97, scripts/deletion-report.py:297 |
+| networkx | 4 | backend/main.py:88, backend/parsers/python/pyan3_parser.py:3, backend/parsers/python/pycg_parser.py:3, backend/parsers/python/python_analyzer.py:6 |
+| scim | 4 | backend/main.py:10580, backend/main.py:23484, backend/main.py:31037, backend/main.py:31150 |
+| pyvis | 3 | backend/main.py:68, backend/main.py:19291, backend/main.py:19047 |
+| pycg | 3 | backend/main.py:107, backend/parsers/python/pycg_parser.py:5, backend/parsers/python/pycg_parser.py:21 |
+| fs | 3 | scripts/codemd-mcp-server.js:4, scripts/copy-backend.js:4, src/extension.ts:3 |
+| path | 3 | scripts/codemd-mcp-server.js:5, scripts/copy-backend.js:5, src/extension.ts:2 |
+| openai | 2 | backend/main.py:57, backend/main.py:58 |
+| pydantic | 2 | backend/main.py:62, backend/main.py:170 |
+| javalang | 2 | backend/main.py:72, backend/main.py:28698 |
+| parsers | 2 | backend/main.py:113, backend/main.py:28456 |
+| cryptography | 2 | backend/main.py:9739, backend/main.py:9744 |
+| tree_sitter | 2 | backend/main.py:28959, backend/main.py:29444 |
+| sentry_sdk | 2 | backend/main.py:485, backend/main.py:486 |
+| supabase | 2 | backend/main.py:1896, backend/supabase_client.py:4 |
+| numpy | 2 | backend/main.py:23483, backend/scim.py:41 |
+| torch | 2 | backend/scim.py:54, backend/scim.py:55 |
+| os | 2 | scripts/codemd-mcp-server.js:6, src/extension.ts:4 |
+| child_process | 2 | scripts/codemd-mcp-server.js:7, src/extension.ts:6 |
+| requests | 1 | backend/main.py:56 |
+| playwright | 1 | backend/main.py:774 |
+| tree_sitter_java | 1 | backend/main.py:28960 |
+| tree_sitter_javascript | 1 | backend/main.py:29466 |
+| supabase_client | 1 | backend/main.py:1878 |
+| jwt | 1 | backend/main.py:4061 |
+| tree_sitter_typescript | 1 | backend/main.py:29458 |
+| pyparsing | 1 | backend/parsers/python/pyan3_parser.py:4 |
+| pyan | 1 | backend/parsers/python/pyan3_parser.py:52 |
+| faiss | 1 | backend/scim.py:44 |
+| sentence_transformers | 1 | backend/scim.py:49 |
+| sklearn | 1 | backend/scim.py:61 |
+| main | 1 | scripts/local-analyze.py:114 |
+| ${repoRoot} | 1 | scripts/copy-backend.js:92 |
+| vscode | 1 | src/extension.ts:1 |
+| crypto | 1 | src/extension.ts:5 |
+| undici | 1 | src/extension.ts:7 |
 
 ## ui_interactions
 Evidence: direct HTML/UI element extraction from the HTML UI graph artifact.
@@ -427,11 +495,55 @@ Evidence: literal TODO/FIXME-style comment extraction from repo comments.
 
 ## recently_changed
 Evidence: local `git log` when a `.git` directory is available; otherwise concrete GitHub commit payload from analysis if present.
-_No rows found from the available direct evidence._
+| Commit | Date | Subject | Files |
+| --- | --- | --- | --- |
+| 590e455676 | 2026-07-13 09:06:22 -0700 | code mcp server | .codex/config.toml, .mcp.json, backend/features/core/helpers.py, backend/main.py, backend/trace_output.log, codeval-codemd-graphs-0.0.31.vsix, codeval-codemd-graphs-0.0.32.vsix, codeval-codemd-graphs-0.0.33.vsix ... |
+| 313dff5269 | 2026-07-11 01:33:04 -0700 | Initial Commit | .codex/config.toml, .gitignore, .mcp.json, .vscodeignore, AGENTS.md, README.md, backend/features/core/constants.py, backend/features/core/helpers.py ... |
 
 ## high_churn_files
 Evidence: file occurrence/change count from local git history when available; otherwise concrete GitHub changed-file payload from analysis if present.
-_No rows found from the available direct evidence._
+| File | Commit touch/change count |
+| --- | --- |
+| .codex/config.toml | 2 |
+| .mcp.json | 2 |
+| backend/features/core/helpers.py | 2 |
+| backend/main.py | 2 |
+| codeval-codemd-graphs-0.0.31.vsix | 2 |
+| debug.log | 2 |
+| package-lock.json | 2 |
+| package.json | 2 |
+| scripts/codemd-mcp-server.js | 2 |
+| scripts/copy-backend.js | 2 |
+| scripts/deletion-report.py | 2 |
+| scripts/local-analyze.py | 2 |
+| src/extension.ts | 2 |
+| backend/trace_output.log | 1 |
+| codeval-codemd-graphs-0.0.32.vsix | 1 |
+| codeval-codemd-graphs-0.0.33.vsix | 1 |
+| codeval-codemd-graphs-0.0.34.vsix | 1 |
+| codeval-codemd-graphs-0.0.35-test.vsix | 1 |
+| codeval-codemd-graphs-0.0.35.vsix | 1 |
+| codeval-codemd-graphs-0.0.36.vsix | 1 |
+| codeval-codemd-graphs-0.0.37.vsix | 1 |
+| codeval-codemd-graphs-0.0.38.vsix | 1 |
+| codeval-codemd-graphs-0.0.39.vsix | 1 |
+| codeval-codemd-graphs-0.0.40.vsix | 1 |
+| .gitignore | 1 |
+| .vscodeignore | 1 |
+| AGENTS.md | 1 |
+| README.md | 1 |
+| backend/features/core/constants.py | 1 |
+| backend/features/feature_detection/__init__.py | 1 |
+| backend/features/feature_detection/feature_detection.py | 1 |
+| backend/features/feature_detection/ga/interactions.py | 1 |
+| backend/features/feature_detection/mapping/backend_mapper.py | 1 |
+| backend/features/feature_detection/mapping/callgraph_mapper.py | 1 |
+| backend/features/feature_detection/mapping/route_mapper.py | 1 |
+| backend/features/feature_detection/scim/scim_builder.py | 1 |
+| backend/features/feature_detection/ui/__init__.py | 1 |
+| backend/features/feature_detection/ui/android_extractor.py | 1 |
+| backend/features/feature_detection/ui/angular_extractor.py | 1 |
+| backend/features/feature_detection/ui/html_extractor.py | 1 |
 
 ## stable_files
 Evidence: tracked files with zero touches in the latest 100 local git commits. Empty when no local `.git` evidence is available.
