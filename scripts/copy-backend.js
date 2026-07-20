@@ -1,17 +1,18 @@
-// Bundles the CodeVal FastAPI backend into vscode-extension-graphs/backend/ so the
-// packaged extension is self-contained and does not depend on the CodeVal repo
-// existing at some other path on disk. The repo root (one level up) remains the
-// single source of truth; this script just mirrors it before compile/package.
+// Bundles the analyzer backend into this extension so packaged installs do not
+// depend on a development checkout at a particular path. Set
+// CODEMD_BACKEND_SOURCE_DIR to refresh backend/ from an explicit source tree.
 const fs = require('fs');
 const path = require('path');
 
-const repoRoot = path.resolve(__dirname, '..', '..');
+const repoRoot = process.env.CODEMD_BACKEND_SOURCE_DIR
+  ? path.resolve(process.env.CODEMD_BACKEND_SOURCE_DIR)
+  : '';
 const backendDir = path.resolve(__dirname, '..', 'backend');
 
 const ENTRIES = ['main.py', 'scim.py', 'supabase_client.py', 'requirements.txt', 'features', 'parsers', 'static', 'templates', 'lib'];
 
-if (!fs.existsSync(path.join(repoRoot, 'main.py'))) {
-  console.error(`copy-backend: could not find main.py in "${repoRoot}". Skipping backend bundling.`);
+if (!repoRoot || !fs.existsSync(path.join(repoRoot, 'main.py'))) {
+  console.error('copy-backend: CODEMD_BACKEND_SOURCE_DIR was not set to a backend containing main.py. Keeping existing bundled backend.');
   process.exit(0);
 }
 
@@ -22,7 +23,7 @@ try {
 } catch (err) {
   console.error(
     `copy-backend: could not clear "${backendDir}" (${err.message}). ` +
-      'Stop any running "codemd.dev (Graphs)" server (or Extension Development Host) and try again.',
+      'Stop any running CODE.md analyzer server (or Extension Development Host) and try again.',
   );
   process.exit(1);
 }
@@ -43,6 +44,20 @@ let mainText = fs.readFileSync(mainPy, 'utf8');
 mainText = mainText.replace(
   '@app.api_route("/dashboard", methods=["GET", "HEAD"])\n@app.api_route("/dashboard.html", methods=["GET", "HEAD"])\n@app.api_route("/dashboard.xml", methods=["GET", "HEAD"])\ndef dashboard():',
   '@app.api_route("/dashboard", methods=["GET", "HEAD"], operation_id="dashboard_get")\n@app.api_route("/dashboard.html", methods=["GET", "HEAD"], operation_id="dashboard_html_get")\n@app.api_route("/dashboard.xml", methods=["GET", "HEAD"], operation_id="dashboard_xml_get")\ndef dashboard():',
+);
+mainText = mainText.replace(
+  'DEFAULT_OUTPUT_DIR_NAME = "output_a1b2c3d4"\nOUTPUT_URL_PREFIX = f"/{DEFAULT_OUTPUT_DIR_NAME}"',
+  'DEFAULT_OUTPUT_DIR_NAME = "output_a1b2c3d4"\nOUTPUT_URL_PREFIX = f"/{DEFAULT_OUTPUT_DIR_NAME}"\nDEFAULT_LOCAL_OUTPUT_DIR = PARENT_ROOT / ".codemd" / "backend-output"',
+);
+mainText = mainText.replace(
+  /    existing_candidates = \[\r?\n        PARENT_ROOT\.parent \/ "output" \/ DEFAULT_OUTPUT_DIR_NAME,\r?\n        PARENT_ROOT \/ "output" \/ DEFAULT_OUTPUT_DIR_NAME,\r?\n        PROJECT_ROOT \/ "output" \/ DEFAULT_OUTPUT_DIR_NAME,\r?\n    \]\r?\n    for candidate in existing_candidates:\r?\n        if not candidate\.exists\(\):\r?\n            continue\r?\n        try:\r?\n            candidate\.mkdir\(parents=True, exist_ok=True\)\r?\n            return candidate\r?\n        except OSError:\r?\n            logging\.warning\("Output directory is not writable: %s", candidate\)\r?\n\r?\n    for base_dir in \(PARENT_ROOT, PROJECT_ROOT\):\r?\n        candidate = base_dir \/ DEFAULT_OUTPUT_DIR_NAME\r?\n        try:\r?\n            candidate\.mkdir\(parents=True, exist_ok=True\)\r?\n            return candidate\r?\n        except OSError:\r?\n            logging\.warning\("Output directory is not writable: %s", candidate\)/,
+  [
+    '    try:',
+    '        DEFAULT_LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)',
+    '        return DEFAULT_LOCAL_OUTPUT_DIR',
+    '    except OSError:',
+    '        logging.warning("Output directory is not writable: %s", DEFAULT_LOCAL_OUTPUT_DIR)',
+  ].join('\n'),
 );
 mainText = mainText.replace(
   '    csharp_graph_changed = False\n    python_graph_changed = False',

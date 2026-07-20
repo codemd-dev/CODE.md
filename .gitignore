@@ -1,1 +1,27 @@
-codemd.dev/
+.codemd/
+.codegraph/
+
+# Packaged extension builds — never source, always regenerable via `vsce package`.
+*.vsix
+
+# Python bytecode cache from running the bundled backend locally.
+**/__pycache__/**
+**/*.pyc
+
+# Runtime/local state written by the extension itself, machine-specific.
+debug.log
+trace_output.log
+err.txt
+.mcp.json
+.codex/config.toml
+.claude/settings.local.json
+
+# Analysis output dumps from running the bundled backend against this repo
+# during development.
+ast_output/
+joern_output/
+output_*/
+output-*/
+output*/
+
+node_modules/

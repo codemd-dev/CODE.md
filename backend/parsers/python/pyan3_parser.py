@@ -1,9 +1,13 @@
+import logging
 from pathlib import Path
 
 import networkx as nx
 from pyparsing import line
 
 import re
+
+logger = logging.getLogger(__name__)
+
 
 class PyCGParser:
 
@@ -41,9 +45,9 @@ class PyCGParser:
 
         py_files = self.discover_python_files()
 
-        print(f"[DEBUG] PyCGParser repo_root: {self.repo_root}")
-        print(f"[DEBUG] PyCGParser py_files found: {len(py_files)}")
-        print(f"[DEBUG] First 3 files: {py_files[:3]}")
+        logger.debug("PyCGParser repo_root: %s", self.repo_root)
+        logger.debug("PyCGParser py_files found: %d", len(py_files))
+        logger.debug("First 3 files: %s", py_files[:3])
 
         if not py_files:
             return self.function_graph
@@ -89,11 +93,11 @@ class PyCGParser:
                     self.function_graph.add_node(dst)
                     self.function_graph.add_edge(src, dst)
 
-            print(f"[DEBUG] pyan3 edges found: {self.function_graph.number_of_edges()}")
+            logger.debug("pyan3 edges found: %d", self.function_graph.number_of_edges())
 
         except SyntaxError as e:
-            print(f"[DEBUG] pyan3 SyntaxError (Python 2 repo?): {e}")
+            logger.debug("pyan3 SyntaxError (Python 2 repo?): %s", e)
         except Exception as e:
-            print(f"[DEBUG] pyan3 exception: {type(e).__name__}: {e}")
+            logger.debug("pyan3 exception: %s: %s", type(e).__name__, e)
 
         return self.function_graph

@@ -1,4 +1,4 @@
-﻿  <!DOCTYPE html>
+  <!DOCTYPE html>
   <html lang="en">
   <head>
   <!-- Google tag (gtag.js) -->
@@ -5217,8 +5217,6 @@
           { id: "code-md-panel", title: "Code.md", hint: "Open to review the generated repository contract.", open: false },
           { id: "search-graph-output-panel", title: "Search Graph Output", hint: "Open to view the map created by the latest search.", open: false },
           { id: "search-graphs-panel", title: "Search Graphs", hint: "Open to choose a file or function and create a smaller graph.", open: false },
-          { id: "playwright-tests-panel", title: "Playwright Tests", hint: "Open to run lightweight browser checks against your Product URL.", open: true },
-          { id: "test-suite-panel", title: "Generate Test Suite", hint: "Open to generate a custom pytest+Playwright test file for your routes, UI elements, and flows.", open: true },
           { id: "feedback-panel", title: "Contact / Feedback", hint: "Open to send feedback.", open: true }
         ].forEach(makeDashboardSectionCollapsible);
       }
@@ -8673,257 +8671,7 @@
         }
       }
 
-      let playwrightPollTimer = null;
-      let playwrightElapsedTimer = null;
-      let playwrightRunStartedAt = 0;
 
-      function playwrightSetInlineStatus(text, show = true) {
-        const el = $("playwrightInlineStatus");
-        if (!el) return;
-        el.textContent = text;
-        el.style.display = show ? "" : "none";
-      }
-
-      function playwrightElapsedSeconds() {
-        return Math.max(0, Math.round((Date.now() - playwrightRunStartedAt) / 1000));
-      }
-
-      function stopPlaywrightElapsedTimer() {
-        if (playwrightElapsedTimer) {
-          clearInterval(playwrightElapsedTimer);
-          playwrightElapsedTimer = null;
-        }
-      }
-
-      function startPlaywrightElapsedTimer(url) {
-        stopPlaywrightElapsedTimer();
-        playwrightRunStartedAt = Date.now();
-        const tick = () => {
-          const seconds = playwrightElapsedSeconds();
-          const button = $("runPlaywrightButton");
-          if (button) button.textContent = `Running... ${seconds}s`;
-          playwrightSetInlineStatus(`Running a lightweight Playwright check against ${url} (${seconds}s elapsed)... Results will appear in Playwright Tests below.`);
-        };
-        tick();
-        playwrightElapsedTimer = setInterval(tick, 1000);
-      }
-
-      function startPlaywrightRun() {
-        const analysis = currentAnalysis();
-        const apiRepo = analysisApiRepo(analysis || {});
-        const status = $("playwrightStatus");
-        if (!analysis || !apiRepo.owner || !apiRepo.repo) {
-          if (status) status.textContent = "Analyze a repository first.";
-          playwrightSetInlineStatus("Analyze a repository first, then run Playwright tests.");
-          return;
-        }
-        const url = ($("productEndpointUrl")?.value || "").trim();
-        if (!url) {
-          if (status) status.textContent = "Enter a Product URL above (in Connect Your Product) first.";
-          playwrightSetInlineStatus("Enter a Product URL above first.");
-          return;
-        }
-        const button = $("runPlaywrightButton");
-        if (button) { button.disabled = true; button.textContent = "Starting..."; }
-        if (status) status.textContent = `Starting Playwright tests against ${url}...`;
-        playwrightSetInlineStatus(`Starting Playwright tests against ${url}...`);
-        if ($("playwrightSummary")) $("playwrightSummary").style.display = "none";
-        if ($("playwrightResultsTable")) $("playwrightResultsTable").style.display = "none";
-        setPanelOpen("playwright-tests-panel", true);
-        $("playwright-tests-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
-        startPlaywrightElapsedTimer(url);
-
-        fetch(`${API_BASE}/playwright/start`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ owner_name: apiRepo.owner, repo_name: apiRepo.repo, url })
-        })
-          .then(parseJsonResponse)
-          .then(data => {
-            if (!data || !data.job_id) throw new Error((data && data.detail) || "Could not start Playwright run.");
-            pollPlaywrightStatus(data.job_id, url);
-          })
-          .catch(err => {
-            stopPlaywrightElapsedTimer();
-            const message = err.message || String(err);
-            if (status) status.textContent = message;
-            playwrightSetInlineStatus(`Playwright run failed to start: ${message}`);
-            if (button) { button.disabled = false; button.textContent = "Run Playwright Tests"; }
-          });
-      }
-
-      function pollPlaywrightStatus(jobId, url = "") {
-        if (playwrightPollTimer) clearTimeout(playwrightPollTimer);
-        const status = $("playwrightStatus");
-        const button = $("runPlaywrightButton");
-        fetch(`${API_BASE}/playwright/status/${jobId}`)
-          .then(parseJsonResponse)
-          .then(job => {
-            const seconds = playwrightElapsedSeconds();
-            const message = job.message || job.status || "Running...";
-            if (status) status.textContent = message;
-            if (job.status === "completed") {
-              stopPlaywrightElapsedTimer();
-              renderPlaywrightResults(job.result);
-              if (button) { button.disabled = false; button.textContent = "Run Playwright Tests"; }
-              playwrightSetInlineStatus(`Done in ${seconds}s. ${message} See the results below.`);
-              return;
-            }
-            if (job.status === "error") {
-              stopPlaywrightElapsedTimer();
-              if (status) status.textContent = job.message || "Playwright run failed.";
-              if (button) { button.disabled = false; button.textContent = "Run Playwright Tests"; }
-              playwrightSetInlineStatus(`Playwright run failed after ${seconds}s: ${job.message || "Unknown error."}`);
-              return;
-            }
-            if (button) button.textContent = `Running... ${seconds}s`;
-            playwrightSetInlineStatus(`${message} (${seconds}s elapsed)${url ? ` — testing ${url}` : ""}.`);
-            playwrightPollTimer = setTimeout(() => pollPlaywrightStatus(jobId, url), 3000);
-          })
-          .catch(err => {
-            stopPlaywrightElapsedTimer();
-            const message = err.message || String(err);
-            if (status) status.textContent = message;
-            playwrightSetInlineStatus(`Playwright status check failed: ${message}`);
-            if (button) { button.disabled = false; button.textContent = "Run Playwright Tests"; }
-          });
-      }
-
-      function renderPlaywrightResults(result) {
-        if (!result) return;
-        const summary = result.summary || {};
-        if ($("playwrightSummary")) $("playwrightSummary").style.display = "";
-        if ($("playwrightPagesTested")) $("playwrightPagesTested").textContent = summary.pages_tested ?? 0;
-        if ($("playwrightPagesFailed")) $("playwrightPagesFailed").textContent = summary.pages_failed ?? 0;
-        if ($("playwrightConsoleErrors")) $("playwrightConsoleErrors").textContent = summary.console_errors ?? 0;
-        if ($("playwrightA11yViolations")) $("playwrightA11yViolations").textContent = summary.accessibility_violations ?? 0;
-        const rows = $("playwrightResultsRows");
-        const pages = Array.isArray(result.pages) ? result.pages : [];
-        if (rows) {
-          rows.innerHTML = pages.map(p => `
-            <tr>
-              <td>${escapeHtml(p.title || p.url || "")}<br><span class="muted">${escapeHtml(p.url || "")}</span></td>
-              <td>${p.error ? `<span class="muted">Error: ${escapeHtml(p.error)}</span>` : escapeHtml(String(p.status ?? ""))}</td>
-              <td>${p.load_time_ms != null ? `${p.load_time_ms} ms` : ""}</td>
-              <td>${(p.console_errors || []).length + (p.page_errors || []).length}</td>
-              <td>${(p.accessibility && p.accessibility.violation_count) || 0}</td>
-              <td>${p.screenshot_url ? `<a href="${escapeHtml(p.screenshot_url)}" target="_blank" rel="noreferrer">View</a>` : ""}</td>
-            </tr>
-          `).join("");
-        }
-        if ($("playwrightResultsTable")) $("playwrightResultsTable").style.display = pages.length ? "" : "none";
-      }
-
-      let testSuiteElapsedTimer = null;
-      let testSuiteRunStartedAt = 0;
-
-      function toggleTestSuiteCredentials() {
-        const row = $("testSuiteCredentialsRow");
-        if (!row) return;
-        row.style.display = row.style.display === "none" ? "flex" : "none";
-      }
-
-      function testSuiteStopElapsedTimer() {
-        if (testSuiteElapsedTimer) {
-          clearInterval(testSuiteElapsedTimer);
-          testSuiteElapsedTimer = null;
-        }
-      }
-
-      function testSuiteElapsedSeconds() {
-        return Math.max(0, Math.round((Date.now() - testSuiteRunStartedAt) / 1000));
-      }
-
-      function testSuiteStartElapsedTimer(url) {
-        testSuiteStopElapsedTimer();
-        testSuiteRunStartedAt = Date.now();
-        const tick = () => {
-          const seconds = testSuiteElapsedSeconds();
-          const button = $("generateTestSuiteButton");
-          if (button) button.textContent = `Generating... ${seconds}s`;
-          if ($("testSuiteStatus")) {
-            $("testSuiteStatus").textContent = `Generating a custom test suite for ${url} (${seconds}s elapsed)... This calls the model once per batch of routes/UI elements/flows, so larger repos can take a minute or two.`;
-          }
-        };
-        tick();
-        testSuiteElapsedTimer = setInterval(tick, 1000);
-      }
-
-      function renderTestSuiteResult(data, seconds) {
-        const status = $("testSuiteStatus");
-        const stats = data.stats || {};
-        if (status) {
-          status.textContent = `Done in ${seconds}s. Generated ${stats.total_tests ?? 0} tests from ${stats.routes_covered ?? 0} routes, ${stats.ui_elements_covered ?? 0} UI elements, and ${stats.flow_tests_covered ?? 0} flows.`;
-        }
-        if ($("testSuiteSummary")) $("testSuiteSummary").style.display = "";
-        if ($("testSuiteRoutesCovered")) $("testSuiteRoutesCovered").textContent = stats.routes_covered ?? 0;
-        if ($("testSuiteUiElementsCovered")) $("testSuiteUiElementsCovered").textContent = stats.ui_elements_covered ?? 0;
-        if ($("testSuiteFlowTests")) $("testSuiteFlowTests").textContent = stats.flow_tests_covered ?? 0;
-        if ($("testSuiteTotalTests")) $("testSuiteTotalTests").textContent = stats.total_tests ?? 0;
-        const downloads = $("testSuiteDownloads");
-        if (downloads) {
-          downloads.style.display = (data.test_file_url || data.conftest_file_url) ? "" : "none";
-          if ($("testSuiteDownloadTestFile") && data.test_file_url) $("testSuiteDownloadTestFile").href = fullUrl(data.test_file_url);
-          if ($("testSuiteDownloadConftest") && data.conftest_file_url) $("testSuiteDownloadConftest").href = fullUrl(data.conftest_file_url);
-        }
-        const preview = $("testSuiteCodePreview");
-        if (preview) {
-          if (data.test_file) {
-            preview.style.display = "block";
-            preview.textContent = data.test_file;
-          } else {
-            preview.style.display = "none";
-          }
-        }
-      }
-
-      async function startTestSuiteGeneration() {
-        const analysis = currentAnalysis();
-        const apiRepo = analysisApiRepo(analysis || {});
-        const status = $("testSuiteStatus");
-        if (!analysis || !apiRepo.owner || !apiRepo.repo) {
-          if (status) status.textContent = "Analyze a repository first.";
-          return;
-        }
-        const url = ($("productEndpointUrl")?.value || "").trim();
-        if (!url) {
-          if (status) status.textContent = "Enter a Product URL above (in Connect Your Product) first.";
-          return;
-        }
-        const button = $("generateTestSuiteButton");
-        if (button) { button.disabled = true; button.textContent = "Starting..."; }
-        if (status) status.textContent = `Starting test suite generation for ${url}...`;
-        if ($("testSuiteSummary")) $("testSuiteSummary").style.display = "none";
-        if ($("testSuiteDownloads")) $("testSuiteDownloads").style.display = "none";
-        if ($("testSuiteCodePreview")) $("testSuiteCodePreview").style.display = "none";
-        testSuiteStartElapsedTimer(url);
-
-        const email = $("testSuiteEmail")?.value?.trim() || "";
-        const password = $("testSuitePassword")?.value?.trim() || "";
-
-        try {
-          const response = await fetch(`${API_BASE}/test-suite/generate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              owner_name: apiRepo.owner,
-              repo_name: apiRepo.repo,
-              target_url: url,
-              test_email: email,
-              test_password: password
-            })
-          });
-          const data = await parseJsonResponse(response);
-          const seconds = testSuiteElapsedSeconds();
-          testSuiteStopElapsedTimer();
-          renderTestSuiteResult(data, seconds);
-        } catch (err) {
-          testSuiteStopElapsedTimer();
-          if (status) status.textContent = err.message || String(err);
-        } finally {
-          if (button) { button.disabled = false; button.textContent = "Generate Test Suite"; }
-        }
-      }
 
       function selectedTodoFunction() {
         const raw = $("todoFunctionSelect")?.value || "";
@@ -10466,10 +10214,10 @@
 
     <!-- 1. Load Mixpanel SDK FIRST -->
     <script src="https://cdn.mxpnl.com/libs/mixpanel-2-latest.min.js"></script>
-    
+
     <!-- 2. Load your wrapper AFTER Mixpanel -->
     <script src="/static/mixpanel.js"></script>
-    
+
     <!-- 3. Send your first event -->
     <script>
         // Capture ALL JavaScript errors

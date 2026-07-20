@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: finallydoneapp-api
-    runtime: python3
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn tasksChat:app --host 0.0.0.0 --port $PORT

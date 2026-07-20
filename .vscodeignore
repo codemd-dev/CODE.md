@@ -8,15 +8,57 @@ tsconfig.json
 **/*.map
 debug.log
 err.txt
+backend/debug.log
+backend/err.txt
+backend/trace_output.log
 **/__pycache__/**
 **/*.pyc
+ast_output/**
+joern_output/**
 
 # Generated analysis output from running this extension against its own repo
-# during development — never ship it inside the packaged extension.
-codemd.dev/**
+# during development - never ship it inside the packaged extension.
+.codemd/**
+.codegraph/**
 
 # Runtime output from the bundled backend (BASE_OUTPUT) if the local server
-# was ever run from this folder before packaging — never ship analysis output.
+# was ever run from this folder before packaging - never ship analysis output.
 output_*/**
 output-*/**
 output*/**
+
+# Internal dev-workflow files with no purpose for someone installing the
+# extension.
+AGENTS.md
+CLAUDE.md
+pscommit.bat
+trace_output.log
+*.vsix
+
+# Only undici is imported by the compiled extension at runtime. The rest of
+# node_modules is extraneous/dev tooling and should not inflate the VSIX.
+node_modules/**
+!node_modules/undici/
+!node_modules/undici/package.json
+!node_modules/undici/LICENSE
+!node_modules/undici/index.js
+!node_modules/undici/index-fetch.js
+!node_modules/undici/lib/**
+
+# Trim dependency package payload that is not needed at runtime.
+node_modules/undici/docs/**
+node_modules/undici/test/**
+node_modules/undici/types/**
+node_modules/undici/scripts/**
+node_modules/undici/*.md
+
+# Backend static files kept around for development/demo history, not required
+# for the VS Code extension runtime.
+backend/static/BACKUP/**
+backend/static/api.codeval.html
+backend/static/demo.html
+backend/static/example.html
+backend/static/experiment.html
+backend/static/homepage.html
+backend/static/sample.html
+backend/static/sample_*.json

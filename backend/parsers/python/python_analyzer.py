@@ -1,4 +1,5 @@
 import ast
+import logging
 from pathlib import Path
 from warnings import filters
 
@@ -9,6 +10,8 @@ from .ast_indexer import ASTSymbolIndexer
 
 #from .pycg_parser import PyCGParser
 from .pyan3_parser import PyCGParser  # ← switch to this more stable PyCG wrapper
+
+logger = logging.getLogger(__name__)
 
 
 class PythonAnalyzer:
@@ -154,9 +157,9 @@ class PythonAnalyzer:
         # remove unreachable nodes
         unreachable = set(self.function_graph.nodes()) - reachable
         self.function_graph.remove_nodes_from(unreachable)
-        print(f"[DEBUG] entry nodes: {entry_nodes[:3]}")
-        print(f"[DEBUG] reachable nodes: {len(reachable)}")
-        print(f"[DEBUG] pruned unreachable: {len(unreachable)}")
+        logger.debug("entry nodes: %s", entry_nodes[:3])
+        logger.debug("reachable nodes: %d", len(reachable))
+        logger.debug("pruned unreachable: %d", len(unreachable))
 
 
     # ----------------------------------------
@@ -266,7 +269,7 @@ class PythonAnalyzer:
         graph_nodes = set(self.function_graph.nodes())
         index_keys  = set(self.symbol_index.keys())
         overlap = graph_nodes & index_keys
-        print(f"Graph nodes: {len(graph_nodes)}, Symbol index: {len(index_keys)}, Overlap: {len(overlap)}")
+        logger.debug("Graph nodes: %d, Symbol index: %d, Overlap: %d", len(graph_nodes), len(index_keys), len(overlap))
 
         # TODO - Added new entry point main.py?
         self.root_graph_at_entrypoint()  # ← add this

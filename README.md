@@ -1,41 +1,62 @@
-# CODE.md
+# CODEMD
 
-Install the extension and your coding agent (Claude, Codex, Cursor, etc.) gets smarter — and you save tokens, time, and $.
+CODEMD from [codemd.dev](https://www.codemd.dev) helps developers and coding agents understand code changes before they are committed. It combines local callgraphs, pre-commit risk analysis, blast-radius checks, signature-change detection, and navigable change maps inside VS Code.
 
-Estimate only — save up to 15% or 20% of your token size and budget per month
+Give Claude, Codex, Cursor, and other coding agents compact local code intelligence through CODEMD artifacts and MCP, so they can use callgraphs and repository structure instead of repeatedly scanning the whole workspace.
 
-Estimate only - High Impact teams that use agents heavily, use large models (GPT4, Claude 3.5, etc.), have long reasoning chains, generate multi-file changes could potentially save 15% to 20% of their monthly token budget. This can potentially translate to hundreds of dollars per month from this single CODE.md vscode extension!
+## Graphs
 
-CODE.md analyzes your workspace locally and generates a compact, structured map of your codebase: call graphs, file dependencies, UI element graphs, and repo stats. Point your coding agent at the generated `CODE.md` and it can answer "where is X" or "what calls Y" from a few KB of structured facts instead of grepping and reading through your entire repo.
+CODEMD generates and displays local repository graphs:
 
-## Features
+- **Callgraph**: who calls what across supported languages.
+- **File graph**: file-to-file dependencies.
+- **HTML UI graph**: buttons, links, inputs, forms, and frontend UI structure.
+- **Focused change graphs**: impact maps for specific search results, commits, and uncommitted edits.
 
-### 🔍 Search
-Search your codebase from the sidebar panel — results are pulled from the local structural analysis, not just plain text grep, so you get matches with file, line, and context.
+![CODEMD impact graph and change report inside VS Code](https://github.com/codemd-dev/CODE.md/blob/main/uncommitted-edits.jpg?raw=true)
 
-### 🕸️ Search Graphs
-Browse interactive, navigable graphs of your codebase directly inside VS Code:
+![CODEMD search graphs](https://github.com/codemd-dev/CODE.md/blob/main/search-graph.jpg?raw=true)
 
-- **Call graph** — who calls what, across languages
-- **File graph** — file-to-file dependencies
-- **HTML UI graph** — buttons, links, inputs, and forms in your frontend
+## What CODEMD Does
 
-Open a graph in the side panel, expand it to fill the window, or pop it out into a full editor tab.
+1. **Reviews changes before commit**
+   Summarizes uncommitted edits, changed functions, deleted files, added files, removed folders, and other risky file changes before they land.
 
-![Search graphs](media/search-graphs-demo.jpg)
+2. **Highlights risk and blast radius**
+   Scores changes by caller impact, sensitive paths, dependencies, CI/deploy files, migrations, schemas, and broad upstream usage.
+
+3. **Catches function-level breakage**
+   Detects deleted functions, Python signature changes, and provably incompatible direct call sites.
+
+4. **Turns diffs into navigable context**
+   Lets developers jump from reports to source, diffs, changed functions, focused impact graphs, and recent commit analysis.
+
+5. **Gives coding agents local repo intelligence**
+   Generates `.codemd/` artifacts so Claude, Codex, Cursor, and other agents can use callgraphs and structure instead of repeatedly scanning files.
+
+6. **Runs local-first with MCP support**
+   Keeps core analysis in the workspace and exposes search, callers, callees, impact radius, status, and call paths through MCP.
+
+## Key Workflows
+
+- Click **Check Uncommitted Edits** to review local changes before committing.
+- Click **Blast Radius Report** to focus on changed functions whose caller footprint is risky.
+- Click **Check Latest Commits** to inspect committed changes and their impact.
+- Use the search box to find code through local CODEMD analysis.
+- Use **Set Up MCP** to connect Claude Code, Codex, and other MCP clients to CODEMD's local code intelligence.
 
 ## Getting Started
 
-1. Install the extension.
-2. Click the CODE.md icon in the Activity Bar.
-3. Run **Generate CODE.md** to analyze the current workspace.
-4. Use the **Search** box to query your codebase, or open the generated graphs to explore visually.
-5. Point your coding agent's context (e.g. `AGENTS.md` / `CLAUDE.md`) at the generated `codemd.dev/` folder so it can use the structured graphs instead of re-reading the whole repo.
+1. Install CODEMD.
+2. Click the CODEMD icon in the Activity Bar.
+3. Run **Generate CODEMD** to analyze the current workspace.
+4. Use **Check Uncommitted Edits**, **Blast Radius Report**, search, or graph navigation.
+5. Use **Set Up MCP** so Claude, Codex, and other coding agents can use CODEMD callgraphs and local repo intelligence.
 
 ## Requirements
 
-- Python 3 (the extension manages an isolated virtual environment automatically; you can also set `codemdGraphs.pythonPath` to use your own interpreter).
+- Python 3. CODEMD manages an isolated virtual environment automatically. You can also set `codemdGraphs.pythonPath` to use your own interpreter.
 
 ## Learn More
 
-Visit [codemd.dev](https://www.codemd.dev) for more details.
+Visit [codemd.dev](https://www.codemd.dev).

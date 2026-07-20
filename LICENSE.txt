@@ -1,0 +1,23 @@
+CODEMD Extension License
+
+Copyright (c) 2026 CodeVal. All rights reserved.
+
+This extension and its source code are proprietary and source-available,
+not open source.
+
+CodeVal grants you a limited, non-exclusive, non-transferable license to
+install and use the packaged CODEMD extension when obtained from an
+authorized extension marketplace or other distribution channel approved by
+CodeVal.
+
+Except as required to install and use the packaged extension, no license is
+granted to copy, modify, merge, publish, distribute, sublicense, sell,
+host, or create derivative works from this software, in whole or in part,
+without prior written permission from CodeVal.
+
+This repository may be made available for reference, review, issue
+reporting, or security review. Access to the repository does not grant any
+additional rights beyond those stated in this license.
+
+Third-party dependencies bundled with or used by this extension remain
+subject to their own license terms.

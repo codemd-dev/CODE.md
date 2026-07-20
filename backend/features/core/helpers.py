@@ -59,27 +59,28 @@ def first_existing_path(*paths):
     return Path(paths[0]) if paths else Path()
 
 
+def first_valid_json_path(*paths):
+    for path in paths:
+        candidate = Path(path)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            if candidate.stat().st_size <= 0:
+                logger.warning("Skipping empty JSON artifact: %s", candidate)
+                continue
+            json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            logger.warning("Skipping invalid JSON artifact %s: %s", candidate, e)
+            continue
+        return candidate
+    return Path(paths[0]) if paths else Path()
+
+
 def feature_catalog_path_for_output(output_repo_dir):
     artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
+    return first_valid_json_path(
         artifact_root / "architecture" / "feature_catalog.json",
         artifact_root / "scim" / "feature_catalog.json",
-    )
-
-
-def feature_summaries_path_for_output(output_repo_dir):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
-        artifact_root / "architecture" / "feature_summaries.json",
-        artifact_root / "scim" / "feature_summaries.json",
-    )
-
-
-def features_text_path_for_output(output_repo_dir):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    return first_existing_path(
-        artifact_root / "architecture" / "features.txt",
-        artifact_root / "scim" / "features.txt",
     )
 
 
@@ -207,7 +208,7 @@ def scim_evidence_record(symbol: str, source_type: str, title: str, path: str, t
 def load_json_file(path: Path, default=None):
     try:
         if Path(path).exists():
-            return json.loads(Path(path).read_text(encoding="utf-8"))
+            return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except Exception as e:
         logger.warning("Unable to load JSON file %s: %s", path, e)
     return {} if default is None else default
@@ -324,10 +325,8 @@ def scim_artifact_source_type(path: Path) -> str:
         return "quality_signal"
     if name in {"daily_change_cache.json", "daily_commit_graph.json"} or "daily_change_graph" in name:
         return "commit_history"
-    if name in {"feature_summaries.json", "features.txt"}:
-        return "generated_feature_summary"
-    if name == "answers.jsonl" or "/derived_memory/" in rel:
-        return "derived_summary"
+    if name in {"feature_summaries.json", "features.txt", "answers.jsonl"} or "/derived_memory/" in rel:
+        return "ignored_derived_artifact"
     if name == "ga_interactions.json" or name.startswith("ga_"):
         return "ga_summary"
     if "callgraph" in name or "graph" in name:
@@ -361,70 +360,6 @@ def chunk_scim_artifact_text(text: str, chunk_chars: int = SCIM_ARTIFACT_EVIDENC
             chunks.append(chunk)
         start = max(end, start + 1)
     return chunks
-
-def build_feature_summary_evidence(output_repo_dir: Path):
-    artifact_root = artifact_root_for_output(output_repo_dir)
-    feature_data = load_json_file(feature_catalog_path_for_output(artifact_root), {})
-    generated_data = load_json_file(feature_summaries_path_for_output(artifact_root), {})
-    features = feature_data.get("features", []) if isinstance(feature_data, dict) else []
-    generated_features = generated_data.get("feature_summaries", []) if isinstance(generated_data, dict) else []
-    if not features and not generated_features:
-        return []
-    lines = [
-        "Repository feature summary from SCIM feature catalog.",
-        f"Product name: {feature_data.get('product_name', '')}.",
-        f"Product type: {feature_data.get('product_type', '')}.",
-        "Generated feature explanations are derived summaries, not original repository truth.",
-        "Detected feature candidates:",
-    ]
-    for feature in features[:50]:
-        lines.append(f"- {feature.get('feature', '')}: matches {feature.get('match_count', 0)}; status {feature.get('status', '')}; visibility {feature.get('visibility', '')}.")
-    if generated_features:
-        lines.append("Generated feature summaries:")
-        for feature in generated_features[:50]:
-            description = " ".join(str(feature.get("description") or "").split())
-            lines.append(f"- {feature.get('feature', '')}: {description}")
-    records = [
-        scim_evidence_record(
-            "evidence.features.summary",
-            "feature_summary",
-            "Repository Feature Summary",
-            "architecture/feature_catalog.json",
-            "\n".join(lines),
-            {"feature_count": len(features), "generated_feature_summary_count": len(generated_features)},
-        )
-    ]
-    for index, feature in enumerate(generated_features[:80], start=1):
-        name = str(feature.get("feature") or f"Feature {index}").strip()
-        description = " ".join(str(feature.get("description") or "").split())
-        if not description:
-            continue
-        references = feature.get("references") or []
-        reference_text = "; ".join(
-            f"{ref.get('short_symbol') or ref.get('symbol') or ''} {ref.get('file') or ref.get('path') or ''}:{ref.get('start_line') or ''}".strip()
-            for ref in references[:5]
-            if isinstance(ref, dict)
-        )
-        records.append(scim_evidence_record(
-            f"evidence.features.generated.{index:03d}.{safe_filename(name).lower()}",
-            "generated_feature_summary",
-            name,
-            "architecture/feature_summaries.json",
-            (
-                "Generated feature summary derived from SCIM evidence and LLM review.\n"
-                "Truth status: derived_not_original_truth.\n"
-                f"Feature: {name}\n"
-                f"Description: {description}\n"
-                f"References: {reference_text}"
-            ),
-            {
-                "feature": name,
-                "references": references[:10],
-                "truth_status": "derived_not_original_truth",
-            },
-        ))
-    return records
-
 
 
 
@@ -548,7 +483,6 @@ def build_typed_scim_evidence_records(output_repo_dir: Path):
     records = []
     edges = []
     records.extend(build_repo_overview_evidence(output_repo_dir))
-    records.extend(build_feature_summary_evidence(output_repo_dir))
     ga_records, ga_edges = build_ga_summary_evidence(output_repo_dir)
     records.extend(ga_records)
     edges.extend(ga_edges)
@@ -693,11 +627,6 @@ def write_scim_layer_manifest(output_repo_dir: Path, evidence_result: dict | Non
                 "artifacts": ["language callgraphs", "combined_callgraph", "file_graph", "html_ui_graph", "graph JSON artifacts"],
                 "note": "Control-flow graphs are included when extractor artifacts exist; otherwise callgraph/dependency graph evidence is used.",
             },
-            "semantic": {
-                "status": "implemented",
-                "artifacts": ["feature_summaries.json", "derived_memory/answers.jsonl", "product summaries", "daily summaries"],
-                "truth_policy": "Generated summaries are derived evidence, not original source truth.",
-            },
             "embedding": {
                 "status": "implemented",
                 "artifacts": ["scim/vectors.sqlite", "scim/embedding_model.json", "scim/functions.jsonl"],
@@ -709,8 +638,8 @@ def write_scim_layer_manifest(output_repo_dir: Path, evidence_result: dict | Non
                 "artifacts": ["retrieval planner", "source-type boosts", "callgraph-aware search", "text/code/evidence retrieval"],
             },
             "synthesis": {
-                "status": "implemented_via_external_llm",
-                "artifacts": ["search-answer", "summary", "feature-summary", "daily-summary prompts"],
+                "status": "disabled_for_truth_index",
+                "artifacts": [],
             },
         },
     }
@@ -881,7 +810,7 @@ def get_impact_radius(node, callgraph, max_nodes: int = 200):
 # exactly like "every function in this file got deleted."
 # ---------------------------------------------------------------------------
 
-SUPPORTED_SPAN_EXTENSIONS = {".py"}
+SUPPORTED_SPAN_EXTENSIONS = {".py", ".java", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
 def _python_module_name_for(rel_path: str) -> str:
     """Mirrors module_name_for() in build_python_callgraph (main.py): turn a
@@ -896,6 +825,199 @@ def _python_module_name_for(rel_path: str) -> str:
     return ".".join(parts) if parts else "__init__"
 
 
+def _script_module_name_for(rel_path: str) -> str:
+    rel = rel_path.replace("\\", "/")
+    suffix = Path(rel).suffix
+    if suffix:
+        rel = rel[: -len(suffix)]
+    return ".".join(part for part in rel.split("/") if part)
+
+
+def _line_number_at(source: str, index: int) -> int:
+    return source.count("\n", 0, index) + 1
+
+
+def _brace_span_end_line(source: str, start_index: int, fallback_line: int) -> int:
+    brace_index = source.find("{", start_index)
+    if brace_index < 0:
+        return fallback_line
+    depth = 0
+    in_string = ""
+    escaped = False
+    in_line_comment = False
+    in_block_comment = False
+    for index in range(brace_index, len(source)):
+        ch = source[index]
+        nxt = source[index + 1] if index + 1 < len(source) else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            continue
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = ""
+            continue
+        if ch in {"'", '"', "`"}:
+            in_string = ch
+            continue
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth <= 0:
+                return _line_number_at(source, index)
+    return source.count("\n") + 1
+
+
+def _javascript_function_spans(file_path: str, repo_root: str, source: str):
+    rel_path = os.path.relpath(file_path, repo_root).replace("\\", "/") if repo_root else file_path.replace("\\", "/")
+    module_name = _script_module_name_for(rel_path)
+    patterns = [
+        re.compile(r"\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", re.MULTILINE),
+        re.compile(r"\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)", re.MULTILINE),
+    ]
+    spans = []
+    seen = set()
+    for pattern in patterns:
+        for match in pattern.finditer(source):
+            name = match.group(1)
+            symbol = ".".join(part for part in (module_name, name) if part)
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            start_line = _line_number_at(source, match.start())
+            spans.append({
+                "symbol": symbol,
+                "start_line": start_line,
+                "end_line": _brace_span_end_line(source, match.end(), start_line),
+            })
+    return sorted(spans, key=lambda item: (item["start_line"], item["symbol"]))
+
+
+JAVA_CLASS_RE = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)[^{;]*\{", re.MULTILINE)
+JAVA_METHOD_RE = re.compile(
+    r"""
+    ^[ \t]*
+    (?:@\w+(?:\([^)]*\))?\s*)*
+    (?:
+        (?:public|protected|private|static|final|abstract|synchronized|native|strictfp|default)\s+
+    )*
+    (?:<[^>{};]+>\s*)?
+    (?:(?:[A-Za-z_$][\w$<>[\],.?]*\s+)+)?
+    (?P<name>[A-Za-z_$][\w$]*)\s*
+    \([^;{}]*\)\s*
+    (?:throws\s+[^{;]+)?
+    \{
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+JAVA_NON_METHOD_NAMES = {
+    "if", "for", "while", "switch", "catch", "try", "else", "do", "new", "return",
+    "synchronized",
+}
+
+
+def _mask_java_non_code(source: str) -> str:
+    chars = list(source)
+    in_string = ""
+    escaped = False
+    in_line_comment = False
+    in_block_comment = False
+    for index, ch in enumerate(source):
+        nxt = source[index + 1] if index + 1 < len(source) else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            else:
+                chars[index] = " "
+            continue
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                chars[index] = " "
+                continue
+            if ch == "/" and index > 0 and source[index - 1] == "*":
+                in_block_comment = False
+            chars[index] = "\n" if ch == "\n" else " "
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = ""
+            chars[index] = "\n" if ch == "\n" else " "
+            continue
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            chars[index] = " "
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            chars[index] = " "
+            continue
+        if ch in {"'", '"'}:
+            in_string = ch
+            chars[index] = " "
+    return "".join(chars)
+
+
+def _java_function_spans(file_path: str, repo_root: str, source: str):
+    scan_source = _mask_java_non_code(source)
+    lines = source.splitlines(keepends=True)
+    spans = []
+    seen = set()
+    for class_match in JAVA_CLASS_RE.finditer(scan_source):
+        class_name = class_match.group(1)
+        if class_name in JAVA_NON_METHOD_NAMES:
+            continue
+        class_open = scan_source.find("{", class_match.start())
+        if class_open < 0:
+            continue
+        class_close_line = _brace_span_end_line(source, class_open, _line_number_at(source, class_open))
+        class_close_offset = sum(len(line) for line in lines[:class_close_line])
+        body = scan_source[class_open + 1:class_close_offset]
+        for method_match in JAVA_METHOD_RE.finditer(body):
+            method_name = method_match.group("name")
+            if not method_name or method_name in JAVA_NON_METHOD_NAMES:
+                continue
+            if method_name[0].isupper() and method_name != class_name:
+                continue
+            header = body[method_match.start():method_match.end()]
+            if re.search(r"\bnew\s+" + re.escape(method_name) + r"\s*\(", header):
+                continue
+            start_offset = class_open + 1 + method_match.start()
+            prefix = scan_source[class_open + 1:start_offset]
+            if prefix.count("{") != prefix.count("}"):
+                continue
+            start_line = _line_number_at(source, start_offset)
+            symbol = f"{class_name}.{method_name}"
+            key = (symbol, start_line)
+            if key in seen:
+                continue
+            seen.add(key)
+            spans.append({
+                "symbol": symbol,
+                "start_line": start_line,
+                "end_line": _brace_span_end_line(source, class_open + 1 + method_match.end() - 1, start_line),
+            })
+    return sorted(spans, key=lambda item: (item["start_line"], item["symbol"]))
+
+
 def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str] = None):
     """Return [{"symbol", "start_line", "end_line"}] for every function/method
     defined in file_path, using the same dotted module.Class.func naming
@@ -908,7 +1030,8 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
     yet (only .py today), and [] when it's a supported language with zero
     functions or a parse error — callers must not conflate the two."""
     file_path = str(file_path)
-    if not file_path.endswith(".py"):
+    ext = Path(file_path).suffix.lower()
+    if ext not in SUPPORTED_SPAN_EXTENSIONS:
         return None
 
     if source is None:
@@ -917,6 +1040,12 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
                 source = f.read()
         except OSError:
             return []
+
+    if ext == ".java":
+        return _java_function_spans(file_path, repo_root, source)
+
+    if ext in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        return _javascript_function_spans(file_path, repo_root, source)
 
     try:
         tree = ast.parse(source, filename=file_path)
@@ -952,4 +1081,234 @@ def get_function_spans(file_path: str, repo_root: str = "", source: Optional[str
 
     visit(tree)
     return spans
-    return str(manifest_path)
+
+
+def _find_function_node(tree, module_name: str, symbol: str):
+    """Locate the ast.FunctionDef/AsyncFunctionDef node whose dotted
+    module.Class.func path — built the same way get_function_spans() builds
+    it — equals `symbol`. Returns None if no such node exists in `tree`."""
+    target = None
+
+    def visit(node, class_stack, function_stack):
+        nonlocal target
+        for child in ast.iter_child_nodes(node):
+            if target is not None:
+                return
+            if isinstance(child, ast.ClassDef):
+                visit(child, class_stack + [child.name], function_stack)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parts = [module_name] + class_stack + function_stack + [child.name]
+                candidate = ".".join(part for part in parts if part)
+                if candidate == symbol:
+                    target = child
+                    return
+                visit(child, class_stack, function_stack + [child.name])
+            else:
+                visit(child, class_stack, function_stack)
+
+    visit(tree, [], [])
+    return target
+
+
+def python_function_ast_unchanged(old_source: str, new_source: str, rel_path: str, symbol: str) -> Optional[bool]:
+    """True when `symbol`'s parsed body is identical between old_source and
+    new_source — i.e. a git-diff-confirmed "modification" that turns out to
+    be whitespace, comments, or blank-line-only, nothing ast.parse cares
+    about. False when the body genuinely differs. None when either side
+    fails to parse or `symbol` can't be located in both trees (renamed,
+    moved, or a span/callgraph mismatch) — callers must treat None as "can't
+    tell", never as "changed", since flipping it to False by default would
+    silently misclassify unrelated failures as real edits."""
+    try:
+        old_tree = ast.parse(old_source)
+        new_tree = ast.parse(new_source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    old_node = _find_function_node(old_tree, module_name, symbol)
+    new_node = _find_function_node(new_tree, module_name, symbol)
+    if old_node is None or new_node is None:
+        return None
+    return ast.dump(old_node, annotate_fields=True, include_attributes=False) == \
+        ast.dump(new_node, annotate_fields=True, include_attributes=False)
+
+
+def python_function_signature(source: str, rel_path: str, symbol: str) -> Optional[dict]:
+    """Structural call signature of `symbol`: parameter names split into
+    required-positional / optional-positional / keyword-only (required vs
+    optional), plus whether *args/**kwargs soak up extra call-site
+    arguments. `self`/`cls` is stripped from the front of the required list
+    (call sites never pass it explicitly) — this is a naming heuristic, not
+    a class-membership check, matching the heuristic character of the rest
+    of this file. Returns None if `symbol` can't be parsed/located."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    node = _find_function_node(tree, module_name, symbol)
+    if node is None:
+        return None
+    args = node.args
+    posonly = [p.arg for p in getattr(args, "posonlyargs", [])]
+    positional = posonly + [p.arg for p in args.args]
+    defaults_count = len(args.defaults)
+    split = max(len(positional) - defaults_count, 0)
+    required_positional = positional[:split]
+    optional_positional = positional[split:]
+    if required_positional and required_positional[0] in ("self", "cls"):
+        required_positional = required_positional[1:]
+    return {
+        "required_positional": required_positional,
+        "optional_positional": optional_positional,
+        "kwonly_required": [p.arg for p, d in zip(args.kwonlyargs, args.kw_defaults) if d is None],
+        "kwonly_optional": [p.arg for p, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None],
+        "has_star_args": args.vararg is not None,
+        "has_star_kwargs": args.kwarg is not None,
+    }
+
+
+def render_python_signature(symbol: str, sig: dict) -> str:
+    """Human-readable `name(...)` line from a python_function_signature dict.
+    Default values aren't captured (only whether a param is optional), so
+    optional params render as `name=...` rather than the real default."""
+    tail = symbol.split(".")[-1] if symbol else ""
+    parts = list(sig.get("required_positional") or [])
+    parts += [f"{p}=..." for p in (sig.get("optional_positional") or [])]
+    if sig.get("has_star_args"):
+        parts.append("*args")
+    elif sig.get("kwonly_required") or sig.get("kwonly_optional"):
+        parts.append("*")
+    parts += list(sig.get("kwonly_required") or [])
+    parts += [f"{p}=..." for p in (sig.get("kwonly_optional") or [])]
+    if sig.get("has_star_kwargs"):
+        parts.append("**kwargs")
+    return f"{tail}({', '.join(parts)})"
+
+
+def python_function_signature_diff(old_source: str, new_source: str, rel_path: str, symbol: str) -> Optional[dict]:
+    """Structural diff between `symbol`'s signature in old_source and
+    new_source. None when either side can't be parsed/located — same
+    contract as python_function_ast_unchanged, callers must not treat None
+    as "no change". `new_signature` is included so callers checking
+    call-site compatibility (python_check_call_compatibility) don't have to
+    re-derive it. `old_signature_text`/`new_signature_text` are rendered
+    `name(...)` lines for display — unlike `new_signature`, these are meant
+    to reach the report's consumers."""
+    old_sig = python_function_signature(old_source, rel_path, symbol)
+    new_sig = python_function_signature(new_source, rel_path, symbol)
+    if old_sig is None or new_sig is None:
+        return None
+    old_all = set(
+        old_sig["required_positional"] + old_sig["optional_positional"]
+        + old_sig["kwonly_required"] + old_sig["kwonly_optional"]
+    )
+    new_all = set(
+        new_sig["required_positional"] + new_sig["optional_positional"]
+        + new_sig["kwonly_required"] + new_sig["kwonly_optional"]
+    )
+    added_required = [p for p in (new_sig["required_positional"] + new_sig["kwonly_required"]) if p not in old_all]
+    added_optional = [p for p in (new_sig["optional_positional"] + new_sig["kwonly_optional"]) if p not in old_all]
+    removed = [p for p in old_all if p not in new_all]
+    star_args_changed = old_sig["has_star_args"] != new_sig["has_star_args"]
+    star_kwargs_changed = old_sig["has_star_kwargs"] != new_sig["has_star_kwargs"]
+    return {
+        "changed": bool(added_required or added_optional or removed or star_args_changed or star_kwargs_changed),
+        "added_required": added_required,
+        "added_optional": added_optional,
+        "removed": removed,
+        "star_args_changed": star_args_changed,
+        "star_kwargs_changed": star_kwargs_changed,
+        "old_signature_text": render_python_signature(symbol, old_sig),
+        "new_signature_text": render_python_signature(symbol, new_sig),
+        "new_signature": new_sig,
+    }
+
+
+def python_find_calls_in_function(source: str, rel_path: str, caller_symbol: str, callee_tail: str) -> Optional[list]:
+    """Call-expression shapes for every call to a function/method named
+    `callee_tail` (the changed symbol's last dotted segment) found inside
+    `caller_symbol`'s body in `source`. Matches by final identifier only —
+    `foo()`, `self.foo()`, and `mod.foo()` all match, but so would an
+    unrelated same-named function, and an aliased import (`from x import
+    foo as bar`) would be missed entirely; this is the same
+    heuristic/name-matched character the rest of the callgraph already
+    admits to (see node_confidence). Returns None if `caller_symbol` can't
+    be parsed/located; [] if it parses but contains no matching call."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    module_name = _python_module_name_for(rel_path)
+    node = _find_function_node(tree, module_name, caller_symbol)
+    if node is None:
+        return None
+    calls = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        if name != callee_tail:
+            continue
+        positional = [a for a in child.args if not isinstance(a, ast.Starred)]
+        calls.append({
+            "line": getattr(child, "lineno", None),
+            "positional_count": len(positional),
+            "keywords": [kw.arg for kw in child.keywords if kw.arg is not None],
+            "has_star_args": any(isinstance(a, ast.Starred) for a in child.args),
+            "has_star_kwargs": any(kw.arg is None for kw in child.keywords),
+        })
+    return calls
+
+
+def python_check_call_compatibility(signature: dict, call: dict) -> dict:
+    """Compares one call-site shape (from python_find_calls_in_function)
+    against a callee signature (from python_function_signature /
+    python_function_signature_diff's `new_signature`). Returns
+    {"status": "compatible"|"incompatible"|"unverifiable", "reason": str}.
+    Errs toward "unverifiable" rather than a false "incompatible" whenever
+    the call spreads *args/**kwargs, since the actual argument count/names
+    aren't knowable statically in that case."""
+    if call.get("has_star_args") or call.get("has_star_kwargs"):
+        return {"status": "unverifiable", "reason": "Call unpacks *args/**kwargs — argument count not known statically."}
+
+    positional_count = call.get("positional_count", 0)
+    keywords = set(call.get("keywords") or [])
+    required_positional = signature.get("required_positional", [])
+    optional_positional = signature.get("optional_positional", [])
+    all_positional = required_positional + optional_positional
+    max_positional = None if signature.get("has_star_args") else len(all_positional)
+
+    if max_positional is not None and positional_count > max_positional:
+        return {
+            "status": "incompatible",
+            "reason": f"Passes {positional_count} positional argument(s); the function now accepts at most {max_positional}.",
+        }
+
+    filled_by_position = set(all_positional[:positional_count])
+    duplicate = filled_by_position & keywords
+    if duplicate:
+        return {
+            "status": "incompatible",
+            "reason": f"Passes {', '.join(sorted(duplicate))} both positionally and by keyword.",
+        }
+
+    still_required = [p for p in required_positional if p not in filled_by_position and p not in keywords]
+    still_required += [p for p in signature.get("kwonly_required", []) if p not in keywords]
+    if still_required:
+        return {
+            "status": "incompatible",
+            "reason": f"Missing required argument(s): {', '.join(still_required)}.",
+        }
+
+    if not signature.get("has_star_kwargs"):
+        allowed_keywords = set(all_positional) | set(signature.get("kwonly_required", [])) | set(signature.get("kwonly_optional", []))
+        unknown_keywords = [k for k in keywords if k not in allowed_keywords]
+        if unknown_keywords:
+            return {
+                "status": "incompatible",
+                "reason": f"Passes unknown keyword argument(s): {', '.join(unknown_keywords)}.",
+            }
+
+    return {"status": "compatible", "reason": ""}

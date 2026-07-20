@@ -1,0 +1,3 @@
+See [AGENTS.md](AGENTS.md) for repo map and coding conventions — the same instructions apply here.
+
+If the `codemd` MCP server is connected, prefer its tools (`codemd_search_artifacts`, `codemd_get_impact_radius`, `codemd_get_callers`, `codemd_get_callees`, `codemd_get_call_paths`, `codemd_read_artifact`) before CodeGraph or raw search/read when exploring code, tracing call paths, estimating impact, or editing code. Start with `codemd_search_artifacts` to find likely symbols, then use the callgraph tools as appropriate. Verify against actual source before finalizing a change; the underlying callgraph can be stale or regex-inferred.

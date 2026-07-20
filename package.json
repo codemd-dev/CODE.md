@@ -1,17 +1,16 @@
 {
-  "name": "codeval-codemd-graphs",
-  "displayName": "CODE.md",
-  "description": "Search this workspace with local CODE.md analysis and interactive graph browsing.",
-  "version": "0.0.31",
-  "publisher": "codeval",
+  "name": "codemd-graphs",
+  "displayName": "CODEMD",
+  "description": "Pre-commit risk and impact analysis for developers and coding agents, powered by local CODEMD callgraphs and MCP.",
+  "version": "0.0.54",
+  "publisher": "codemd-dev",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
+  "license": "SEE LICENSE IN LICENSE.txt",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pranaysaani/CODE.md.vscode.git",
-    "directory": "vscode-extension-graphs"
+    "url": "https://github.com/pranaysaani/vscode-extension-graphs.git"
   },
-  "private": true,
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -20,15 +19,16 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onView:codemdGraphs.panel",
     "onCommand:codemd",
     "onCommand:codemdGraphs.open",
     "onCommand:codemdGraphs.openEditor",
     "onCommand:codemdGraphs.generate",
     "onCommand:codemdGraphs.setupMcp",
     "onCommand:codemdGraphs.stopServer",
+    "onCommand:codemdGraphs.openDebugLog",
     "onCommand:codemdlocal.generate",
-    "onCommand:codemdLocal.generate",
-    "onView:codemdGraphs.panel"
+    "onCommand:codemdLocal.generate"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -36,7 +36,7 @@
       "activitybar": [
         {
           "id": "codemdGraphs",
-          "title": "CODE.md",
+          "title": "CODEMD",
           "icon": "media/icon.svg"
         }
       ]
@@ -45,7 +45,7 @@
       "codemdGraphs": [
         {
           "id": "codemdGraphs.panel",
-          "name": "CODE.md",
+          "name": "CODEMD",
           "type": "webview"
         }
       ]
@@ -53,36 +53,40 @@
     "commands": [
       {
         "command": "codemd",
-        "title": "Open CODE.md"
+        "title": "Open CODEMD"
       },
       {
         "command": "codemdGraphs.open",
-        "title": "Open CODE.md"
+        "title": "Open CODEMD"
       },
       {
         "command": "codemdGraphs.openEditor",
-        "title": "Open CODE.md in Editor"
+        "title": "Open CODEMD in Editor"
       },
       {
         "command": "codemdGraphs.generate",
-        "title": "Generate CODE.md",
+        "title": "Generate CODEMD",
         "icon": "$(refresh)"
       },
       {
         "command": "codemdGraphs.setupMcp",
-        "title": "CODE.md: Set Up MCP"
+        "title": "CODEMD: Set Up MCP"
       },
       {
         "command": "codemdlocal.generate",
-        "title": "Generate CODE.md"
+        "title": "Generate CODEMD"
       },
       {
         "command": "codemdLocal.generate",
-        "title": "Generate CODE.md"
+        "title": "Generate CODEMD"
       },
       {
         "command": "codemdGraphs.stopServer",
-        "title": "CODE.md: Stop Local Server"
+        "title": "CODEMD: Stop Local Server"
+      },
+      {
+        "command": "codemdGraphs.openDebugLog",
+        "title": "CODEMD: Open Debug Log"
       }
     ],
     "menus": {
@@ -97,11 +101,11 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "codemdGraphs.mcp",
-        "label": "CODE.md MCP"
+        "label": "codemd"
       }
     ],
     "configuration": {
-      "title": "CODE.md",
+      "title": "CODEMD",
       "properties": {
         "codemdGraphs.autoWriteProjectMcpConfig": {
           "type": "boolean",
@@ -111,12 +115,12 @@
         "codemdGraphs.autoReveal": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically open the CODE.md panel when a workspace loads, so the callgraph appears without needing to click the CODE.md activity bar icon first."
+          "description": "Automatically open the CODEMD panel when a workspace loads, so the callgraph appears without needing to click the CODEMD activity bar icon first."
         },
         "codemdGraphs.backendDir": {
           "type": "string",
           "default": "",
-          "description": "Path to the folder containing the CodeVal FastAPI app (main.py). Leave empty to use the backend bundled with this extension (backend/), or, if that's not present, the open workspace if it is the CodeVal repo itself; otherwise you'll be prompted to pick the folder once, and the choice is saved here."
+          "description": "Path to the folder containing the CODEMD analyzer backend (main.py). Leave empty to use the backend bundled with this extension. If no bundled backend is available, Generate CODEMD will prompt for an explicit backend folder."
         },
         "codemdGraphs.pythonPath": {
           "type": "string",
@@ -130,7 +134,7 @@
             "server"
           ],
           "default": "cli",
-          "description": "How Generate CODE.md runs local analysis. Use cli for the default local subprocess path; use server to force the FastAPI workflow."
+          "description": "How Generate CODEMD runs local analysis. Use cli for the default local subprocess path; use server to force the FastAPI workflow."
         },
         "codemdGraphs.host": {
           "type": "string",

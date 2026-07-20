@@ -3,12 +3,16 @@
     "codemd": {
       "command": "node",
       "args": [
-        "c:\\Users\\prana\\.vscode\\extensions\\codeval.codeval-codemd-graphs-0.0.31\\scripts\\codemd-mcp-server.js",
+        "c:\\DATA\\Code\\github\\vscode-extension-graphs\\.codemd\\mcp\\codemd-mcp-server.js",
         "--workspace",
-        "c:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs"
+        "c:\\DATA\\Code\\github\\vscode-extension-graphs",
+        "--server-name",
+        "codemd",
+        "--extension-root",
+        "c:\\Users\\prana\\.vscode\\extensions\\codemd-dev.codemd-graphs-0.0.54"
       ],
       "env": {
-        "CODEMD_WORKSPACE": "c:\\DATA\\Code\\github\\CODE.md.vscode\\vscode-extension-graphs"
+        "CODEMD_WORKSPACE": "c:\\DATA\\Code\\github\\vscode-extension-graphs"
       }
     }
   }

@@ -1,1 +1,0 @@
-& "$PSScriptRoot\.venv\Scripts\python.exe" -m uvicorn tasksChat:app --reload

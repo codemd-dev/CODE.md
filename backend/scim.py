@@ -102,6 +102,7 @@ SCIM_EXTRACTOR_VERSION = 27
 
 SKIP_PATH_PARTS = {
     ".git",
+    ".codemd",
     ".github",
     ".idea",
     ".vscode",
@@ -115,6 +116,7 @@ SKIP_PATH_PARTS = {
     "node_modules",
     "dist",
     "build",
+    "out",
     "target",
     "vendor",
     "vendors",
@@ -1292,6 +1294,7 @@ JAVA_METHOD_RE = re.compile(
 )
 
 CONTROL_WORDS = {"if", "for", "while", "switch", "catch", "try", "do", "else", "new", "return"}
+JS_TS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
 
 def extract_java_chunks(repo_id: str, src_dir: Path, file_path: Path) -> list[CodeChunk]:
@@ -1439,14 +1442,137 @@ GENERIC_DECLARATION_RE = re.compile(
     re.MULTILINE | re.VERBOSE,
 )
 
+JS_TS_CLASS_RE = re.compile(r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)[^{]*\{", re.MULTILINE)
+JS_TS_CLASS_METHOD_RE = re.compile(
+    r"""
+    (?:^|[;\n{}])
+    [ \t]*
+    (?:
+        (?:public|private|protected|static|async|override|readonly|abstract|accessor|get|set)\s+
+    )*
+    (?P<name>\#?[A-Za-z_$][A-Za-z0-9_$]*)\s*
+    (?:<[^>{};]+>\s*)?
+    \([^;{}]*\)\s*
+    (?::\s*[^={};]+)?
+    \{
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+JS_TS_CLASS_FIELD_FUNCTION_RE = re.compile(
+    r"""
+    (?:^|[;\n{}])
+    [ \t]*
+    (?:
+        (?:public|private|protected|static|readonly|abstract)\s+
+    )*
+    (?P<name>\#?[A-Za-z_$][A-Za-z0-9_$]*)\s*
+    (?:\??\s*)?
+    (?::\s*[^=;{}]+)?
+    =\s*
+    (?:async\s*)?
+    (?:
+        function\b[^{]*\{
+      |
+        (?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*\{
+    )
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+JS_TS_RESERVED_METHOD_NAMES = CONTROL_WORDS | {
+    "constructor",
+    "function",
+    "class",
+    "return",
+    "await",
+    "yield",
+}
+
+
+def clean_js_method_name(name: str) -> str:
+    text = str(name or "").strip()
+    if text == "constructor":
+        return "<init>"
+    return text[1:] if text.startswith("#") else text
+
+
+def extract_js_ts_class_method_chunks(
+    repo_id: str,
+    src_dir: Path,
+    file_path: Path,
+    text: str,
+    relative_path: str,
+) -> tuple[list[CodeChunk], list[tuple[int, int]]]:
+    clean = strip_comments_preserve_offsets(text)
+    module_name = file_path.relative_to(src_dir).with_suffix("")
+    module_symbol = ".".join(module_name.parts)
+    chunks: list[CodeChunk] = []
+    occupied_ranges: list[tuple[int, int]] = []
+    seen: set[tuple[str, int]] = set()
+
+    for class_match in JS_TS_CLASS_RE.finditer(clean):
+        class_name = class_match.group(1)
+        class_open = clean.find("{", class_match.start())
+        if class_open < 0:
+            continue
+        class_close = find_matching_brace(clean, class_open)
+        if class_close <= class_open:
+            continue
+        occupied_ranges.append((class_match.start(), class_close))
+        body = clean[class_open + 1:class_close]
+        for pattern in (JS_TS_CLASS_METHOD_RE, JS_TS_CLASS_FIELD_FUNCTION_RE):
+            for method_match in pattern.finditer(body):
+                raw_name = method_match.group("name")
+                method_name = clean_js_method_name(raw_name)
+                if not method_name or method_name in JS_TS_RESERVED_METHOD_NAMES:
+                    continue
+                method_open = class_open + 1 + method_match.end() - 1
+                if clean[method_open] != "{":
+                    method_open = clean.find("{", class_open + 1 + method_match.start(), class_open + 1 + method_match.end() + 1)
+                if method_open < 0:
+                    continue
+                method_close = find_matching_brace(clean, method_open)
+                if method_close <= method_open:
+                    continue
+                start_offset = class_open + 1 + method_match.start()
+                start_line = line_number_at(text, start_offset)
+                end_line = line_number_at(text, method_close)
+                symbol = f"{module_symbol}.{class_name}.{method_name}"
+                key = (symbol, start_line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                code = text[start_offset:method_close + 1].strip()
+                if not code:
+                    continue
+                chunks.append(
+                    CodeChunk(
+                        repo_id=repo_id,
+                        chunk_id=f"{repo_id}:{symbol}:{relative_path}:{start_line}",
+                        symbol=symbol,
+                        class_name=f"{module_symbol}.{class_name}",
+                        method_name=method_name,
+                        path=relative_path,
+                        start_line=start_line,
+                        end_line=end_line,
+                        code=code[:20000],
+                    )
+                )
+    return chunks, occupied_ranges
+
 
 def generic_declaration_chunks(repo_id: str, src_dir: Path, file_path: Path) -> list[CodeChunk]:
     text = file_path.read_text(encoding="utf-8", errors="ignore")
     relative_path = str(file_path.relative_to(src_dir)).replace("\\", "/")
     stem = file_path.stem
     chunks: list[CodeChunk] = []
+    occupied_ranges: list[tuple[int, int]] = []
+    if file_path.suffix.lower() in JS_TS_EXTENSIONS:
+        js_chunks, occupied_ranges = extract_js_ts_class_method_chunks(repo_id, src_dir, file_path, text, relative_path)
+        chunks.extend(js_chunks)
     seen: set[tuple[str, int]] = set()
     for match in GENERIC_DECLARATION_RE.finditer(text):
+        if any(start <= match.start() <= end for start, end in occupied_ranges):
+            continue
         open_brace = text.find("{", match.start(), match.end())
         if open_brace < 0:
             continue
@@ -1765,10 +1891,15 @@ def discover_graph_files(repo: Path) -> list[Path]:
 def discover_generic_graph_files(repo: Path) -> list[Path]:
     candidates = discover_graph_files(repo)
     candidates.extend(sorted(repo.glob("*graph*.json")))
-    for graph_dir_name in ("python", "javascript", "java_merged", "tree_sitter_java", "file_graph", "html_ui", "javalang", "joern", "search"):
-        graph_dir = repo / graph_dir_name
-        if graph_dir.exists():
-            candidates.extend(sorted(graph_dir.rglob("*.json")))
+    graph_roots = [repo]
+    codemd_dir = repo / ".codemd"
+    if codemd_dir.exists():
+        graph_roots.append(codemd_dir)
+    for graph_root in graph_roots:
+        for graph_dir_name in ("python", "javascript", "java_merged", "tree_sitter_java", "file_graph", "html_ui", "javalang", "joern", "search", "combined_callgraph"):
+            graph_dir = graph_root / graph_dir_name
+            if graph_dir.exists():
+                candidates.extend(sorted(graph_dir.rglob("*.json")))
 
     selected: list[Path] = []
     seen: set[Path] = set()
@@ -2251,8 +2382,13 @@ def write_dataset(
 
     repos = generic_repo_dirs(input_root) if generic_graphs else repo_dirs(input_root)
     for repo in repos:
-        repo_id = repo.name
-        src_dir = repo_source_dir(repo)
+        repo_id = repo.resolve().name or repo.name or "repo"
+        # In generic mode, input_root is often an actual GitHub checkout. A
+        # normal repo may contain a top-level src/ folder, but that does not
+        # mean every other top-level folder is generated wrapper output. Only
+        # collapse to repo/src for extracted-analysis layouts, not real source
+        # roots passed directly to the generic builder.
+        src_dir = repo if generic_graphs and repo == input_root and looks_like_source_root(repo) else repo_source_dir(repo)
         if progress_callback:
             progress_callback("Building search index from source files.", current_file="")
         chunks = extract_chunks(repo_id, src_dir, max_chunks_per_repo, max_file_bytes, progress_callback=progress_callback)
@@ -4326,6 +4462,12 @@ def list_feature_catalog(dataset_dir: Path, repo_id: str | None, examples: int, 
 
 
 def feature_catalog_payload(dataset_dir: Path, repo_id: str | None = None, examples: int = 5, repo_context: dict | None = None) -> dict:
+    return {
+        "features": [],
+        "feature_count": 0,
+        "disabled": True,
+        "reason": "Feature catalog generation is disabled; CODE.md publishes deterministic truth-index artifacts only.",
+    }
     records = load_feature_records(dataset_dir, repo_id)
     product_name, product_type, product_name_source = infer_product_name(records, repo_id, repo_context)
     evidence_features = evidence_feature_candidates(records, product_name, product_type, examples, repo_context)
