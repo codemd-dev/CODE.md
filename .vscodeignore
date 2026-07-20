@@ -17,7 +17,7 @@ ast_output/**
 joern_output/**
 
 # Generated analysis output from running this extension against its own repo
-# during development - never ship it inside the packaged extension.
+# during development — never ship it inside the packaged extension.
 .codemd/**
 .codegraph/**
 

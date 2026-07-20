@@ -8825,6 +8825,7 @@ def build_scim_artifacts(
         logger.warning("SCIM import failed; skipping embedding artifacts: %s", e)
         return {"scim_error": str(e)}
 
+
     output_dir = Path(output_repo_dir) / "scim"
     if repo_text is None:
         repo_text = load_repo_text_artifact(output_repo_dir)

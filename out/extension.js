@@ -2679,9 +2679,6 @@ class GitShowContentProvider {
         return result.stdout;
     }
 }
-// ---------------------------------------------------------------------------
-// Webview view: search box + callgraph.
-// ---------------------------------------------------------------------------
 class GraphsViewProvider {
     context;
     view;
@@ -2724,11 +2721,27 @@ class GraphsViewProvider {
     // racing the initial on-disk-artifacts call) — honored by whichever
     // runChangesCheck() is currently running instead of being dropped.
     pendingFocusHighestImpact = false;
+    // Captured once per session (first activation), not recomputed as "HEAD" on
+    // every check — otherwise a commit made mid-session would silently move the
+    // comparison point and "what changed since I started" would stop meaning
+    // that. Falls back to HEAD (i.e. "since the last commit") outside a git repo
+    // or before the first commit.
+    sessionStartGitRef = null;
     constructor(context) {
         this.context = context;
         outputChannel?.appendLine('[GraphsViewProvider.ctor] begin');
         this.ensureLocalGraphLoaded();
+        this.captureSessionStartGitRef();
         outputChannel?.appendLine('[GraphsViewProvider.ctor] end');
+    }
+    captureSessionStartGitRef() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            return;
+        }
+        execGitAsync(['rev-parse', 'HEAD'], folder.uri.fsPath).then((result) => {
+            this.sessionStartGitRef = result.status === 0 ? result.stdout.trim() : null;
+        });
     }
     async reveal() {
         outputChannel?.appendLine('[reveal] executing workbench.view.extension.codemdGraphs');
@@ -3301,7 +3314,7 @@ class GraphsViewProvider {
         if (!folder || !file) {
             return;
         }
-        const base = refs?.base || 'HEAD';
+        const base = refs?.base || this.sessionStartGitRef || 'HEAD';
         try {
             const oldUri = vscode.Uri.from({
                 scheme: CODEMD_DIFF_SCHEME,
@@ -3752,7 +3765,7 @@ class GraphsViewProvider {
         const backendDir = await resolveBackendDir(this.context, true);
         const scriptPath = path.join(this.context.extensionUri.fsPath, 'scripts', 'deletion-report.py');
         const pythonPath = await backendPythonPath(this.context, backendDir, () => { });
-        const base = refs?.base ?? 'HEAD';
+        const base = refs?.base ?? this.sessionStartGitRef ?? 'HEAD';
         const args = [scriptPath, '--repo-root', folder.uri.fsPath, '--base', base, '--backend-dir', backendDir];
         if (refs?.target) {
             args.push('--target', refs.target);
