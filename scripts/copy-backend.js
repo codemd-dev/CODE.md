@@ -43,7 +43,11 @@ const mainPy = path.join(backendDir, 'main.py');
 let mainText = fs.readFileSync(mainPy, 'utf8');
 mainText = mainText.replace(
   '@app.api_route("/dashboard", methods=["GET", "HEAD"])\n@app.api_route("/dashboard.html", methods=["GET", "HEAD"])\n@app.api_route("/dashboard.xml", methods=["GET", "HEAD"])\ndef dashboard():',
+  '@app.get("/dashboard", operation_id="dashboard_get")\n@app.head("/dashboard", include_in_schema=False)\n@app.get("/dashboard.html", operation_id="dashboard_html_get")\n@app.head("/dashboard.html", include_in_schema=False)\n@app.get("/dashboard.xml", operation_id="dashboard_xml_get")\n@app.head("/dashboard.xml", include_in_schema=False)\ndef dashboard():',
+);
+mainText = mainText.replace(
   '@app.api_route("/dashboard", methods=["GET", "HEAD"], operation_id="dashboard_get")\n@app.api_route("/dashboard.html", methods=["GET", "HEAD"], operation_id="dashboard_html_get")\n@app.api_route("/dashboard.xml", methods=["GET", "HEAD"], operation_id="dashboard_xml_get")\ndef dashboard():',
+  '@app.get("/dashboard", operation_id="dashboard_get")\n@app.head("/dashboard", include_in_schema=False)\n@app.get("/dashboard.html", operation_id="dashboard_html_get")\n@app.head("/dashboard.html", include_in_schema=False)\n@app.get("/dashboard.xml", operation_id="dashboard_xml_get")\n@app.head("/dashboard.xml", include_in_schema=False)\ndef dashboard():',
 );
 mainText = mainText.replace(
   'DEFAULT_OUTPUT_DIR_NAME = "output_a1b2c3d4"\nOUTPUT_URL_PREFIX = f"/{DEFAULT_OUTPUT_DIR_NAME}"',

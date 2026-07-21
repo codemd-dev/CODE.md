@@ -30,6 +30,7 @@ function argValue(name) {
 const SERVER_NAME = argValue('--server-name') || 'codemd';
 const SERVER_INSTRUCTIONS = [
   `${SERVER_NAME} — cached static-analysis index (callgraph, impact radius, repo docs) over this workspace's .codemd/ artifacts.`,
+  `If these ${SERVER_NAME}_* tools are not directly callable (some MCP clients, including Claude Code, defer less-common tool schemas behind a lookup step), call that client's tool-search/discovery mechanism for them by name first — e.g. in Claude Code call ToolSearch with query "select:${SERVER_NAME}_search_artifacts,${SERVER_NAME}_get_impact_radius,${SERVER_NAME}_get_callers,${SERVER_NAME}_get_callees,${SERVER_NAME}_get_call_paths,${SERVER_NAME}_read_artifact,${SERVER_NAME}_semantic_search,${SERVER_NAME}_find_tests,${SERVER_NAME}_review_changes" — before assuming they are unavailable and falling back to grep/read.`,
   'Reach for it BEFORE and WHILE writing or editing code, not only when asked to explore:',
   '- Before editing or removing a function/route/component, call codemd_get_impact_radius (or the cheaper codemd_get_callers / codemd_get_callees) on it to see what calls it or what it calls, including dynamic-dispatch edges plain grep misses.',
   '- Before tracing how two symbols connect, call codemd_get_call_paths instead of manually following calls by hand.',
@@ -255,7 +256,7 @@ function refreshArtifactsInBackground() {
     '--path', workspaceRoot,
     '--name', path.basename(workspaceRoot),
     '--mirror-out', artifactRoot,
-    '--result-json', path.join(artifactRoot, '.analysis-result.json'),
+    '--result-json', path.join(artifactRoot, 'analysis', '.analysis-result.json'),
   ];
   const env = {
     ...process.env,
@@ -384,7 +385,7 @@ function recordUsage(kind, name) {
 function artifactStatus() {
   const files = [
     'CODE.md',
-    '.analysis-result.json',
+    'analysis/.analysis-result.json',
     'combined_callgraph/combined_callgraph.json',
     'combined_callgraph/combined_navigatable_callgraph.html',
     'file_graph/file_graph.json',

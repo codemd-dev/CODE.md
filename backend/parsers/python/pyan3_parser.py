@@ -52,7 +52,11 @@ class PyCGParser:
         if not py_files:
             return self.function_graph
 
+        noisy_loggers = [logging.getLogger("pyan"), logging.getLogger("pyan.analyzer")]
+        previous_levels = [item.level for item in noisy_loggers]
         try:
+            for item in noisy_loggers:
+                item.setLevel(logging.WARNING)
             import pyan
             callgraph = pyan.create_callgraph(
                 filenames=py_files,
@@ -99,5 +103,8 @@ class PyCGParser:
             logger.debug("pyan3 SyntaxError (Python 2 repo?): %s", e)
         except Exception as e:
             logger.debug("pyan3 exception: %s: %s", type(e).__name__, e)
+        finally:
+            for item, level in zip(noisy_loggers, previous_levels):
+                item.setLevel(level)
 
         return self.function_graph

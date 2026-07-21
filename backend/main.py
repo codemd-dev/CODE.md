@@ -3247,9 +3247,12 @@ def sitemap_xml():
         media_type="application/xml",
     )
 
-@app.api_route("/dashboard", methods=["GET", "HEAD"], operation_id="dashboard_get")
-@app.api_route("/dashboard.html", methods=["GET", "HEAD"], operation_id="dashboard_html_get")
-@app.api_route("/dashboard.xml", methods=["GET", "HEAD"], operation_id="dashboard_xml_get")
+@app.get("/dashboard", operation_id="dashboard_get")
+@app.head("/dashboard", include_in_schema=False)
+@app.get("/dashboard.html", operation_id="dashboard_html_get")
+@app.head("/dashboard.html", include_in_schema=False)
+@app.get("/dashboard.xml", operation_id="dashboard_xml_get")
+@app.head("/dashboard.xml", include_in_schema=False)
 def dashboard():
     return FileResponse("static/dashboard.html")
 
@@ -8891,6 +8894,7 @@ def build_scim_artifacts(
         "scim_manifest_path": str(architecture_dir_for_output(output_repo_dir) / "manifest.json"),
         "scim_vector_db_path": str(output_dir / "vectors.sqlite"),
         "scim_embedding_model_path": str(output_dir / "embedding_model.json"),
+        "scim_functions_path": str(output_dir / "functions.jsonl"),
         "scim_train_pairs_path": str(architecture_dir_for_output(output_repo_dir) / "train_pairs.jsonl"),
         "feature_catalog_path": str(architecture_dir_for_output(output_repo_dir) / "feature_catalog.json"),
         "typed_evidence_indexed": evidence_result.get("indexed", 0) if isinstance(evidence_result, dict) else 0,
@@ -19382,7 +19386,20 @@ def build_search_results_graph(output_repo_dir, results, callgraph, graph_name="
     _, functions, outgoing, incoming, edge_meta = callgraph_indexes(callgraph)
     root_set = resolve_search_graph_roots(roots, functions)
     if not root_set:
-        logger.warning("Search graph roots did not match callgraph nodes: roots=%s", roots[:5])
+        file_like_roots = [
+            root for root in roots
+            if "/" in str(root) or "\\" in str(root) or "." in Path(str(root)).name
+        ]
+        if file_like_roots:
+            file_graph = build_diff_file_graph(
+                output_repo_dir,
+                [{"path": str(root).replace("\\", "/"), "status": "matched"} for root in file_like_roots[:40]],
+            )
+            if file_graph:
+                return file_graph
+            logger.info("Search graph file roots did not match file graph nodes: roots=%s", file_like_roots[:5])
+        else:
+            logger.info("Search graph roots did not match callgraph nodes: roots=%s", roots[:5])
         return ""
     highlight_payload, changed_highlight_nodes, affected_highlight_nodes, file_highlight_nodes = normalize_search_graph_highlight(
         highlight_data,
@@ -30528,6 +30545,7 @@ def build_scim_artifacts_old(output_repo_dir, owner="", repo="", repo_info=None,
         "scim_manifest_path": str(architecture_dir_for_output(output_repo_dir) / "manifest.json"),
         "scim_vector_db_path": str(output_dir / "vectors.sqlite"),
         "scim_embedding_model_path": str(output_dir / "embedding_model.json"),
+        "scim_functions_path": str(output_dir / "functions.jsonl"),
         "scim_train_pairs_path": str(architecture_dir_for_output(output_repo_dir) / "train_pairs.jsonl"),
         "feature_catalog_path": str(architecture_dir_for_output(output_repo_dir) / "feature_catalog.json"),
         "typed_evidence_indexed": evidence_result.get("indexed", 0) if isinstance(evidence_result, dict) else 0,
@@ -32905,6 +32923,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         scim_manifest_path = os.path.join(scim_dir, "manifest.json")
     scim_vector_db_path = os.path.join(scim_dir, "vectors.sqlite")
     scim_embedding_model_path = os.path.join(scim_dir, "embedding_model.json")
+    scim_functions_path = os.path.join(scim_dir, "functions.jsonl")
     scim_train_pairs_path = os.path.join(architecture_dir, "train_pairs.jsonl")
     if not os.path.exists(scim_train_pairs_path):
         scim_train_pairs_path = os.path.join(scim_dir, "train_pairs.jsonl")
@@ -33196,6 +33215,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
             scim_manifest_path = scim_result.get("scim_manifest_path") or scim_manifest_path
             scim_vector_db_path = scim_result.get("scim_vector_db_path") or scim_vector_db_path
             scim_embedding_model_path = scim_result.get("scim_embedding_model_path") or scim_embedding_model_path
+            scim_functions_path = scim_result.get("scim_functions_path") or scim_functions_path
             scim_train_pairs_path = scim_result.get("scim_train_pairs_path") or scim_train_pairs_path
 
     download_zip_path = BASE_OUTPUT / f"{Path(output_repo_dir).name}.zip"
@@ -33213,6 +33233,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         "scim_manifest_path": scim_manifest_path if os.path.exists(scim_manifest_path) else "",
         "scim_vector_db_path": scim_vector_db_path if os.path.exists(scim_vector_db_path) else "",
         "scim_embedding_model_path": scim_embedding_model_path if os.path.exists(scim_embedding_model_path) else "",
+        "scim_functions_path": scim_functions_path if os.path.exists(scim_functions_path) else "",
         "scim_train_pairs_path": scim_train_pairs_path if os.path.exists(scim_train_pairs_path) else "",
         "scim_error": scim_result.get("scim_error", "") if isinstance(scim_result, dict) else "",
         "feature_catalog_path": "",
@@ -33906,6 +33927,7 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
     scim_manifest_path = results.get("scim_manifest_path", "")
     scim_vector_db_path = results.get("scim_vector_db_path", "")
     scim_embedding_model_path = results.get("scim_embedding_model_path", "")
+    scim_functions_path = results.get("scim_functions_path", "")
     scim_train_pairs_path = results.get("scim_train_pairs_path", "")
     feature_catalog_path = results.get("feature_catalog_path", "")
     callgraph_code_index_path = results.get("callgraph_code_index_path", "")
@@ -34038,6 +34060,7 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
         "scim_manifest_url": output_url(scim_manifest_path),
         "scim_vector_db_url": output_url(scim_vector_db_path),
         "scim_embedding_model_url": output_url(scim_embedding_model_path),
+        "scim_functions_url": output_url(scim_functions_path),
         "scim_train_pairs_url": output_url(scim_train_pairs_path),
         "callgraph_code_index_url": output_url(callgraph_code_index_path),
         "callgraph_code_index_jsonl_url": output_url(callgraph_code_index_jsonl_path),

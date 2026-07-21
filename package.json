@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "Pre-commit risk and impact analysis for developers and coding agents, powered by local CODEMD callgraphs and MCP.",
-  "version": "0.0.54",
+  "version": "0.0.56",
   "publisher": "codemd-dev",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",

@@ -9,7 +9,7 @@
         "--server-name",
         "codemd",
         "--extension-root",
-        "c:\\Users\\prana\\.vscode\\extensions\\codemd-dev.codemd-graphs-0.0.54"
+        "c:\\Users\\prana\\.vscode\\extensions\\codemd-dev.codemd-graphs-0.0.55"
       ],
       "env": {
         "CODEMD_WORKSPACE": "c:\\DATA\\Code\\github\\vscode-extension-graphs"

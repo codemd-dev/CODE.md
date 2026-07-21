@@ -1318,16 +1318,45 @@ function stopServer() {
 // Change detection: skip re-analysis on background startup when git shows
 // nothing has changed since the last completed run.
 // ---------------------------------------------------------------------------
+// Both files now live under ANALYSIS_OUTPUT_SUBDIR; older extension versions
+// wrote them straight into .codemd/ instead. The filenames themselves didn't
+// change, so the same constants double as the legacy root-level names in the
+// fallback reads below (readStoredGitStateHash, readLocalAnalysisResult).
+const ANALYSIS_OUTPUT_SUBDIR = 'analysis';
 const ANALYSIS_STATE_FILE = '.analysis-state.json';
 const LOCAL_ANALYSIS_RESULT_FILE = '.analysis-result.json';
 const MCP_USAGE_FILE = `${MCP_OUTPUT_DIR}/.mcp-usage.json`;
 const LOCAL_GRAPH_RELATIVE_PATH = 'combined_callgraph/combined_navigatable_callgraph.html';
 const SCIM_FUNCTIONS_RELATIVE_PATH = 'scim/functions.jsonl';
+function analysisOutputDirUri(outDirUri) {
+    return vscode.Uri.joinPath(outDirUri, ANALYSIS_OUTPUT_SUBDIR);
+}
 function localGraphFileUri(outDirUri) {
     return vscode.Uri.joinPath(outDirUri, ...LOCAL_GRAPH_RELATIVE_PATH.split('/'));
 }
 function localAnalysisResultFileUri(outDirUri) {
-    return vscode.Uri.joinPath(outDirUri, LOCAL_ANALYSIS_RESULT_FILE);
+    return vscode.Uri.joinPath(analysisOutputDirUri(outDirUri), LOCAL_ANALYSIS_RESULT_FILE);
+}
+// Best-effort read used only to restore owner/repo name in the webview on a
+// quiet startup — falls back to the pre-move root-level file so a workspace
+// upgrading from an older extension version doesn't show a blank title until
+// the next real "Generate" run writes a fresh result into the new location.
+function readLocalAnalysisResult(outDirUri) {
+    for (const resultPath of [
+        localAnalysisResultFileUri(outDirUri).fsPath,
+        path.join(outDirUri.fsPath, LOCAL_ANALYSIS_RESULT_FILE),
+    ]) {
+        if (!fs.existsSync(resultPath)) {
+            continue;
+        }
+        try {
+            return JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+        }
+        catch {
+            // Try the next candidate.
+        }
+    }
+    return null;
 }
 function localMcpUsageFileUri(outDirUri) {
     return vscode.Uri.joinPath(outDirUri, ...MCP_USAGE_FILE.split('/'));
@@ -1722,16 +1751,26 @@ async function computeGitStateHash(workspaceRoot) {
 }
 function readStoredGitStateHash(outDirUri) {
     try {
-        const raw = fs.readFileSync(path.join(outDirUri.fsPath, ANALYSIS_STATE_FILE), 'utf8');
+        const raw = fs.readFileSync(path.join(analysisOutputDirUri(outDirUri).fsPath, ANALYSIS_STATE_FILE), 'utf8');
         return JSON.parse(raw)?.gitStateHash || null;
     }
     catch {
-        return null;
+        // Fall back to the pre-move root-level file so a workspace upgrading
+        // from an older extension version doesn't lose its cache and pay for one
+        // unnecessary re-analysis on first reload after the upgrade.
+        try {
+            const legacyRaw = fs.readFileSync(path.join(outDirUri.fsPath, ANALYSIS_STATE_FILE), 'utf8');
+            return JSON.parse(legacyRaw)?.gitStateHash || null;
+        }
+        catch {
+            return null;
+        }
     }
 }
 async function writeStoredGitStateHash(outDirUri, hash) {
     const content = Buffer.from(JSON.stringify({ gitStateHash: hash, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
-    await safeWorkspaceWriteFile(vscode.Uri.joinPath(outDirUri, ANALYSIS_STATE_FILE), content);
+    await safeWorkspaceCreateDirectory(analysisOutputDirUri(outDirUri));
+    await safeWorkspaceWriteFile(vscode.Uri.joinPath(analysisOutputDirUri(outDirUri), ANALYSIS_STATE_FILE), content);
 }
 function artifactUrlPrefix(uploadResult, codeMdUrl) {
     const repoId = String(uploadResult?.repo_id || '').trim();
@@ -2947,16 +2986,10 @@ class GraphsViewProvider {
         else if (this.lastGraphFileUri && !this.displayedGraphFileUri && !this.lastDisplayedServerGraphUrl) {
             this.displayedGraphFileUri = this.lastGraphFileUri;
         }
-        const resultPath = localAnalysisResultFileUri(outDirUri).fsPath;
-        if (fs.existsSync(resultPath)) {
-            try {
-                const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
-                this.ownerName = String(result?.owner_name || '');
-                this.repoName = String(result?.repo_name || '');
-            }
-            catch {
-                // Best-effort session recovery only.
-            }
+        const result = readLocalAnalysisResult(outDirUri);
+        if (result) {
+            this.ownerName = String(result?.owner_name || '');
+            this.repoName = String(result?.repo_name || '');
         }
     }
     /** Resolves the current graph to a URL usable by a specific webview (local file URIs are per-webview). */
@@ -3413,16 +3446,10 @@ class GraphsViewProvider {
             const currentHash = await computeGitStateHash(folder.uri.fsPath);
             const storedHash = readStoredGitStateHash(outDirUri);
             if (currentHash && storedHash && currentHash === storedHash) {
-                const resultPath = localAnalysisResultFileUri(outDirUri).fsPath;
-                if (fs.existsSync(resultPath)) {
-                    try {
-                        const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
-                        this.ownerName = String(result?.owner_name || '');
-                        this.repoName = String(result?.repo_name || '');
-                    }
-                    catch {
-                        // Best-effort session recovery only.
-                    }
+                const result = readLocalAnalysisResult(outDirUri);
+                if (result) {
+                    this.ownerName = String(result?.owner_name || '');
+                    this.repoName = String(result?.repo_name || '');
                 }
                 this.lastStatus = 'Up to date — no changes detected since the last analysis.';
                 this.post({ type: 'status', text: this.lastStatus });
@@ -4376,7 +4403,6 @@ function getHtml(host, port, cspSource) {
   body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   #graphPane { flex: 3 1 0; min-height: 80px; position: relative; }
   #graphFrame { position: absolute; inset: 0; width: 100%; height: 100%; border: none; display: none; }
-  body.graph-rotated #graphFrame { inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(90deg); transform-origin: center center; }
   #emptyState { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 12px; }
   #emptyState p { margin: 0; opacity: 0.8; font-size: 12px; }
   #emptyState p.emptyStateError { opacity: 1; color: var(--vscode-errorForeground); }
@@ -4489,7 +4515,6 @@ function getHtml(host, port, cspSource) {
   <div id="graphPane">
     <div id="graphToolbar">
       <button id="openGraphBtn" title="Open the graph in a full editor tab">Full Screen</button>
-      <button id="rotateGraphBtn" title="Use a vertical graph view">Vertical</button>
       <button id="expandGraphBtn" title="Make the graph fill this side window">Expand</button>
     </div>
     <div id="emptyState">
@@ -4573,7 +4598,6 @@ function getHtml(host, port, cspSource) {
   const blastRadiusBtn = document.getElementById('blastRadiusBtn');
   const checkCommitsBtn = document.getElementById('checkCommitsBtn');
   const openGraphBtn = document.getElementById('openGraphBtn');
-  const rotateGraphBtn = document.getElementById('rotateGraphBtn');
   const expandGraphBtn = document.getElementById('expandGraphBtn');
   const searchForm = document.getElementById('searchForm');
   const queryInput = document.getElementById('queryInput');
@@ -4802,7 +4826,6 @@ function getHtml(host, port, cspSource) {
     if (!graphPane) { return; }
     const next = clampGraphHeight(height);
     graphPane.style.flex = '0 0 ' + next + 'px';
-    syncGraphRotationFrame();
     if (persist) {
       const previous = vscode.getState() || {};
       vscode.setState({ ...previous, graphPaneHeight: next });
@@ -4817,27 +4840,6 @@ function getHtml(host, port, cspSource) {
   }
 
   restoreGraphHeight();
-
-  function syncGraphRotationFrame() {
-    if (!graphFrame || !graphPane) { return; }
-    if (document.body.classList.contains('graph-rotated')) {
-      const rect = graphPane.getBoundingClientRect();
-      graphFrame.style.width = Math.max(1, rect.height) + 'px';
-      graphFrame.style.height = Math.max(1, rect.width) + 'px';
-      rotateGraphBtn.textContent = 'Normal';
-      rotateGraphBtn.title = 'Return the graph view to normal orientation';
-    } else {
-      graphFrame.style.width = '';
-      graphFrame.style.height = '';
-      rotateGraphBtn.textContent = 'Vertical';
-      rotateGraphBtn.title = 'Use a vertical graph view';
-    }
-  }
-
-  if (vscode.getState()?.graphRotated) {
-    document.body.classList.add('graph-rotated');
-  }
-  syncGraphRotationFrame();
 
   paneResizeHandle.addEventListener('pointerdown', (event) => {
     if (document.body.classList.contains('graph-expanded')) { return; }
@@ -4866,7 +4868,6 @@ function getHtml(host, port, cspSource) {
     if (typeof saved === 'number' && Number.isFinite(saved)) {
       setGraphHeight(saved);
     }
-    syncGraphRotationFrame();
   });
 
   generateBtn.addEventListener('click', () => {
@@ -4913,18 +4914,10 @@ function getHtml(host, port, cspSource) {
     vscode.postMessage({ type: 'openGraphPanel', currentGraphUrl: graphFrame.src || '' });
   });
 
-  rotateGraphBtn.addEventListener('click', () => {
-    const rotated = document.body.classList.toggle('graph-rotated');
-    const previous = vscode.getState() || {};
-    vscode.setState({ ...previous, graphRotated: rotated });
-    syncGraphRotationFrame();
-  });
-
   expandGraphBtn.addEventListener('click', () => {
     const expanded = document.body.classList.toggle('graph-expanded');
     expandGraphBtn.textContent = expanded ? 'Collapse' : 'Expand';
     expandGraphBtn.title = expanded ? 'Show search and status again' : 'Make the graph fill this side window';
-    syncGraphRotationFrame();
   });
 
   searchForm.addEventListener('submit', (e) => {
@@ -5681,7 +5674,6 @@ function getHtml(host, port, cspSource) {
 	      webviewLog('graph message received', { url: lastGraphUrl });
 	      graphFrame.src = msg.url;
 	      graphFrame.style.display = 'block';
-	      syncGraphRotationFrame();
 	      emptyState.style.display = 'none';
 	      if (graphLoadTimer) {
 	        clearTimeout(graphLoadTimer);
