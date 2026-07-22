@@ -57,6 +57,10 @@ CODEMD generates and displays local repository graphs:
 
 - Python 3. CODEMD manages an isolated virtual environment automatically. You can also set `codemdGraphs.pythonPath` to use your own interpreter.
 
+## MCP Setup
+
+MCP configuration is opt-in. CODEMD writes workspace/client MCP configuration only when you run **CODEMD: Set Up MCP** or click **Set Up MCP** in the CODEMD panel.
+
 ## Learn More
 
 Visit [codemd.dev](https://www.codemd.dev).
