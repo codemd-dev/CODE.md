@@ -304,6 +304,31 @@ function safeJoin(root, relPath) {
   return target;
 }
 
+function artifactRelPathCandidates(relPath) {
+  const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '') || 'CODE.md';
+  if (['repo_stats.json', 'repo_text.json', 'repo_comments.json'].includes(normalized)) {
+    return [`repo_text/${normalized}`, normalized];
+  }
+  if (normalized.startsWith('repo_text/')) {
+    const legacyName = normalized.slice('repo_text/'.length);
+    if (['repo_stats.json', 'repo_text.json', 'repo_comments.json'].includes(legacyName)) {
+      return [normalized, legacyName];
+    }
+  }
+  return [normalized];
+}
+
+function firstExistingArtifactPath(relPath) {
+  const candidates = artifactRelPathCandidates(relPath);
+  for (const candidate of candidates) {
+    const filePath = safeJoin(artifactRoot, candidate);
+    if (fs.existsSync(filePath)) {
+      return { relPath: candidate, filePath };
+    }
+  }
+  return { relPath: candidates[0], filePath: safeJoin(artifactRoot, candidates[0]) };
+}
+
 function readTextIfExists(filePath, maxChars = 20000) {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     return '';
@@ -389,8 +414,9 @@ function artifactStatus() {
     'combined_callgraph/combined_callgraph.json',
     'combined_callgraph/combined_navigatable_callgraph.html',
     'file_graph/file_graph.json',
-    'repo_stats.json',
-    'repo_text.json',
+    'repo_text/repo_stats.json',
+    'repo_text/repo_text.json',
+    'repo_text/repo_comments.json',
     'scim/functions.jsonl',
     'scim/embedding_model.json',
     'scim/vectors.sqlite',
@@ -414,7 +440,7 @@ function artifactStatus() {
 function readArtifact(args) {
   const relPath = args.path || 'CODE.md';
   const maxChars = Number(args.max_chars || 30000);
-  const filePath = safeJoin(artifactRoot, relPath);
+  const { filePath } = firstExistingArtifactPath(relPath);
   const text = readTextIfExists(filePath, Math.max(1000, Math.min(maxChars, 200000)));
   if (!text) {
     return `Artifact not found: ${relPath}\nWorkspace: ${workspaceRoot}`;
@@ -425,8 +451,9 @@ function readArtifact(args) {
 function listArtifactResources() {
   const candidates = [
     { path: 'CODE.md', name: 'CODE.md', mimeType: 'text/markdown', description: 'Compact generated repository overview.' },
-    { path: 'repo_stats.json', name: 'Repository Stats', mimeType: 'application/json', description: 'Lightweight repository facts.' },
-    { path: 'repo_text.json', name: 'Repository Text', mimeType: 'application/json', description: 'Extracted README, docs, and UI text.' },
+    { path: 'repo_text/repo_stats.json', name: 'Repository Stats', mimeType: 'application/json', description: 'Lightweight repository facts.' },
+    { path: 'repo_text/repo_text.json', name: 'Repository Text', mimeType: 'application/json', description: 'Extracted README, docs, and UI text.' },
+    { path: 'repo_text/repo_comments.json', name: 'Repository Comments', mimeType: 'application/json', description: 'Extracted code comments, todos, and dashboard notes.' },
     { path: 'combined_callgraph/combined_callgraph.json', name: 'Combined Callgraph', mimeType: 'application/json', description: 'Merged graph of repository entry points, calls, routes, and UI structure.' },
     { path: 'python/python_callgraph.json', name: 'Python Callgraph', mimeType: 'application/json', description: 'Function-level Python callgraph, when Python was present.' },
     { path: 'javascript/javascript_callgraph.json', name: 'JavaScript Callgraph', mimeType: 'application/json', description: 'Function-level JavaScript/TypeScript callgraph, when JavaScript was present.' },
@@ -445,7 +472,7 @@ function listArtifactResources() {
 
 function readArtifactResource(uri) {
   const relPath = relPathFromResourceUri(uri);
-  const filePath = safeJoin(artifactRoot, relPath);
+  const { filePath } = firstExistingArtifactPath(relPath);
   const text = readTextIfExists(filePath, 2_000_000);
   if (!text) {
     throw new Error(`Artifact not found: ${relPath}`);
@@ -764,8 +791,8 @@ function searchArtifacts(args) {
 
   addMatch('CODE.md', 'CODE.md', readTextIfExists(path.join(artifactRoot, 'CODE.md'), 2_000_000));
 
-  for (const relPath of ['repo_text.json', 'repo_comments.json']) {
-    const data = readJsonIfExists(path.join(artifactRoot, relPath));
+  for (const relPath of ['repo_text/repo_text.json', 'repo_text/repo_comments.json']) {
+    const data = readJsonIfExists(firstExistingArtifactPath(relPath).filePath);
     for (const entry of flattenTextEntries(data).slice(0, 5000)) {
       addMatch(relPath, entry.path, entry.text);
     }
@@ -1786,7 +1813,7 @@ const tools = [
   },
   {
     name: 'codemd_read_artifact',
-    description: 'Read a generated CODE.md artifact such as CODE.md, repo_stats.json, or combined_callgraph/combined_callgraph.json.',
+    description: 'Read a generated CODE.md artifact such as CODE.md, repo_text/repo_stats.json, or combined_callgraph/combined_callgraph.json.',
     inputSchema: {
       type: 'object',
       properties: {

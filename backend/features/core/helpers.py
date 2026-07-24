@@ -16,6 +16,8 @@ SCIM_ARTIFACT_EVIDENCE_EXTENSIONS = {".json", ".jsonl", ".txt", ".md", ".csv"}
 SCIM_ARTIFACT_EVIDENCE_MAX_CHARS = 12000
 SCIM_ARTIFACT_EVIDENCE_CHUNK_CHARS = 6000
 SCIM_ARTIFACT_EVIDENCE_MAX_RECORDS = 300
+REPO_TEXT_ARTIFACT_DIR = "repo_text"
+REPO_TEXT_ARTIFACT_FILENAMES = {"repo_stats.json", "repo_text.json", "repo_comments.json"}
 
 def find_cached_source_dir(output_repo_dir):
     extracted_src_dir = os.path.join(output_repo_dir, "src")
@@ -49,6 +51,35 @@ def architecture_dir_for_output(output_repo_dir):
 
 def architecture_artifact_path(output_repo_dir, *parts):
     return architecture_dir_for_output(output_repo_dir).joinpath(*parts)
+
+
+def repo_text_artifact_dir_for_output(output_repo_dir):
+    artifact_root = artifact_root_for_output(output_repo_dir)
+    return artifact_root / REPO_TEXT_ARTIFACT_DIR
+
+
+def repo_text_artifact_path(output_repo_dir, filename, legacy_ok=False):
+    artifact_root = artifact_root_for_output(output_repo_dir)
+    path = artifact_root / REPO_TEXT_ARTIFACT_DIR / filename
+    if legacy_ok:
+        legacy_path = artifact_root / filename
+        if legacy_path.exists() and not path.exists():
+            return legacy_path
+    return path
+
+
+def ensure_repo_text_artifact_path(output_repo_dir, filename):
+    artifact_root = artifact_root_for_output(output_repo_dir)
+    path = artifact_root / REPO_TEXT_ARTIFACT_DIR / filename
+    legacy_path = artifact_root / filename
+    if not path.exists() and legacy_path.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(legacy_path.read_bytes())
+        except Exception as e:
+            logger.warning("Unable to migrate %s to %s: %s", legacy_path, path, e)
+            return legacy_path
+    return path
 
 
 def first_existing_path(*paths):
@@ -470,13 +501,13 @@ def build_callgraph_summary_evidence(output_repo_dir: Path):
 
 def build_repo_overview_evidence(output_repo_dir: Path):
     artifact_root = artifact_root_for_output(output_repo_dir)
-    stats = load_json_file(artifact_root / "repo_stats.json", {})
-    text_payload = load_json_file(artifact_root / "repo_text.json", {})
+    stats = load_json_file(repo_text_artifact_path(artifact_root, "repo_stats.json", legacy_ok=True), {})
+    text_payload = load_json_file(repo_text_artifact_path(artifact_root, "repo_text.json", legacy_ok=True), {})
     if not stats and not text_payload:
         return []
     readme_text = "\n\n".join(str(item.get("text", "")) for item in (text_payload.get("readme_items") or [])[:3] if isinstance(item, dict))
     lines = ["Repository overview evidence.", f"Files seen: {stats.get('total_files_seen', '')}.", f"Extensions: {json.dumps(stats.get('extensions', stats.get('extension_counts', {})))[:1000]}.", "README/docs excerpt:", readme_text[:5000]]
-    return [scim_evidence_record("evidence.repo.overview", "repo_overview", "Repository Overview", "repo_stats.json", "\n".join(lines), {"files_seen": stats.get("total_files_seen", "")})]
+    return [scim_evidence_record("evidence.repo.overview", "repo_overview", "Repository Overview", "repo_text/repo_stats.json", "\n".join(lines), {"files_seen": stats.get("total_files_seen", "")})]
 
 
 def build_typed_scim_evidence_records(output_repo_dir: Path):

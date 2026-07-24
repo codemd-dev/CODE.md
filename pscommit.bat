@@ -47,3 +47,5 @@ git commit -m "%NEWMSG%"
 
 echo git push
 git push
+
+

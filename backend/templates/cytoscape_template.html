@@ -111,14 +111,21 @@ loadCytoscape()
 
         const sanitize = s => String(s).replace(/[^a-zA-Z0-9_]/g, "_");
         const compactLabel = raw => {
-            let label = String(raw || "").replace(/^(author|commit|file|function):/, "");
+            let label = String(raw || "")
+                .replace(/^(author|commit|file|function):/, "")
+                .replace(/\*\*([^*]+)\*\*/g, "$1")
+                .replace(/\s+\./g, ".")
+                .replace(/\.\s+/g, ".");
             const htmlMatch = label.match(/(?:^|_)([^_/.]+)_html[._]([^/.]+)$/);
             if (htmlMatch) label = `${htmlMatch[1]}.html.${htmlMatch[2]}`;
             let parts = label.split(/[._/\\]+/).filter(Boolean).filter(part => !/^[0-9a-f]{7,}$/i.test(part));
             if (parts.length >= 3 && parts[parts.length - 2].toLowerCase() === "html") {
                 label = parts.slice(-3).join(".");
             } else if (parts.length >= 2) {
-                label = parts.slice(-2).join(".");
+                const lastDot = label.lastIndexOf(".");
+                label = lastDot > 0 && lastDot < label.length - 1 && !/[\/\\]/.test(label)
+                    ? `${label.slice(0, lastDot)}\n${label.slice(lastDot + 1)}`
+                    : parts.slice(-2).join(".");
             } else if (parts.length) {
                 label = parts[0];
             }

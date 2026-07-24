@@ -2,14 +2,17 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "Pre-commit risk and impact analysis for developers and coding agents, powered by local CODEMD callgraphs and MCP.",
-  "version": "0.0.56",
-  "publisher": "codemd-dev",
+  "version": "0.0.68",
+  "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
   "license": "SEE LICENSE IN LICENSE.txt",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pranaysaani/vscode-extension-graphs.git"
+    "url": "https://github.com/codemd-dev/CODE.md.git"
+  },
+  "bugs": {
+    "url": "https://github.com/codemd-dev/CODE.md/issues"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -25,6 +28,8 @@
     "onCommand:codemdGraphs.openEditor",
     "onCommand:codemdGraphs.generate",
     "onCommand:codemdGraphs.setupMcp",
+    "onCommand:codemdGraphs.removeMcp",
+    "onCommand:codemdGraphs.cleanArtifacts",
     "onCommand:codemdGraphs.stopServer",
     "onCommand:codemdGraphs.openDebugLog",
     "onCommand:codemdlocal.generate",
@@ -52,41 +57,45 @@
     },
     "commands": [
       {
-        "command": "codemd",
-        "title": "Open CODEMD"
-      },
-      {
         "command": "codemdGraphs.open",
-        "title": "Open CODEMD"
+        "title": "Open",
+        "category": "CODEMD"
       },
       {
         "command": "codemdGraphs.openEditor",
-        "title": "Open CODEMD in Editor"
+        "title": "Open in Editor",
+        "category": "CODEMD"
       },
       {
         "command": "codemdGraphs.generate",
-        "title": "Generate CODEMD",
+        "title": "Generate",
+        "category": "CODEMD",
         "icon": "$(refresh)"
       },
       {
         "command": "codemdGraphs.setupMcp",
-        "title": "CODEMD: Set Up MCP"
+        "title": "Add MCP Server",
+        "category": "CODEMD"
       },
       {
-        "command": "codemdlocal.generate",
-        "title": "Generate CODEMD"
+        "command": "codemdGraphs.removeMcp",
+        "title": "Remove MCP Server",
+        "category": "CODEMD"
       },
       {
-        "command": "codemdLocal.generate",
-        "title": "Generate CODEMD"
+        "command": "codemdGraphs.cleanArtifacts",
+        "title": "Clean up .codemd",
+        "category": "CODEMD"
       },
       {
         "command": "codemdGraphs.stopServer",
-        "title": "CODEMD: Stop Local Server"
+        "title": "Stop Local Server",
+        "category": "CODEMD"
       },
       {
         "command": "codemdGraphs.openDebugLog",
-        "title": "CODEMD: Open Debug Log"
+        "title": "Open Debug Log",
+        "category": "CODEMD"
       }
     ],
     "menus": {
@@ -109,8 +118,9 @@
       "properties": {
         "codemdGraphs.autoWriteProjectMcpConfig": {
           "type": "boolean",
-          "default": true,
-          "description": "Write the project-scoped .mcp.json file when a workspace opens."
+          "default": false,
+          "deprecationMessage": "CODEMD no longer writes MCP configuration automatically. Use the CODEMD: Add CODEMD MCP Server command or the Add CODEMD MCP Server button when you want to create/update MCP config.",
+          "description": "Deprecated. MCP setup is user-triggered only through the CODEMD: Add CODEMD MCP Server command or panel button."
         },
         "codemdGraphs.autoReveal": {
           "type": "boolean",

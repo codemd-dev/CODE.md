@@ -1,5 +1,9 @@
 # CODEMD
 
+> **Pre-release preview:** CODEMD is currently in early testing. Please report install issues, confusing flows, or inaccurate impact results.
+>
+> **Install note:** If the CODEMD icon or panel does not appear right after installing or updating the extension, run **Developer: Reload Window** from the VS Code Command Palette.
+
 CODEMD from [codemd.dev](https://www.codemd.dev) helps developers and coding agents understand code changes before they are committed. It combines local callgraphs, pre-commit risk analysis, blast-radius checks, signature-change detection, and navigable change maps inside VS Code.
 
 Give Claude, Codex, Cursor, and other coding agents compact local code intelligence through CODEMD artifacts and MCP, so they can use callgraphs and repository structure instead of repeatedly scanning the whole workspace.

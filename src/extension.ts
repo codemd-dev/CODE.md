@@ -30,6 +30,8 @@ const DEFAULT_EXCLUDES = [
 
 const ARTIFACT_OUTPUT_DIR = '.codemd';
 const MCP_OUTPUT_DIR = 'mcp';
+const UNCOMMITTED_CHANGE_DEBOUNCE_MS = 60 * 1000;
+const UNCOMMITTED_CHANGE_MIN_AUTO_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 // deletion-report.py scores impact off whatever callgraph is already on disk
 // (see its docstring) — it doesn't need a fresh regeneration to produce a
@@ -52,7 +54,22 @@ const MCP_SERVER_NAME = 'codemd';
 const MCP_SERVER_LABEL = 'codemd';
 const LEGACY_MCP_SERVER_NAMES = ['CODE.md MCP', 'codemd_mcp_server'];
 const MCP_SERVER_NAMES = [MCP_SERVER_NAME, ...LEGACY_MCP_SERVER_NAMES];
+type McpSetupTarget = 'claude' | 'codex';
 let managedVenvSetupPromise: Promise<string> | null = null;
+
+function mcpTargetsLabel(targets: Iterable<McpSetupTarget>): string {
+  const set = new Set(targets);
+  if (set.has('claude') && set.has('codex')) {
+    return 'Claude Code and Codex';
+  }
+  if (set.has('claude')) {
+    return 'Claude Code';
+  }
+  if (set.has('codex')) {
+    return 'Codex';
+  }
+  return 'selected MCP clients';
+}
 
 // Keys whose artifacts are bulky or not useful to mirror into the workspace.
 // Keep SCIM vector/model artifacts: the backend uses them for semantic search.
@@ -125,6 +142,11 @@ async function safeWorkspaceWriteFile(uri: vscode.Uri, content: Uint8Array): Pro
 async function safeWorkspaceCopy(source: vscode.Uri, target: vscode.Uri): Promise<void> {
   assertWorkspaceWriteAllowed(target, 'file copy', 'file');
   await vscode.workspace.fs.copy(source, target, { overwrite: true });
+}
+
+async function safeWorkspaceDeleteDirectory(uri: vscode.Uri): Promise<void> {
+  assertWorkspaceWriteAllowed(uri, 'directory deletion', 'directory');
+  await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: false });
 }
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
@@ -373,6 +395,37 @@ async function setupClaudeProjectMcp(context: vscode.ExtensionContext, folder: v
   return true;
 }
 
+async function removeClaudeProjectMcp(folder: vscode.WorkspaceFolder): Promise<boolean> {
+  const configUri = vscode.Uri.joinPath(folder.uri, WORKSPACE_MCP_CONFIG_FILE);
+  if (!fs.existsSync(configUri.fsPath)) {
+    return false;
+  }
+  const existingText = fs.readFileSync(configUri.fsPath, 'utf8');
+  let config: any = {};
+  try {
+    const existing = existingText.trim();
+    config = existing ? JSON.parse(existing) : {};
+  } catch (err: any) {
+    throw new Error(`Could not read .mcp.json: ${err?.message || String(err)}`);
+  }
+  if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+    return false;
+  }
+  let changed = false;
+  for (const name of MCP_SERVER_NAMES) {
+    if (Object.prototype.hasOwnProperty.call(config.mcpServers, name)) {
+      delete config.mcpServers[name];
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return false;
+  }
+  const nextText = `${JSON.stringify(config, null, 2)}\n`;
+  await safeWorkspaceWriteFile(configUri, Buffer.from(nextText, 'utf8'));
+  return true;
+}
+
 function claudeLocalSettingsUri(folder: vscode.WorkspaceFolder): vscode.Uri {
   return vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CLAUDE_SETTINGS_FILE.split('/'));
 }
@@ -421,6 +474,33 @@ async function approveClaudeMcpServer(folder: vscode.WorkspaceFolder): Promise<v
   settings.enabledMcpjsonServers = enabled;
   await safeWorkspaceCreateDirectory(vscode.Uri.joinPath(folder.uri, WORKSPACE_CLAUDE_DIR));
   await safeWorkspaceWriteFile(settingsUri, Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, 'utf8'));
+}
+
+async function removeClaudeMcpApproval(folder: vscode.WorkspaceFolder): Promise<boolean> {
+  const settingsUri = claudeLocalSettingsUri(folder);
+  if (!fs.existsSync(settingsUri.fsPath)) {
+    return false;
+  }
+  let settings: any = {};
+  const existingText = fs.readFileSync(settingsUri.fsPath, 'utf8');
+  try {
+    const existing = existingText.trim();
+    settings = existing ? JSON.parse(existing) : {};
+  } catch (err: any) {
+    throw new Error(`Could not read ${WORKSPACE_CLAUDE_SETTINGS_FILE}: ${err?.message || String(err)}`);
+  }
+  if (!Array.isArray(settings.enabledMcpjsonServers)) {
+    return false;
+  }
+  const nextEnabled = settings.enabledMcpjsonServers
+    .map((name: unknown) => String(name))
+    .filter((name: string) => !MCP_SERVER_NAMES.includes(name));
+  if (nextEnabled.length === settings.enabledMcpjsonServers.length) {
+    return false;
+  }
+  settings.enabledMcpjsonServers = nextEnabled;
+  await safeWorkspaceWriteFile(settingsUri, Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, 'utf8'));
+  return true;
 }
 
 async function migrateClaudeLegacyMcpApproval(folder: vscode.WorkspaceFolder): Promise<boolean> {
@@ -564,6 +644,20 @@ async function setupCodexProjectMcp(context: vscode.ExtensionContext, folder: vs
   return true;
 }
 
+async function removeCodexProjectMcp(folder: vscode.WorkspaceFolder): Promise<boolean> {
+  const configUri = vscode.Uri.joinPath(folder.uri, ...WORKSPACE_CODEX_CONFIG_FILE.split('/'));
+  if (!fs.existsSync(configUri.fsPath)) {
+    return false;
+  }
+  const existing = fs.readFileSync(configUri.fsPath, 'utf8');
+  const next = removeCodexMcpServerTables(existing);
+  if (next === existing.trimEnd()) {
+    return false;
+  }
+  await safeWorkspaceWriteFile(configUri, Buffer.from(`${next}${next ? '\n' : ''}`, 'utf8'));
+  return true;
+}
+
 function codexUserConfigPath(): string {
   return path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml');
 }
@@ -586,6 +680,20 @@ async function setupCodexUserMcp(context: vscode.ExtensionContext, folder: vscod
   }
   await fs.promises.mkdir(configDir, { recursive: true });
   await fs.promises.writeFile(configPath, next, 'utf8');
+  return { changed: true, path: configPath };
+}
+
+async function removeCodexUserMcp(): Promise<{ changed: boolean; path: string }> {
+  const configPath = codexUserConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return { changed: false, path: configPath };
+  }
+  const existing = fs.readFileSync(configPath, 'utf8');
+  const next = removeCodexMcpServerTables(existing);
+  if (next === existing.trimEnd()) {
+    return { changed: false, path: configPath };
+  }
+  await fs.promises.writeFile(configPath, `${next}${next ? '\n' : ''}`, 'utf8');
   return { changed: true, path: configPath };
 }
 
@@ -641,7 +749,7 @@ async function mirrorMcpServerScript(context: vscode.ExtensionContext, folder: v
 
 async function setupProjectMcpConfigs(
   context: vscode.ExtensionContext,
-  options: { quiet: boolean },
+  options: { quiet: boolean; targets?: McpSetupTarget[] },
 ): Promise<boolean> {
   const folders = vscode.workspace.workspaceFolders || [];
   if (folders.length === 0) {
@@ -654,15 +762,18 @@ async function setupProjectMcpConfigs(
   const failures: string[] = [];
   const changedFolders: string[] = [];
   const changedCodexUserConfigs = new Set<string>();
+  const targets = new Set<McpSetupTarget>(options.targets && options.targets.length ? options.targets : ['claude', 'codex']);
   for (const folder of folders) {
     try {
       await mirrorMcpServerScript(context, folder);
-      const changedClaude = await setupClaudeProjectMcp(context, folder);
-      const changedCodex = await setupCodexProjectMcp(context, folder);
-      const changedCodexUser = await setupCodexUserMcp(context, folder);
+      const changedClaude = targets.has('claude') ? await setupClaudeProjectMcp(context, folder) : false;
+      const changedCodex = targets.has('codex') ? await setupCodexProjectMcp(context, folder) : false;
+      const changedCodexUser = targets.has('codex') ? await setupCodexUserMcp(context, folder) : { changed: false, path: codexUserConfigPath() };
       // Only ask for MCP approval on explicit, user-initiated setup — never
       // during the quiet background pass on activation.
-      const approvedClaude = options.quiet ? await migrateClaudeLegacyMcpApproval(folder) : await requestClaudeMcpApproval(folder);
+      const approvedClaude = targets.has('claude')
+        ? (options.quiet ? await migrateClaudeLegacyMcpApproval(folder) : await requestClaudeMcpApproval(folder))
+        : false;
       if (changedCodexUser.changed) {
         changedCodexUserConfigs.add(changedCodexUser.path);
       }
@@ -684,16 +795,62 @@ async function setupProjectMcpConfigs(
     const codexUserConfigNote = changedCodexUserConfigs.size
       ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
       : '';
-    const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new Claude Code or Codex session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`;
+    const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new ${mcpTargetsLabel(targets)} session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`;
     outputChannel?.appendLine(message);
     vscode.window.showInformationMessage(message);
   } else if (!options.quiet) {
-    vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date in the workspace and Codex user config, and "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is approved. No client restart needed.`);
+    vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date for ${mcpTargetsLabel(targets)}, and "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is approved where applicable. No client restart needed.`);
   }
   return !failures.length && changedFolders.length > 0;
 }
 
-type McpClientCli = 'claude' | 'codex';
+async function removeProjectMcpConfigs(targetsInput?: McpSetupTarget[]): Promise<boolean> {
+  const folders = vscode.workspace.workspaceFolders || [];
+  if (folders.length === 0) {
+    vscode.window.showErrorMessage('CODE.md: Open a workspace before removing MCP setup.');
+    return false;
+  }
+
+  const failures: string[] = [];
+  const changedFolders: string[] = [];
+  const changedCodexUserConfigs = new Set<string>();
+  const targets = new Set<McpSetupTarget>(targetsInput && targetsInput.length ? targetsInput : ['claude', 'codex']);
+  for (const folder of folders) {
+    try {
+      const changedClaudeConfig = targets.has('claude') ? await removeClaudeProjectMcp(folder) : false;
+      const changedClaudeApproval = targets.has('claude') ? await removeClaudeMcpApproval(folder) : false;
+      const changedCodexProject = targets.has('codex') ? await removeCodexProjectMcp(folder) : false;
+      const changedCodexUser = targets.has('codex') ? await removeCodexUserMcp() : { changed: false, path: codexUserConfigPath() };
+      if (changedCodexUser.changed) {
+        changedCodexUserConfigs.add(changedCodexUser.path);
+      }
+      if (changedClaudeConfig || changedClaudeApproval || changedCodexProject || changedCodexUser.changed) {
+        changedFolders.push(folder.name);
+      }
+    } catch (err: any) {
+      failures.push(`${folder.name}: ${err?.message || String(err)}`);
+    }
+  }
+
+  if (failures.length) {
+    const message = `CODE.md: MCP removal had ${failures.length} issue(s). ${failures.join(' ')}`;
+    outputChannel?.appendLine(message);
+    vscode.window.showWarningMessage(message);
+  } else if (changedFolders.length) {
+    const codexUserConfigNote = changedCodexUserConfigs.size
+      ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
+      : '';
+    const message = `CODE.md: Removed MCP setup for ${changedFolders.join(', ')}.${codexUserConfigNote} Start a new ${mcpTargetsLabel(targets)} session for the change to take effect.`;
+    outputChannel?.appendLine(message);
+    vscode.window.showInformationMessage(message);
+  } else {
+    vscode.window.showInformationMessage('CODE.md: No CODE.md MCP setup was found to remove.');
+  }
+  return !failures.length && changedFolders.length > 0;
+}
+
+type McpClientCli = McpSetupTarget;
+const mcpClientTerminals = new Map<McpClientCli, vscode.Terminal>();
 
 function resolveBundledCodexCli(): string | null {
   if (process.platform !== 'win32') {
@@ -887,13 +1044,21 @@ async function openMcpClientTerminal(client: McpClientCli, folder: vscode.Worksp
     return;
   }
 
-  const terminal = vscode.window.createTerminal({
-    name: `CODE.md ${mcpClientDisplayName(client)}`,
-    cwd: folder.uri.fsPath,
-    env: client === 'codex' ? { CODEX_HOME: path.dirname(codexUserConfigPath()) } : undefined,
-  });
+  let terminal = mcpClientTerminals.get(client);
+  let createdTerminal = false;
+  if (!terminal || terminal.exitStatus) {
+    terminal = vscode.window.createTerminal({
+      name: `CODE.md ${mcpClientDisplayName(client)}`,
+      cwd: folder.uri.fsPath,
+      env: client === 'codex' ? { CODEX_HOME: path.dirname(codexUserConfigPath()) } : undefined,
+    });
+    mcpClientTerminals.set(client, terminal);
+    createdTerminal = true;
+  }
   terminal.show();
-  terminal.sendText(terminalLaunchCommand(commandPath));
+  if (createdTerminal) {
+    terminal.sendText(terminalLaunchCommand(commandPath));
+  }
   openMcpApprovalCommand(terminal);
   if (client === 'claude') {
     const message = isClaudeMcpServerApproved(folder)
@@ -1000,6 +1165,13 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(CODEMD_DIFF_SCHEME, new GitShowContentProvider()),
   );
+  context.subscriptions.push(vscode.window.onDidCloseTerminal((terminal) => {
+    for (const [client, tracked] of mcpClientTerminals) {
+      if (tracked === terminal) {
+        mcpClientTerminals.delete(client);
+      }
+    }
+  }));
   context.subscriptions.push(
     vscode.commands.registerCommand('codemd', () => provider.reveal()),
   );
@@ -1013,7 +1185,13 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('codemdGraphs.generate', () => provider.runGenerate({ quiet: false })),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand('codemdGraphs.setupMcp', () => setupProjectMcpConfigs(context, { quiet: false })),
+    vscode.commands.registerCommand('codemdGraphs.setupMcp', () => provider.setupMcpFromPanel()),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codemdGraphs.removeMcp', () => provider.removeMcpFromPanel()),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codemdGraphs.cleanArtifacts', () => provider.cleanArtifactsFromPanel()),
   );
   context.subscriptions.push(
     vscode.commands.registerCommand('codemdlocal.generate', () => provider.runGenerate({ quiet: false })),
@@ -1039,13 +1217,6 @@ export async function activate(context: vscode.ExtensionContext) {
   // this only ever builds/refreshes — it never blocks that first paint.
   if (vscode.workspace.workspaceFolders?.length) {
     const folder = vscode.workspace.workspaceFolders[0];
-    if (config.get('autoWriteProjectMcpConfig') !== false) {
-      // Awaited (unlike the analysis kick-off below, which deliberately
-      // isn't) so the .mcp.json/config.toml rewrite — and the .codemd/
-      // script mirror it depends on — is guaranteed on disk before a
-      // freshly-opened terminal in this window could race to read it.
-      await setupProjectMcpConfigs(context, { quiet: true });
-    }
     const startupAnalysis = provider.runGenerate({ quiet: true });
     // Surface the panel itself, unprompted — previously the extension only
     // prepared the graph in the background and waited for the user to
@@ -2680,7 +2851,7 @@ function modifiedRisk(change: any): { label: string; level: ChangeCard['riskLeve
     return { label: 'High', level: 'high' };
   }
   if (impactedNodes >= 25 || impactedFiles >= 3 || lowConfidence > 0) {
-    return { label: 'Medium-high', level: 'medium' };
+    return { label: 'Medium High', level: 'medium' };
   }
   if (impactedNodes >= 5 || impactedFiles >= 2) {
     return { label: 'Medium', level: 'medium' };
@@ -3081,8 +3252,9 @@ function buildChangesAnswerLinks(report: any, diffRefs?: { base: string; target:
   });
 }
 
-function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.ExtensionContext): string {
+function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.ExtensionContext, targets: McpSetupTarget[] = ['claude', 'codex']): string {
   const workspace = folder.uri.fsPath;
+  const selected = new Set<McpSetupTarget>(targets);
   const claudeLines = isClaudeMcpServerApproved(folder)
     ? [
         'Claude Code:',
@@ -3100,19 +3272,26 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
         `4. If "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pending approval, approve it there. You can also check from a terminal with: claude mcp list`,
         'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
       ];
-  return [
-    'CODE.md MCP config has been written for this workspace and Codex user config.',
+  const lines = [
+    `CODE.md MCP config has been written for ${mcpTargetsLabel(selected)}.`,
     '',
-    ...claudeLines,
-    '',
-    'Codex CLI:',
-    `1. Close the current Codex session for ${workspace}.`,
-    `2. Open a new terminal in ${workspace} and run: codex`,
-    `3. Codex should read "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) from: ${codexUserConfigPath()}`,
-    '4. The current session will not hot-reload MCP config; it must be a new session.',
-    `5. Type /mcp, or use the CODE.md button to send it automatically after launching Codex. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
-    'If Windows says "codex is not recognized", install the Codex CLI or add it to PATH first.',
-    '',
+  ];
+  if (selected.has('claude')) {
+    lines.push(...claudeLines, '');
+  }
+  if (selected.has('codex')) {
+    lines.push(
+      'Codex CLI:',
+      `1. Close the current Codex session for ${workspace}.`,
+      `2. Open a new terminal in ${workspace} and run: codex`,
+      `3. Codex should read "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) from: ${codexUserConfigPath()}`,
+      '4. The current session will not hot-reload MCP config; it must be a new session.',
+      `5. Type /mcp, or use the CODE.md button to send it automatically after launching Codex. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
+      'If Windows says "codex is not recognized", install the Codex CLI or add it to PATH first.',
+      '',
+    );
+  }
+  lines.push(
     'Other MCP clients:',
     `Use a stdio MCP server named "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`,
     `Command: node ${mcpServerArgs(context, workspace).join(' ')}`,
@@ -3120,7 +3299,8 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
     '',
     'What the number means:',
     'The access count is historical. If the timestamp is old, Claude/Codex are not currently connected even though the config exists.',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // Re-assigning an <iframe> src to the exact same string it already has is a
@@ -3180,6 +3360,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   private repoName = '';
   private busy = false;
   private hasGenerated = false;
+  // Dedupes concurrent refreshCallgraphIfStale() callers (e.g. several
+  // result cards clicked/auto-focused in quick succession): runGenerate's
+  // own busy-flag check has an await gap before `this.busy` is actually set
+  // in the quiet path, so without this, near-simultaneous stale checks could
+  // each slip past it and kick off duplicate full analyses concurrently.
+  private staleCallgraphRefreshPromise: Promise<void> | null = null;
   // Preferred graph source: the mirrored HTML file already sitting in
   // .codemd/, which renders instantly without needing the local server up.
   private lastGraphFileUri: vscode.Uri | null = null;
@@ -3202,6 +3388,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   private graphPanel?: vscode.WebviewPanel;
   private mcpUsageWatcher?: vscode.FileSystemWatcher;
   private mcpConfigWatcher?: vscode.FileSystemWatcher;
+  private uncommittedChangeWatcher?: vscode.FileSystemWatcher;
+  private uncommittedChangeTimer?: ReturnType<typeof setTimeout>;
+  private uncommittedChangesStale = false;
+  private lastAutoUncommittedChangeCheckAt = 0;
   private viewReady = false;
   private sidePanelReady = false;
   private localSearchIndex: LocalCallgraphIndex | null = null;
@@ -3224,6 +3414,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly context: vscode.ExtensionContext) {
     outputChannel?.appendLine('[GraphsViewProvider.ctor] begin');
     this.ensureLocalGraphLoaded();
+    this.ensureUncommittedChangeWatcher();
     this.captureSessionStartGitRef();
     outputChannel?.appendLine('[GraphsViewProvider.ctor] end');
   }
@@ -3259,6 +3450,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     const host = String(config.get('host') || '127.0.0.1');
     const port = Number(config.get('port') || 8100);
     webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message, 'view'));
+    webviewView.onDidChangeVisibility(() => this.onCodeMdVisibilityChanged(folder));
     this.viewReady = false;
     webviewView.webview.html = getHtml(host, port, webviewView.webview.cspSource);
 
@@ -3277,6 +3469,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
     this.refreshMcpUsage(folder);
     this.ensureMcpUsageWatcher(folder);
+    this.ensureUncommittedChangeWatcher(folder);
+    this.onCodeMdVisibilityChanged(folder);
     setTimeout(() => this.markWebviewReadyIfStillCurrent('view', webviewView), 750);
     outputChannel?.appendLine('[resolveWebviewView] panel resolution finished.');
   }
@@ -3295,8 +3489,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         },
       );
       const messageDisposable = this.sidePanel.webview.onDidReceiveMessage((message) => this.handleMessage(message, 'side'));
+      const visibilityDisposable = this.sidePanel.onDidChangeViewState(() => this.onCodeMdVisibilityChanged(folder));
       this.sidePanel.onDidDispose(() => {
         messageDisposable.dispose();
+        visibilityDisposable.dispose();
         this.sidePanel = undefined;
         this.sidePanelReady = false;
       });
@@ -3318,6 +3514,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
     this.refreshMcpUsage(folder);
     this.ensureMcpUsageWatcher(folder);
+    this.ensureUncommittedChangeWatcher(folder);
+    this.onCodeMdVisibilityChanged(folder);
     setTimeout(() => this.markWebviewReadyIfStillCurrent('side', this.sidePanel), 750);
   }
 
@@ -3403,6 +3601,91 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.mcpConfigWatcher.onDidChange(() => this.refreshMcpUsage(folder));
     this.mcpConfigWatcher.onDidDelete(() => this.refreshMcpUsage(folder));
     this.context.subscriptions.push(this.mcpConfigWatcher);
+  }
+
+  private ensureUncommittedChangeWatcher(folder = vscode.workspace.workspaceFolders?.[0]): void {
+    if (this.uncommittedChangeWatcher || !folder) {
+      return;
+    }
+    this.uncommittedChangeWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '**/*'));
+    this.uncommittedChangeWatcher.onDidCreate((uri) => this.onWorkspaceFileChanged(folder, uri));
+    this.uncommittedChangeWatcher.onDidChange((uri) => this.onWorkspaceFileChanged(folder, uri));
+    this.uncommittedChangeWatcher.onDidDelete((uri) => this.onWorkspaceFileChanged(folder, uri));
+    this.context.subscriptions.push(this.uncommittedChangeWatcher);
+  }
+
+  private onWorkspaceFileChanged(folder: vscode.WorkspaceFolder, uri: vscode.Uri): void {
+    if (this.shouldIgnoreUncommittedChangeEvent(folder, uri)) {
+      return;
+    }
+    this.uncommittedChangesStale = true;
+    this.lastStatus = 'Uncommitted edits changed. Results may be out of date.';
+    this.post({ type: 'status', text: this.lastStatus });
+    this.scheduleUncommittedChangeCheck();
+  }
+
+  private shouldIgnoreUncommittedChangeEvent(folder: vscode.WorkspaceFolder, uri: vscode.Uri): boolean {
+    const relPath = workspaceRelativePath(folder, uri);
+    if (!relPath || relPath.startsWith('..')) {
+      return true;
+    }
+    const normalized = relPath.replace(/^\.?\//, '');
+    const firstPart = normalized.split('/')[0] || '';
+    return [
+      '.git',
+      ARTIFACT_OUTPUT_DIR,
+      'node_modules',
+      '__pycache__',
+      '.venv',
+      'venv',
+      'dist',
+      'build',
+      'out',
+      '.next',
+      'target',
+    ].includes(firstPart) || /\.(pyc|pyo|vsix)$/i.test(normalized);
+  }
+
+  private isCodeMdVisible(): boolean {
+    return Boolean((this.view && this.view.visible) || (this.sidePanel && this.sidePanel.visible));
+  }
+
+  private onCodeMdVisibilityChanged(folder = vscode.workspace.workspaceFolders?.[0]): void {
+    if (!folder || !this.uncommittedChangesStale || !this.isCodeMdVisible()) {
+      return;
+    }
+    this.scheduleUncommittedChangeCheck();
+  }
+
+  private clearUncommittedChangeTimer(): void {
+    if (this.uncommittedChangeTimer) {
+      clearTimeout(this.uncommittedChangeTimer);
+      this.uncommittedChangeTimer = undefined;
+    }
+  }
+
+  private scheduleUncommittedChangeCheck(): void {
+    this.clearUncommittedChangeTimer();
+    if (!this.uncommittedChangesStale || !this.isCodeMdVisible()) {
+      return;
+    }
+    const cooldownRemaining = Math.max(
+      0,
+      UNCOMMITTED_CHANGE_MIN_AUTO_CHECK_INTERVAL_MS - (Date.now() - this.lastAutoUncommittedChangeCheckAt),
+    );
+    const delayMs = Math.max(UNCOMMITTED_CHANGE_DEBOUNCE_MS, cooldownRemaining);
+    this.uncommittedChangeTimer = setTimeout(() => {
+      this.uncommittedChangeTimer = undefined;
+      if (!this.uncommittedChangesStale || !this.isCodeMdVisible()) {
+        return;
+      }
+      if (this.busy || this.changesBusy) {
+        this.scheduleUncommittedChangeCheck();
+        return;
+      }
+      this.lastAutoUncommittedChangeCheckAt = Date.now();
+      void this.runChangesCheck({ focusHighestImpact: true, quietIfBusy: true });
+    }, delayMs);
   }
 
   /**
@@ -3559,7 +3842,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   private rememberSearchResult(message: any): void {
-    if (message?.kind === 'changes' || message?.kind === 'blastRadius') {
+    if (message?.kind === 'changes' || message?.kind === 'blastRadius' || message?.kind === 'commits') {
       this.searchHistory = this.searchHistory.filter((item) => item?.kind !== message.kind);
     } else if (message?.kind === 'commitDetail') {
       // Re-analyzing the same commit replaces its old entry; a different
@@ -3667,6 +3950,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.runCommitCheck(String(message.hash || ''));
     } else if (message.type === 'setupMcp') {
       this.setupMcpFromPanel();
+    } else if (message.type === 'removeMcp') {
+      this.removeMcpFromPanel();
+    } else if (message.type === 'cleanArtifacts') {
+      this.cleanArtifactsFromPanel();
     } else if (message.type === 'approveClaude') {
       this.approveClaudeFromPanel();
     } else if (message.type === 'approveCodex') {
@@ -3720,8 +4007,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.refreshMcpUsage();
   }
 
-  private async setupMcpFromPanel(): Promise<void> {
-    const changed = await setupProjectMcpConfigs(this.context, { quiet: false });
+  async setupMcpFromPanel(): Promise<void> {
+    const targets = await this.pickMcpSetupTargets('add');
+    if (!targets) {
+      return;
+    }
+    const changed = await setupProjectMcpConfigs(this.context, { quiet: false, targets });
     this.refreshMcpUsage();
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (folder) {
@@ -3730,7 +4021,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         kind: 'mcpSetup',
         replace: false,
         query: 'MCP setup next steps',
-        answer: mcpSetupHelpText(folder, this.context),
+        answer: mcpSetupHelpText(folder, this.context, targets),
         results: [],
       };
       this.rememberSearchResult(resultMessage);
@@ -3745,8 +4036,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         changed
           ? 'CODE.md: MCP config is ready. Start a fresh client session and open /mcp to approve/use codemd.'
           : 'CODE.md: MCP config is already up to date. Open a client terminal to connect/reconnect codemd.',
-        'Open Codex /mcp',
-        'Open Claude Code /mcp',
+        ...(targets.includes('codex') ? ['Open Codex /mcp'] : []),
+        ...(targets.includes('claude') ? ['Open Claude Code /mcp'] : []),
       );
       if (choice === 'Open Codex /mcp') {
         openMcpClientTerminal('codex', folder);
@@ -3756,6 +4047,124 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     vscode.window.showInformationMessage('CODE.md: MCP config is ready. See the CODE.md panel for exact Claude Code and Codex restart/check steps.');
+  }
+
+  async removeMcpFromPanel(): Promise<void> {
+    const targets = await this.pickMcpSetupTargets('remove');
+    if (!targets) {
+      return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      'CODE.md: remove CODE.md MCP setup from this workspace? This removes only CODE.md MCP entries from local config files. Other MCP servers are left unchanged.',
+      { modal: true },
+      'Remove MCP Setup',
+    );
+    if (choice !== 'Remove MCP Setup') {
+      return;
+    }
+    await removeProjectMcpConfigs(targets);
+    this.refreshMcpUsage();
+  }
+
+  async cleanArtifactsFromPanel(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      vscode.window.showWarningMessage('CODE.md: Open a workspace before cleaning up .codemd.');
+      return;
+    }
+    const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
+    if (!fs.existsSync(outDirUri.fsPath)) {
+      vscode.window.showInformationMessage(`CODE.md: ${ARTIFACT_OUTPUT_DIR}/ does not exist in this workspace.`);
+      return;
+    }
+    const setup = await mcpSetupStatus(folder);
+    const mcpConfigured = setup.workspaceConfig || setup.codexProjectConfig || setup.codexUserConfig;
+    const choice = await vscode.window.showWarningMessage(
+      `CODE.md: clean up ${ARTIFACT_OUTPUT_DIR}/ in this workspace? This deletes generated graphs, search indexes, logs, and MCP usage history. Source files and MCP config files are not changed.`,
+      { modal: true },
+      `Clean up ${ARTIFACT_OUTPUT_DIR}`,
+    );
+    if (choice !== `Clean up ${ARTIFACT_OUTPUT_DIR}`) {
+      return;
+    }
+    try {
+      await safeWorkspaceDeleteDirectory(outDirUri);
+      if (mcpConfigured) {
+        await mirrorMcpServerScript(this.context, folder);
+      }
+      this.lastGraphFileUri = null;
+      this.displayedGraphFileUri = null;
+      this.lastServerGraphUrl = '';
+      this.lastDisplayedServerGraphUrl = '';
+      this.localGraphReadyPromise = null;
+      this.localSearchIndex = null;
+      this.hasGenerated = false;
+      this.initialGraphPosted = false;
+      this.searchHistory = [];
+      this.lastStatus = `${ARTIFACT_OUTPUT_DIR}/ cleaned up. Click Regenerate to rebuild CODEMD artifacts.`;
+      this.post({ type: 'clearGraph', text: this.lastStatus });
+      this.post({ type: 'status', text: this.lastStatus });
+      this.postSearchHistory();
+      this.postSearchSuggestions(folder);
+      this.refreshMcpUsage(folder);
+      vscode.window.showInformationMessage(
+        mcpConfigured
+          ? `CODE.md: cleaned up generated artifacts and refreshed the MCP wrapper. Click Regenerate to rebuild ${ARTIFACT_OUTPUT_DIR}/.`
+          : `CODE.md: cleaned up ${ARTIFACT_OUTPUT_DIR}/. Click Regenerate to rebuild it.`,
+      );
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      outputChannel?.appendLine(`[cleanArtifactsFromPanel] failed: ${message}`);
+      vscode.window.showErrorMessage(`CODE.md: could not clean up ${ARTIFACT_OUTPUT_DIR}/: ${message}`);
+    }
+  }
+
+  private async pickMcpSetupTargets(action: 'add' | 'remove'): Promise<McpSetupTarget[] | undefined> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      vscode.window.showWarningMessage('CODE.md: Open a workspace before changing MCP setup.');
+      return undefined;
+    }
+    const setup = await mcpSetupStatus(folder);
+    const actionText = action === 'add' ? 'Add CODEMD MCP Server to' : 'Remove CODEMD MCP Server from';
+    const installedSummary = [
+      setup.claudeDetected ? 'Claude detected' : 'Claude CLI not detected',
+      setup.codexDetected ? 'Codex detected' : 'Codex CLI not detected',
+    ].join('; ');
+    const configuredSummary = [
+      setup.workspaceConfig || setup.claudeApproved ? 'Claude configured' : 'Claude not configured',
+      setup.codexProjectConfig || setup.codexUserConfig ? 'Codex configured' : 'Codex not configured',
+    ].join('; ');
+    const items: Array<vscode.QuickPickItem & { targets: McpSetupTarget[] }> = [
+      {
+        label: 'Claude + Codex',
+        description: action === 'add' ? 'Recommended' : 'Remove from both',
+        detail: action === 'add' ? installedSummary : configuredSummary,
+        targets: ['claude', 'codex'],
+      },
+      {
+        label: 'Claude Code only',
+        description: setup.claudeDetected ? 'CLI detected' : 'CLI not detected',
+        detail: action === 'add'
+          ? 'Writes workspace .mcp.json and can pre-approve Claude in .claude/settings.local.json.'
+          : 'Removes CODEMD from .mcp.json and Claude approval settings.',
+        targets: ['claude'],
+      },
+      {
+        label: 'Codex only',
+        description: setup.codexDetected ? 'CLI detected' : 'CLI not detected',
+        detail: action === 'add'
+          ? 'Writes CODEMD MCP entries to Codex project and user config.'
+          : 'Removes CODEMD from Codex project and user config.',
+        targets: ['codex'],
+      },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: actionText,
+      placeHolder: 'Choose which coding agent config CODEMD should update.',
+      ignoreFocusOut: true,
+    });
+    return picked?.targets;
   }
 
   private async approveClaudeFromPanel(): Promise<void> {
@@ -4207,12 +4616,57 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     return baseUrl;
   }
 
+  /**
+   * A per-result graph is only as fresh as the callgraph artifacts on disk.
+   * If the working tree changed since those were built (functions added,
+   * removed, or renamed), the specific symbol a result points at can be
+   * missing from the callgraph — resolve_search_graph_roots then finds no
+   * match, /search-result-graph returns no URL, and runResultGraph falls
+   * back to whichever graph was already showing. Every result then appears
+   * to open "the same graph". Reuses the same HEAD+status hash already
+   * written by runGenerate (see computeGitStateHash/writeStoredGitStateHash)
+   * so this costs one `git status --porcelain` when nothing changed, and a
+   * real (but quiet) regenerate only when something did.
+   */
+  private async refreshCallgraphIfStale(folder: vscode.WorkspaceFolder): Promise<void> {
+    if (this.staleCallgraphRefreshPromise) {
+      return this.staleCallgraphRefreshPromise;
+    }
+    const run = this.refreshCallgraphIfStaleInner(folder).finally(() => {
+      this.staleCallgraphRefreshPromise = null;
+    });
+    this.staleCallgraphRefreshPromise = run;
+    return run;
+  }
+
+  private async refreshCallgraphIfStaleInner(folder: vscode.WorkspaceFolder): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
+    const storedHash = readStoredGitStateHash(outDirUri);
+    if (!storedHash) {
+      // No prior analysis recorded (or pre-upgrade workspace) — nothing to
+      // compare against, and the normal generate flow already covers this case.
+      return;
+    }
+    const currentHash = await computeGitStateHash(folder.uri.fsPath);
+    if (!currentHash || currentHash === storedHash) {
+      return;
+    }
+    this.post({ type: 'status', text: 'Repo changed since the last analysis — refreshing the callgraph…' });
+    await this.runGenerate({ quiet: true });
+  }
+
   /** Renders a focused subgraph for a single search result — the server derives it on demand, so this lazily starts the local companion server rather than requiring it up front. */
   private async runResultGraph(result: any): Promise<void> {
     if (!this.ownerName || !this.repoName) {
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder) {
+      await this.refreshCallgraphIfStale(folder);
+    }
     const artifactRootPath = folder ? path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR) : '';
     const label = String(result?.label || result?.symbol || result?.fullName || result?.name || 'result');
     this.post({ type: 'status', text: `Building graph for "${label}"…` });
@@ -4586,6 +5040,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (!folder) {
       return;
     }
+    this.clearUncommittedChangeTimer();
     if (this.changesBusy) {
       if (options.focusHighestImpact) {
         this.pendingFocusHighestImpact = true;
@@ -4628,6 +5083,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       };
       this.rememberSearchResult(resultMessage);
       this.post(resultMessage);
+      this.uncommittedChangesStale = false;
       // The data list above is the whole point of "check changes" — release
       // the busy flag now so a user who clicks it again isn't told "Already
       // checking changes — please wait" for as long as the graph build
@@ -4882,6 +5338,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         : 'No commits found in this workspace.';
       const resultMessage = {
         type: 'searchResult',
+        kind: 'commits',
+        replace: true,
         query: 'Latest Commits',
         answer,
         results,
@@ -4932,7 +5390,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
 <style>
   html, body { height: 100%; margin: 0; padding: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-sideBar-background); }
   body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-  #graphPane { flex: 3 1 0; min-height: 80px; position: relative; }
+  #graphPane { flex: 1 1 0; min-height: 80px; position: relative; }
   #graphFrame { position: absolute; inset: 0; width: 100%; height: 100%; border: none; display: none; }
   #emptyState { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 12px; }
   #emptyState p { margin: 0; opacity: 0.8; font-size: 12px; }
@@ -4945,7 +5403,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   #paneResizeHandle:hover, body.resizing-panes #paneResizeHandle { background: var(--vscode-list-hoverBackground); }
   body.resizing-panes { cursor: row-resize; user-select: none; }
   body.resizing-panes #graphFrame { pointer-events: none; }
-  #chatPane { flex: 2 1 0; display: flex; flex-direction: column; min-height: 120px; overflow: hidden; }
+  #chatPane { flex: 1 1 0; display: flex; flex-direction: column; min-height: 120px; overflow: hidden; }
   #statusRow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
   #statusLine { flex: 1 1 150px; min-width: 120px; font-size: 11px; opacity: 0.7; }
   #statusRow button { flex: 0 0 auto; max-width: none; padding: 2px 8px; font-size: 11px; line-height: 1.2; white-space: nowrap; }
@@ -4954,31 +5412,37 @@ function getHtml(host: string, port: number, cspSource: string): string {
   body.graph-expanded #chatPane { display: none; }
   #graphToolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
   #graphToolbar button { padding: 3px 8px; font-size: 11px; opacity: 0.92; }
-  #mcpUsageCard { margin: 8px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
-  #mcpUsageHeadline { display: flex; align-items: center; gap: 8px; }
+  #mcpUsageCard { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; column-gap: 12px; margin: 8px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  #mcpUsageContent { min-width: 0; }
+  #mcpUsageHeadline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .mcpDot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; background: var(--vscode-descriptionForeground); }
-  #mcpUsageCard.mcp-active .mcpDot { background: #3fb950; }
-  #mcpUsageCard.mcp-idle .mcpDot { background: #d29922; }
   #mcpUsageLabel { font-size: 13px; font-weight: 600; }
+  #mcpClientStatuses { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+  .mcpClientStatus { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .mcpClientStatus .mcpDot { width: 8px; height: 8px; }
+  .mcpClientStatus.mcp-connected .mcpDot { background: #3fb950; }
+  .mcpClientStatus.mcp-disconnected .mcpDot { background: var(--vscode-descriptionForeground); opacity: 0.65; }
   #mcpUsageSubtitle { font-size: 11px; opacity: 0.7; margin: 3px 0 0 18px; }
+  #mcpUsageTimeSaved { font-size: 11px; opacity: 0.75; font-style: italic; }
+  #mcpUsageTimeSaved:empty { display: none; }
   #mcpSetupStatus { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 18px; }
   .mcpChip { border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 1px 7px; font-size: 10px; line-height: 16px; opacity: 0.9; }
   .mcpChip-ok { color: #3fb950; }
   .mcpChip-warn { color: #d29922; }
   .mcpChip-missing { color: var(--vscode-errorForeground); }
-  #mcpActionRow { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 18px; }
-  #mcpActionRow button { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
+  #mcpActionRow { grid-column: 2; grid-row: 1 / span 4; display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 15px 8px 0 0; }
+  #mcpActionRow button { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; white-space: nowrap; }
   #mcpActionRow button:disabled { opacity: 0.55; cursor: default; }
   #mcpActionRow:empty { display: none; }
   #mcpUsageByClient { margin: 4px 0 0 18px; font-size: 12px; opacity: 0.85; }
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
-  #setupMcpBtn { margin-left: auto; flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
+  #setupMcpBtn { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
   body.has-results #mcpUsageCard { margin: 6px 8px; padding: 6px 10px; }
   body.has-results #mcpUsageLabel { font-size: 12px; }
+  body.has-results #mcpClientStatuses { font-size: 11px; gap: 5px; }
   body.has-results #mcpUsageSubtitle,
   body.has-results #mcpSetupStatus,
-  body.has-results #mcpActionRow,
   body.has-results #mcpUsageByClient { display: none; }
   #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
@@ -5009,6 +5473,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .changeTitleRow { display: flex; align-items: center; gap: 6px; }
   .changeTitle { font-size: 11px; opacity: 0.75; }
   .changeSymbol { font-size: 12px; font-weight: 700; word-break: break-word; }
+  .changeSymbolModule { display: block; font-size: 10px; font-weight: 400; opacity: 0.65; word-break: break-word; }
+  .changeSymbolName { display: block; }
   .riskPill { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
   .risk-critical, .risk-high { color: var(--vscode-errorForeground); }
   .risk-medium { color: var(--vscode-editorWarning-foreground); }
@@ -5034,11 +5500,16 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .detailsToggle:hover { background: var(--vscode-list-hoverBackground); }
   .changeGroupBody { display: grid; gap: 5px; margin-top: 2px; }
   .changeGroupBody .result { margin-bottom: 0; }
-  #searchForm { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
+  #searchForm { flex: 0 0 auto; position: relative; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
   #queryInput { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 6px; }
+  #querySuggestionPanel { display: none; position: absolute; left: 12px; right: 78px; bottom: calc(100% - 4px); z-index: 20; max-height: min(320px, 45vh); overflow-y: auto; scrollbar-gutter: stable; border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background)); color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); box-shadow: 0 8px 20px rgba(0,0,0,0.28); }
+  #querySuggestionPanel.is-open { display: block; }
+  .querySuggestionOption { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; padding: 5px 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; line-height: 1.35; cursor: pointer; }
+  .querySuggestionOption:hover, .querySuggestionOption.is-active { background: var(--vscode-list-hoverBackground); }
   @media (max-width: 480px) {
     #statusRow button { flex: 1 1 calc(50% - 6px); white-space: normal; }
     #setupMcpBtn { margin-left: 0; }
+    #querySuggestionPanel { right: 12px; }
   }
 </style>
 </head>
@@ -5063,26 +5534,34 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
     </div>
-    <div id="mcpUsageCard" title="Claude/Codex CODE.md MCP usage observed by the MCP wrapper.">
-      <div id="mcpUsageHeadline">
-        <span class="mcpDot"></span>
-        <span id="mcpUsageLabel">CODE.md MCP (callgraph) used? Codex 0 total, Claude 0 total</span>
-        <button id="setupMcpBtn" title="Write Claude/Codex MCP config for this workspace. You may still need to approve the server in your client.">Set Up MCP</button>
+    <div id="mcpUsageCard" title="Claude/Codex CODEMD MCP usage observed by the MCP wrapper.">
+      <div id="mcpUsageContent">
+        <div id="mcpUsageHeadline">
+          <span id="mcpUsageLabel">Calls to CODEMD MCP:</span>
+          <span id="mcpClientStatuses">
+            <span class="mcpClientStatus mcp-disconnected" id="mcpCodexStatus"><span class="mcpDot"></span><span>Codex 0</span></span>
+            <span class="mcpClientStatus mcp-disconnected" id="mcpClaudeStatus"><span class="mcpDot"></span><span>Claude 0</span></span>
+          </span>
+          <span id="mcpUsageTimeSaved"></span>
+        </div>
+        <div id="mcpUsageSubtitle"></div>
+        <div id="mcpSetupStatus"></div>
+        <div id="mcpUsageByClient"></div>
       </div>
-      <div id="mcpUsageSubtitle"></div>
-      <div id="mcpSetupStatus"></div>
       <div id="mcpActionRow">
+        <button id="setupMcpBtn" title="Add CODEMD MCP config for Claude Code, Codex, or both. You may still need to approve the server in your client.">Add CODEMD MCP Server</button>
         <button id="approveCodexBtn" title="Auto-approve codemd's tools in Codex so it stops prompting per call.">Approve Codex MCP</button>
         <button id="approveClaudeBtn" title="Pre-approve codemd for Claude Code via .claude/settings.local.json.">Approve Claude MCP</button>
         <button id="openCodexBtn" title="Start a fresh Codex session in this workspace and open /mcp.">Open Codex /mcp</button>
         <button id="openClaudeBtn" title="Start Claude Code in this workspace and open /mcp.">Open Claude Code /mcp</button>
+        <button id="removeMcpBtn" title="Remove only CODE.md MCP entries from local workspace/client config files.">Remove CODEMD MCP Server</button>
+        <button id="cleanArtifactsBtn" title="Delete generated CODEMD graphs and indexes from .codemd. Source files are not changed.">Clean up .codemd</button>
       </div>
-      <div id="mcpUsageByClient"></div>
     </div>
     <div id="messages"></div>
     <form id="searchForm">
-      <input id="queryInput" type="text" placeholder="Search this codebase…" list="querySuggestions" autocomplete="off" />
-      <datalist id="querySuggestions"></datalist>
+      <input id="queryInput" type="text" placeholder="Search this codebase…" autocomplete="off" aria-autocomplete="list" aria-controls="querySuggestionPanel" />
+      <div id="querySuggestionPanel" role="listbox"></div>
       <button type="submit">Search</button>
     </form>
   </div>
@@ -5114,13 +5593,18 @@ function getHtml(host: string, port: number, cspSource: string): string {
   const statusLine = document.getElementById('statusLine');
   const mcpUsageCard = document.getElementById('mcpUsageCard');
   const mcpUsageLabel = document.getElementById('mcpUsageLabel');
+  const mcpCodexStatus = document.getElementById('mcpCodexStatus');
+  const mcpClaudeStatus = document.getElementById('mcpClaudeStatus');
   const mcpUsageSubtitle = document.getElementById('mcpUsageSubtitle');
+  const mcpUsageTimeSaved = document.getElementById('mcpUsageTimeSaved');
   const mcpSetupStatus = document.getElementById('mcpSetupStatus');
   const mcpActionRow = document.getElementById('mcpActionRow');
   const openCodexBtn = document.getElementById('openCodexBtn');
   const openClaudeBtn = document.getElementById('openClaudeBtn');
   const approveCodexBtn = document.getElementById('approveCodexBtn');
   const approveClaudeBtn = document.getElementById('approveClaudeBtn');
+  const removeMcpBtn = document.getElementById('removeMcpBtn');
+  const cleanArtifactsBtn = document.getElementById('cleanArtifactsBtn');
   const mcpUsageByClient = document.getElementById('mcpUsageByClient');
   const setupMcpBtn = document.getElementById('setupMcpBtn');
   const messages = document.getElementById('messages');
@@ -5132,11 +5616,12 @@ function getHtml(host: string, port: number, cspSource: string): string {
   const expandGraphBtn = document.getElementById('expandGraphBtn');
   const searchForm = document.getElementById('searchForm');
   const queryInput = document.getElementById('queryInput');
-  const querySuggestions = document.getElementById('querySuggestions');
+  const querySuggestionPanel = document.getElementById('querySuggestionPanel');
   let graphLoadTimer = null;
   let lastGraphUrl = '';
   let searchHistoryQueries = [];
   let searchFunctionSuggestions = [];
+  let querySuggestionValues = [];
   const DEFAULT_REPO_SEARCH_PROMPT_GROUPS = [
     ['Finding Code', [
       'Where is this feature implemented?',
@@ -5302,7 +5787,6 @@ function getHtml(host: string, port: number, cspSource: string): string {
   }
 
   function updateQuerySuggestions() {
-    if (!querySuggestions) { return; }
     const seen = new Set();
     const suggestions = [];
     function add(value) {
@@ -5314,10 +5798,51 @@ function getHtml(host: string, port: number, cspSource: string): string {
     }
     searchHistoryQueries.forEach(add);
     DEFAULT_REPO_SEARCH_PROMPT_GROUPS.forEach(([, prompts]) => prompts.forEach(prompt => expandSearchTemplate(prompt).forEach(add)));
-    querySuggestions.innerHTML = suggestions
-      .slice(0, 220)
-      .map(value => '<option value="' + escapeHtml(value) + '"></option>')
-      .join('');
+    querySuggestionValues = suggestions.slice(0, 220);
+    renderQuerySuggestions();
+  }
+
+  function filteredQuerySuggestions() {
+    const query = String(queryInput.value || '').trim().toLowerCase();
+    if (!query) { return querySuggestionValues; }
+    return querySuggestionValues.filter(value => value.toLowerCase().includes(query));
+  }
+
+  function closeQuerySuggestions() {
+    querySuggestionPanel.classList.remove('is-open');
+    queryInput.setAttribute('aria-expanded', 'false');
+  }
+
+  function openQuerySuggestions() {
+    renderQuerySuggestions();
+    if (querySuggestionPanel.children.length) {
+      querySuggestionPanel.classList.add('is-open');
+      queryInput.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  function renderQuerySuggestions() {
+    if (!querySuggestionPanel) { return; }
+    const values = filteredQuerySuggestions().slice(0, 220);
+    querySuggestionPanel.textContent = '';
+    values.forEach((value, index) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'querySuggestionOption';
+      option.id = 'querySuggestionOption' + index;
+      option.setAttribute('role', 'option');
+      option.textContent = value;
+      option.addEventListener('mousedown', (event) => event.preventDefault());
+      option.addEventListener('click', () => {
+        queryInput.value = value;
+        closeQuerySuggestions();
+        queryInput.focus();
+      });
+      querySuggestionPanel.appendChild(option);
+    });
+    if (!values.length) {
+      closeQuerySuggestions();
+    }
   }
 
   function webviewLog(message, detail) {
@@ -5345,29 +5870,60 @@ function getHtml(host: string, port: number, cspSource: string): string {
     webviewLog('graph iframe error', { src: graphFrame.src || '' });
   });
 
-  function clampGraphHeight(height) {
+  const DEFAULT_GRAPH_PANE_RATIO = 0.5;
+  const MIN_RESIZABLE_VIEWPORT_HEIGHT = 240;
+
+  function availablePaneHeight() {
     const handleHeight = paneResizeHandle ? paneResizeHandle.getBoundingClientRect().height : 7;
+    return window.innerHeight - handleHeight;
+  }
+
+  function canMeasurePanes() {
+    return window.innerHeight >= MIN_RESIZABLE_VIEWPORT_HEIGHT && availablePaneHeight() > 0;
+  }
+
+  function clampGraphHeight(height) {
+    const availableHeight = availablePaneHeight();
     const minGraph = 80;
     const minChat = 120;
-    const maxGraph = Math.max(minGraph, window.innerHeight - handleHeight - minChat);
+    const maxGraph = Math.max(minGraph, availableHeight - minChat);
     return Math.min(Math.max(height, minGraph), maxGraph);
+  }
+
+  function paneHeightForRatio(ratio) {
+    return clampGraphHeight(availablePaneHeight() * ratio);
+  }
+
+  function normalizedGraphRatio(height) {
+    return clampGraphHeight(height) / Math.max(1, availablePaneHeight());
   }
 
   function setGraphHeight(height, persist = true) {
     if (!graphPane) { return; }
+    if (!canMeasurePanes()) { return; }
     const next = clampGraphHeight(height);
     graphPane.style.flex = '0 0 ' + next + 'px';
     if (persist) {
       const previous = vscode.getState() || {};
-      vscode.setState({ ...previous, graphPaneHeight: next });
+      vscode.setState({ ...previous, graphPaneHeight: next, graphPaneRatio: normalizedGraphRatio(next) });
     }
   }
 
   function restoreGraphHeight() {
-    const saved = vscode.getState()?.graphPaneHeight;
-    if (typeof saved === 'number' && Number.isFinite(saved)) {
-      setGraphHeight(saved, false);
+    if (!canMeasurePanes()) { return; }
+    const state = vscode.getState() || {};
+    const savedRatio = state.graphPaneRatio;
+    if (typeof savedRatio === 'number' && Number.isFinite(savedRatio)) {
+      setGraphHeight(paneHeightForRatio(savedRatio), false);
+      return;
     }
+    const savedHeight = state.graphPaneHeight;
+    if (typeof savedHeight === 'number' && Number.isFinite(savedHeight)) {
+      const usableSavedHeight = savedHeight <= 80 ? paneHeightForRatio(DEFAULT_GRAPH_PANE_RATIO) : savedHeight;
+      setGraphHeight(usableSavedHeight, false);
+      return;
+    }
+    setGraphHeight(paneHeightForRatio(DEFAULT_GRAPH_PANE_RATIO), false);
   }
 
   restoreGraphHeight();
@@ -5395,10 +5951,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   paneResizeHandle.addEventListener('pointerup', stopPaneResize);
   paneResizeHandle.addEventListener('pointercancel', stopPaneResize);
   window.addEventListener('resize', () => {
-    const saved = vscode.getState()?.graphPaneHeight;
-    if (typeof saved === 'number' && Number.isFinite(saved)) {
-      setGraphHeight(saved);
-    }
+    restoreGraphHeight();
   });
 
   generateBtn.addEventListener('click', () => {
@@ -5411,6 +5964,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
 
   setupMcpBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'setupMcp' });
+  });
+
+  removeMcpBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'removeMcp' });
+  });
+
+  cleanArtifactsBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'cleanArtifacts' });
   });
 
   openCodexBtn.addEventListener('click', () => {
@@ -5457,6 +6018,21 @@ function getHtml(host: string, port: number, cspSource: string): string {
     if (!query) { return; }
     vscode.postMessage({ type: 'search', query });
     queryInput.value = '';
+    closeQuerySuggestions();
+  });
+
+  queryInput.addEventListener('focus', openQuerySuggestions);
+  queryInput.addEventListener('dblclick', openQuerySuggestions);
+  queryInput.addEventListener('input', openQuerySuggestions);
+  queryInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeQuerySuggestions();
+    }
+  });
+  document.addEventListener('mousedown', (event) => {
+    if (!searchForm.contains(event.target)) {
+      closeQuerySuggestions();
+    }
   });
 
   function escapeHtml(text) {
@@ -5579,6 +6155,29 @@ function getHtml(host: string, port: number, cspSource: string): string {
     appendCollapsibleSection(parent, title, body, files.length, true);
   }
 
+  // Fully-qualified callgraph symbols (e.g. "backend.main.cached_analyze_results")
+  // read as one long unbroken word in a narrow sidebar. Splitting at the last
+  // "." puts the module path (backend.main) on its own dimmed line and the
+  // function name on the next, so the part that actually identifies which
+  // function this is doesn't get lost in the module prefix.
+  function renderSymbolLabel(el, fullLabel) {
+    el.textContent = '';
+    const text = String(fullLabel || '');
+    const lastDot = text.lastIndexOf('.');
+    if (lastDot <= 0 || lastDot >= text.length - 1) {
+      el.textContent = text;
+      return;
+    }
+    const modulePath = document.createElement('span');
+    modulePath.className = 'changeSymbolModule';
+    modulePath.textContent = text.slice(0, lastDot);
+    const functionName = document.createElement('span');
+    functionName.className = 'changeSymbolName';
+    functionName.textContent = text.slice(lastDot + 1);
+    el.appendChild(modulePath);
+    el.appendChild(functionName);
+  }
+
   function renderChangeCard(item, card, r) {
     item.classList.add('changeResult');
     item.textContent = '';
@@ -5614,7 +6213,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
     titleRow.appendChild(title);
     const symbol = document.createElement(r && (r.file || r.graphSymbol) ? 'button' : 'div');
     symbol.className = r && (r.file || r.graphSymbol) ? 'changeSymbol changeSymbolButton' : 'changeSymbol';
-    symbol.textContent = card.symbol || item.dataset.label || '';
+    renderSymbolLabel(symbol, card.symbol || item.dataset.label || '');
     if (symbol.tagName === 'BUTTON') {
       symbol.type = 'button';
       symbol.title = 'Open function and show impact graph';
@@ -5717,8 +6316,52 @@ function getHtml(host: string, port: number, cspSource: string): string {
   }
 
   function resultRiskRank(r) {
-    const ranks = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
-    return ranks[(r.changeCard && r.changeCard.riskLevel) || 'unknown'] ?? 4;
+    return resultRiskBucket(r).rank;
+  }
+
+  function normalizeRiskLabel(label) {
+    return String(label || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ');
+  }
+
+  function titleCaseRiskLabel(label) {
+    return String(label || 'Review')
+      .trim()
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function resultRiskBucket(r) {
+    const card = r && r.changeCard;
+    if (card && card.cosmeticOnly) {
+      return { key: 'cosmetic only', title: 'Cosmetic Only', pillLabel: 'Cosmetic', pillClass: 'low', rank: 5 };
+    }
+    const rawLabel = normalizeRiskLabel(card && card.risk);
+    const level = (card && card.riskLevel) || 'unknown';
+    if (rawLabel === 'breaking change') {
+      return { key: 'breaking change', title: 'Breaking Change', pillLabel: 'Breaking', pillClass: 'critical', rank: 0 };
+    }
+    if (rawLabel === 'critical' || level === 'critical') {
+      return { key: 'critical', title: 'Critical', pillLabel: 'Critical', pillClass: 'critical', rank: 1 };
+    }
+    if (rawLabel === 'high' || level === 'high') {
+      return { key: 'high', title: 'High', pillLabel: 'High', pillClass: 'high', rank: 2 };
+    }
+    if (rawLabel === 'medium high' || rawLabel === 'medium-high') {
+      return { key: 'medium high', title: 'Medium High', pillLabel: 'Medium High', pillClass: 'medium', rank: 3 };
+    }
+    if (rawLabel === 'medium' || level === 'medium') {
+      return { key: 'medium', title: 'Medium', pillLabel: 'Medium', pillClass: 'medium', rank: 4 };
+    }
+    if (rawLabel === 'low' || level === 'low') {
+      return { key: 'low', title: 'Low', pillLabel: 'Low', pillClass: 'low', rank: 6 };
+    }
+    const title = titleCaseRiskLabel(card && card.risk);
+    return { key: rawLabel || 'review', title, pillLabel: title, pillClass: level || 'unknown', rank: 7 };
   }
 
   function resultImpactValue(r) {
@@ -5740,6 +6383,18 @@ function getHtml(host: string, port: number, cspSource: string): string {
       });
     }
     return copy;
+  }
+
+  function compareChangeResultsForMode(a, b, mode) {
+    if (mode === 'date') {
+      return resultDateValue(b) - resultDateValue(a) || resultImpactValue(b) - resultImpactValue(a);
+    }
+    const riskDelta = resultRiskRank(a) - resultRiskRank(b);
+    return riskDelta || resultImpactValue(b) - resultImpactValue(a) || resultDateValue(b) - resultDateValue(a);
+  }
+
+  function bestGroupedChangeResult(results, mode) {
+    return sortedChangeResults(results || [], mode)[0] || null;
   }
 
   function appendResultItem(parent, r) {
@@ -5965,23 +6620,40 @@ function getHtml(host: string, port: number, cspSource: string): string {
   // they're a stronger, provable claim ("nothing behavioral changed") than
   // "probably low impact", and burying a real (if small) change in the same
   // bucket as a confirmed no-op would undersell the real one.
-  function appendGroupedChangeResultItems(parent, results) {
+  function appendGroupedChangeResultItems(parent, results, mode) {
     parent.textContent = '';
-    const primary = [];
-    const otherModified = [];
-    const low = [];
-    const cosmetic = [];
+    const bucketMap = new Map();
     (results || []).forEach((r) => {
-      const card = r.changeCard;
-      if (card && card.cosmeticOnly) {
-        cosmetic.push(r);
-        return;
+      const bucket = resultRiskBucket(r);
+      if (!bucketMap.has(bucket.key)) {
+        bucketMap.set(bucket.key, { ...bucket, items: [] });
       }
-      const level = (card && card.riskLevel) || 'unknown';
-      if (level === 'low') {
-        low.push(r);
-        return;
-      }
+      bucketMap.get(bucket.key).items.push(r);
+    });
+    const renderBuckets = [];
+    Array.from(bucketMap.values()).forEach((bucket) => {
+      const sortedItems = sortedChangeResults(bucket.items, mode);
+      const best = bestGroupedChangeResult(sortedItems, mode);
+      renderBuckets.push({
+        best,
+        rank: bucket.rank,
+        render: () => {
+          appendCollapsedGroup(parent, sortedItems, bucket.title, bucket.pillLabel, bucket.pillClass);
+        },
+      });
+    });
+    renderBuckets
+      .sort((a, b) => {
+        if (mode === 'date') {
+          return compareChangeResultsForMode(a.best, b.best, mode);
+        }
+        return a.rank - b.rank || compareChangeResultsForMode(a.best, b.best, mode);
+      })
+      .forEach((bucket) => bucket.render());
+  }
+
+  function unusedLegacyGroupedChangeResultItems(parent, results, mode) {
+    /*
       // Impact score (fan-in) is a heuristic, not a finding — a 'modified'
       // card only earns a top-level row if it's a proven-breaking or actual
       // signature change. Everything else is a body edit with no signature
@@ -5995,22 +6667,42 @@ function getHtml(host: string, port: number, cspSource: string): string {
       }
       primary.push(r);
     });
-    primary.forEach((r) => appendResultItem(parent, r));
-    if (otherModified.length === 1) {
-      appendResultItem(parent, otherModified[0]);
-    } else if (otherModified.length > 1) {
-      appendCollapsedGroup(parent, otherModified, 'Other Modified Functions (no signature change)', 'Impact', 'medium');
-    }
-    if (low.length === 1) {
-      appendResultItem(parent, low[0]);
-    } else if (low.length > 1) {
-      appendCollapsedGroup(parent, low, 'Low Impact Functions', 'Low', 'low');
-    }
-    if (cosmetic.length === 1) {
-      appendResultItem(parent, cosmetic[0]);
-    } else if (cosmetic.length > 1) {
-      appendCollapsedGroup(parent, cosmetic, 'Cosmetic-only Changes', 'Cosmetic', 'low');
-    }
+    const renderBuckets = [];
+    primary.forEach((r) => {
+      renderBuckets.push({
+        best: r,
+        render: () => appendResultItem(parent, r),
+      });
+    });
+    const addGroupedBucket = (items, title, pillLabel, pillClass) => {
+      if (!items.length) { return; }
+      const sortedItems = sortedChangeResults(items, mode);
+      const best = bestGroupedChangeResult(sortedItems, mode);
+      const resolvedPillLabel = typeof pillLabel === 'function' ? pillLabel(best, sortedItems) : pillLabel;
+      const resolvedPillClass = typeof pillClass === 'function' ? pillClass(best, sortedItems) : pillClass;
+      renderBuckets.push({
+        best,
+        render: () => {
+          if (sortedItems.length === 1) {
+            appendResultItem(parent, sortedItems[0]);
+          } else {
+            appendCollapsedGroup(parent, sortedItems, title, resolvedPillLabel, resolvedPillClass);
+          }
+        },
+      });
+    };
+    addGroupedBucket(
+      otherModified,
+      'Other Modified Functions (no signature change)',
+      (best) => (best && best.changeCard && best.changeCard.risk) || 'Review',
+      (best) => (best && best.changeCard && best.changeCard.riskLevel) || 'medium',
+    );
+    addGroupedBucket(low, 'Low Impact Functions', 'Low', 'low');
+    addGroupedBucket(cosmetic, 'Cosmetic-only Changes', 'Cosmetic', 'low');
+    renderBuckets
+      .sort((a, b) => compareChangeResultsForMode(a.best, b.best, mode))
+      .forEach((bucket) => bucket.render());
+    */
   }
 
   function renderSearchResult(msg) {
@@ -6041,7 +6733,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       }
       const resultList = document.createElement('div');
       const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius' || msg.kind === 'commitDetail';
-      if (isChangeList && (msg.results || []).length > 1) {
+      if (isChangeList && (msg.results || []).length > 0) {
         const toolbar = document.createElement('div');
         toolbar.className = 'resultToolbar';
         const label = document.createElement('label');
@@ -6057,12 +6749,12 @@ function getHtml(host: string, port: number, cspSource: string): string {
         select.appendChild(dateOption);
         select.value = msg.defaultSort || 'impact';
         select.addEventListener('change', () => {
-          appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value));
+          appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value), select.value);
         });
         toolbar.appendChild(label);
         toolbar.appendChild(select);
         wrapper.appendChild(toolbar);
-        appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value));
+        appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value), select.value);
       } else {
         appendResultItems(resultList, msg.results || []);
       }
@@ -6099,6 +6791,9 @@ function getHtml(host: string, port: number, cspSource: string): string {
       const configured = Boolean(msg.configured);
       const stale = Boolean(msg.stale);
       const setup = msg.setup || {};
+      const claudeConfigured = Boolean(setup.workspaceConfig);
+      const codexConfigured = Boolean(setup.codexProjectConfig || setup.codexUserConfig);
+      const allSupportedConfigured = claudeConfigured && codexConfigured;
       const serverName = msg.serverName || 'CODE.md MCP';
       const restartNeeded = Boolean(msg.restartNeeded);
       const updatedAt = msg.updatedAt ? new Date(msg.updatedAt).toLocaleString() : '';
@@ -6139,8 +6834,23 @@ function getHtml(host: string, port: number, cspSource: string): string {
           + (Number(tools?.codemd_get_impact_radius || 0) * 30), 0);
       const estimatedGraphMinutes = Math.round(estimatedGraphSeconds / 60);
       const estimatedGraphText = estimatedGraphMinutes > 0
-        ? ' · ~' + estimatedGraphMinutes + ' min graph exploration potentially avoided'
+        ? 'Est. time saved by coding agents: ~' + estimatedGraphMinutes + ' min'
         : '';
+      const setClientMcpStatus = (el, label, calls) => {
+        if (!el) {
+          return;
+        }
+        const connected = configured && calls > 0 && !stale;
+        el.classList.remove('mcp-connected', 'mcp-disconnected');
+        el.classList.add(connected ? 'mcp-connected' : 'mcp-disconnected');
+        const text = el.querySelector('span:last-child');
+        if (text) {
+          text.textContent = label + ' ' + calls;
+        }
+        el.title = connected
+          ? label + ' has recently used the CODEMD MCP server.'
+          : label + ' has not recently used the CODEMD MCP server.';
+      };
       const usageTitle = !configured
         ? 'MCP is not set up for this workspace.'
         : total > 0
@@ -6148,12 +6858,18 @@ function getHtml(host: string, port: number, cspSource: string): string {
             ? ('Last observed MCP access: ' + (updatedAt || msg.updatedAt) + '. Open a new client session if "' + serverName + '" is missing from /mcp.')
             : ('Last observed MCP access: ' + (updatedAt || msg.updatedAt) + '. No MCP setup action needed.')
           : 'MCP config is ready. Open a new Codex or Claude Code session to connect "' + serverName + '".';
-      mcpUsageLabel.textContent = 'CODE.md MCP: Codex ' + codexTotal + ', Claude ' + claudeTotal + estimatedGraphText;
-      mcpUsageSubtitle.textContent = total > 0 ? ('Historical total: ' + total + '. Overview/search: Codex ' + codexOverview + ', Claude ' + claudeOverview + '. ' + usageTitle) : usageTitle;
+      mcpUsageLabel.textContent = 'Calls to CODEMD MCP:';
+      setClientMcpStatus(mcpCodexStatus, 'Codex', codexTotal);
+      setClientMcpStatus(mcpClaudeStatus, 'Claude', claudeTotal);
+      // Kept out of #mcpUsageSubtitle deliberately — that element is hidden
+      // once the panel has results (compact mode), but the time-saved
+      // headline stat should stay visible there just like the call counts.
+      mcpUsageTimeSaved.textContent = total > 0 ? estimatedGraphText : '';
+      mcpUsageSubtitle.textContent = usageTitle;
       mcpUsageCard.title = usageTitle + ' Conservative estimate: callers/callees = 15s, call paths/impact radius = 30s. Search/read/status calls excluded. Not directly measured.';
       mcpSetupStatus.textContent = '';
-      if (!configured) {
-        addMcpChip('Set up MCP', 'missing', 'Write the workspace MCP config before starting a client.');
+      if (!allSupportedConfigured) {
+        addMcpChip('Add CODEMD MCP Server', 'missing', 'Write MCP config before starting a client.');
       }
       if (!setup.codexDetected) {
         addMcpChip('Codex CLI missing', 'warn', 'Codex is not on PATH for VS Code. Config can still be written; launch Codex manually if needed.');
@@ -6171,11 +6887,13 @@ function getHtml(host: string, port: number, cspSource: string): string {
         addMcpChip('Open new client session', 'warn', 'Start a fresh Codex or Claude Code session so the MCP config is picked up.');
       }
       mcpSetupStatus.style.display = mcpSetupStatus.children.length ? '' : 'none';
-      setMcpAction(setupMcpBtn, !configured, false);
+      setMcpAction(setupMcpBtn, true, false);
+      setMcpAction(removeMcpBtn, configured, false);
       setMcpAction(openCodexBtn, configured && setup.codexDetected && (restartNeeded || !setup.codexApproved), false);
       setMcpAction(openClaudeBtn, configured && setup.claudeDetected && (restartNeeded || !setup.claudeApproved), false);
       setMcpAction(approveCodexBtn, configured && setup.codexDetected && !setup.codexApproved, false);
       setMcpAction(approveClaudeBtn, configured && setup.claudeDetected && !setup.claudeApproved, false);
+      setMcpAction(cleanArtifactsBtn, true, false);
       mcpActionRow.style.display = Array.from(mcpActionRow.children).some((button) => button.style.display !== 'none') ? '' : 'none';
       mcpUsageCard.classList.remove('mcp-active', 'mcp-idle');
       if (configured) {
@@ -6200,6 +6918,15 @@ function getHtml(host: string, port: number, cspSource: string): string {
         line.textContent = label + ': ' + Number(c.calls || 0) + ' total, ' + callgraphCalls + ' graph, ' + overviewCalls + ' overview/search, ' + statusCalls + ' status';
         mcpUsageByClient.appendChild(line);
       });
+	    } else if (msg.type === 'clearGraph') {
+	      lastGraphUrl = '';
+	      graphFrame.removeAttribute('src');
+	      graphFrame.style.display = 'none';
+	      emptyState.style.display = '';
+	      emptyStateText.textContent = msg.text || 'Click Regenerate to rebuild CODEMD artifacts.';
+	      emptyStateText.classList.remove('emptyStateError');
+	      emptyStateRetryBtn.style.display = '';
+	      document.body.classList.remove('has-results');
 	    } else if (msg.type === 'graph') {
 	      lastGraphUrl = String(msg.url || '');
 	      webviewLog('graph message received', { url: lastGraphUrl });

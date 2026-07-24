@@ -93,9 +93,12 @@ from features.core import helpers as core_helpers
 from features.core.helpers import find_cached_source_dir, artifact_root_for_output, architecture_dir_for_output, github_metadata_summary
 from features.core.helpers import build_repo_context
 from features.core.helpers import (
+    REPO_TEXT_ARTIFACT_FILENAMES,
     SCIM_ARTIFACT_EVIDENCE_CHUNK_CHARS,
+    ensure_repo_text_artifact_path,
     index_typed_scim_evidence,
     load_json_file,
+    repo_text_artifact_path,
     safe_filename,
     scim_evidence_record,
     stable_text_id,
@@ -2772,7 +2775,7 @@ def supabase_restore_analysis_payload(client, run: dict, expires_in: int = 60 * 
             artifact_root = artifact_root_for_output(repo_output_dir(owner_name, repo_name))
             if not payload.get("ui_feature_seeds"):
                 repo_text_for_seeds = payload.get("repo_text") if isinstance(payload.get("repo_text"), dict) else {}
-                repo_text_path = artifact_root / "repo_text.json"
+                repo_text_path = repo_text_artifact_path(artifact_root, "repo_text.json", legacy_ok=True)
                 if not repo_text_for_seeds and repo_text_path.exists():
                     try:
                         repo_text_for_seeds = json.loads(repo_text_path.read_text(encoding="utf-8"))
@@ -3725,7 +3728,6 @@ def github_latest_saved_analysis(request: Request, owner: str = "", repo: str = 
 
 
 PUBLIC_SAMPLE_ANALYSIS_REPOS = {
-    ("pranaysad", "nextjs-starter-medusa"),
     ("medusajs", "dtc-starter"),
 }
 
@@ -4172,6 +4174,9 @@ def display_callgraph_symbol(symbol: str) -> str:
     label = str(symbol or "").strip()
     label = re.sub(r"^(author|commit|file|function):", "", label)
     label = label.replace("\\", "/")
+    label = re.sub(r"\*\*([^*]+)\*\*", r"\1", label)
+    label = re.sub(r"\s+\.", ".", label)
+    label = re.sub(r"\.\s+", ".", label)
     if not label:
         return label
 
@@ -4187,6 +4192,10 @@ def display_callgraph_symbol(symbol: str) -> str:
     if len(parts) >= 3 and parts[-2].lower() == "html":
         return ".".join(parts[-3:])
     if len(parts) >= 2:
+        if "." in label and "/" not in label:
+            module_path, function_name = label.rsplit(".", 1)
+            if module_path and function_name:
+                return f"{module_path}\n{function_name}"
         return ".".join(parts[-2:])
     return parts[0] if parts else label
 
@@ -4207,7 +4216,7 @@ def daily_summary_text_context(output_repo_dir: Path, changed_files: list[dict],
         })
 
     for path_name, key in (("repo_text.json", "text_items"), ("repo_comments.json", "text_items")):
-        path = Path(output_repo_dir) / path_name
+        path = repo_text_artifact_path(output_repo_dir, path_name, legacy_ok=True)
         if not path.exists():
             continue
         try:
@@ -6496,10 +6505,17 @@ def build_navigatable_cytoscape_graph(
       function compactLabel(raw) {{
         const label = String(raw || \"\");
         function limit(value) {{
-          value = String(value || \"\").replace(/_/g, \"_\");
+          value = String(value || \"\")
+            .replace(/\*\*([^*]+)\*\*/g, \"$1\")
+            .replace(/\s+\./g, \".\")
+            .replace(/\.\s+/g, \".\");
         return value.length > 76 ? `${{value.slice(0, 34)}}...${{value.slice(-34)}}` : value;
         }}
         if (nodeLabels[label]) return limit(nodeLabels[label]);
+      const dottedParts = label.split(\".\");
+      if (dottedParts.length >= 3 && !label.includes(\"/\") && !label.startsWith(\"api.\") && !label.startsWith(\"url.\")) {{
+        return limit(`${{dottedParts.slice(0, -1).join(\".\")}}\\n${{dottedParts[dottedParts.length - 1]}}`);
+      }}
       const stepMatch = label.match(/^ga\\.step_(\\d+)\\.(.+)$/);
       if (stepMatch) {{
         return limit(`step ${{Number(stepMatch[1])}}: ${{stepMatch[2].replace(/_/g, \" \")}}`);
@@ -11943,10 +11959,11 @@ def add_code_note(req: CodeNoteRequest):
     repo_id = short_id(req.owner_name, req.repo_name)
     output_repo_dir = BASE_OUTPUT / repo_id
     output_repo_dir.mkdir(parents=True, exist_ok=True)
-    repo_comments_path = output_repo_dir / "repo_comments.json"
+    repo_comments_read_path = repo_text_artifact_path(output_repo_dir, "repo_comments.json", legacy_ok=True)
+    repo_comments_path = repo_text_artifact_path(output_repo_dir, "repo_comments.json")
 
-    if repo_comments_path.exists():
-        with repo_comments_path.open("r", encoding="utf-8") as f:
+    if repo_comments_read_path.exists():
+        with repo_comments_read_path.open("r", encoding="utf-8") as f:
             repo_comments = json.load(f)
     else:
         repo_comments = {
@@ -11985,6 +12002,7 @@ def add_code_note(req: CodeNoteRequest):
     repo_comments["comment_count"] = len(repo_comments.get("comments", []))
     repo_comments["text_item_count"] = len(repo_comments.get("text_items", []))
 
+    repo_comments_path.parent.mkdir(parents=True, exist_ok=True)
     repo_comments_path.write_text(json.dumps(repo_comments, indent=2), encoding="utf-8")
     return {
         "ok": True,
@@ -12007,11 +12025,12 @@ def empty_repo_comments():
 
 
 def load_repo_comments_for_output(output_repo_dir: Path):
-    repo_comments_path = output_repo_dir / "repo_comments.json"
-    if repo_comments_path.exists():
-        with repo_comments_path.open("r", encoding="utf-8") as f:
+    repo_comments_read_path = repo_text_artifact_path(output_repo_dir, "repo_comments.json", legacy_ok=True)
+    repo_comments_path = repo_text_artifact_path(output_repo_dir, "repo_comments.json")
+    if repo_comments_read_path.exists():
+        with repo_comments_read_path.open("r", encoding="utf-8") as f:
             return json.load(f), repo_comments_path
-    return empty_repo_comments(), repo_comments_path
+    return empty_repo_comments(), repo_text_artifact_path(output_repo_dir, "repo_comments.json")
 
 
 def save_user_todo_artifacts(output_repo_dir: Path, repo_comments: dict):
@@ -12302,6 +12321,7 @@ def add_user_todo(request: Request, req: UserTodoRequest):
     repo_comments["todo_count"] = len(repo_comments.get("todos", []))
     repo_comments["comment_count"] = len(repo_comments.get("comments", []))
     repo_comments["text_item_count"] = len(repo_comments.get("text_items", []))
+    repo_comments_path.parent.mkdir(parents=True, exist_ok=True)
     repo_comments_path.write_text(json.dumps(repo_comments, indent=2), encoding="utf-8")
     todo_path, jsonl_path = save_user_todo_artifacts(output_repo_dir, repo_comments)
     return {
@@ -12392,6 +12412,7 @@ def delete_user_todo(request: Request, req: DeleteUserTodoRequest):
     if len(remaining_todos) != len(repo_comments.get("todos") or []):
         repo_comments["todos"] = remaining_todos
         repo_comments["todo_count"] = len(remaining_todos)
+        repo_comments_path.parent.mkdir(parents=True, exist_ok=True)
         repo_comments_path.write_text(json.dumps(repo_comments, indent=2), encoding="utf-8")
     return {"ok": True, "deleted_id": req.todo_id.strip()}
 
@@ -12670,7 +12691,7 @@ def repo_output_dir(owner_name: str, repo_name: str):
 def analysis_artifact_belongs_to_repo(candidate_dir: Path, owner_name: str, repo_name: str) -> bool:
     candidate_dir = Path(candidate_dir)
     expected_full_name = f"{owner_name}/{repo_name}"
-    repo_stats_path = candidate_dir / "repo_stats.json"
+    repo_stats_path = ensure_repo_text_artifact_path(candidate_dir, "repo_stats.json")
     if repo_stats_path.exists():
         try:
             stats = json.loads(repo_stats_path.read_text(encoding="utf-8", errors="ignore"))
@@ -27329,8 +27350,8 @@ def summary(request: Request, payload: dict):
     artifact_root = nested_output_repo_dir if os.path.isdir(nested_output_repo_dir) else OUTPUT_REPO_DIR
     scim_dir = os.path.join(artifact_root, "scim")
     feature_catalog_path = str(core_helpers.feature_catalog_path_for_output(artifact_root))
-    repo_comments_path = os.path.join(artifact_root, "repo_comments.json")
-    repo_text_path = os.path.join(artifact_root, "repo_text.json")
+    repo_comments_path = repo_text_artifact_path(artifact_root, "repo_comments.json", legacy_ok=True)
+    repo_text_path = repo_text_artifact_path(artifact_root, "repo_text.json", legacy_ok=True)
     feature_catalog = {}
     repo_comments = {}
     repo_text = {}
@@ -30421,14 +30442,15 @@ def extract_repo_comments(repo_src, limit=500, progress_callback=None):
 
 
 def write_json_artifact(data, output_repo_dir, filename):
-    path = os.path.join(output_repo_dir, filename)
-    with open(path, "w", encoding="utf-8") as f:
+    path = repo_text_artifact_path(output_repo_dir, filename) if filename in REPO_TEXT_ARTIFACT_FILENAMES else Path(output_repo_dir) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    return path
+    return str(path)
 
 
 def load_repo_text_artifact(output_repo_dir):
-    path = Path(output_repo_dir) / "repo_text.json"
+    path = repo_text_artifact_path(output_repo_dir, "repo_text.json", legacy_ok=True)
     if not path.exists():
         return {}
     try:
@@ -31170,11 +31192,11 @@ def remove_output_tree_safely(target: Path, attempts: int = 3):
 
 
 def cached_repo_matches_github(output_repo_dir, repo_info: dict | None):
-    repo_stats_path = os.path.join(output_repo_dir, "repo_stats.json")
-    if not repo_info or not os.path.exists(repo_stats_path):
+    repo_stats_path = ensure_repo_text_artifact_path(output_repo_dir, "repo_stats.json")
+    if not repo_info or not repo_stats_path.exists():
         return True
     try:
-        with open(repo_stats_path, "r", encoding="utf-8") as f:
+        with repo_stats_path.open("r", encoding="utf-8") as f:
             repo_stats = json.load(f)
         previous = (repo_stats.get("known_from_github_repo_metadata") or {})
     except Exception:
@@ -31730,7 +31752,7 @@ def collect_file_graph_known_file_nodes(output_repo_dir):
         if file_path and not should_skip_file_graph_path(file_path):
             files.add(file_path)
 
-    repo_text_path = output_repo_dir / "repo_text.json"
+    repo_text_path = ensure_repo_text_artifact_path(output_repo_dir, "repo_text.json")
     if repo_text_path.exists():
         try:
             payload = json.loads(repo_text_path.read_text(encoding="utf-8"))
@@ -31741,7 +31763,7 @@ def collect_file_graph_known_file_nodes(output_repo_dir):
         except Exception as e:
             logger.debug("Unable to read repo text files for file graph nodes: %s", e)
 
-    repo_comments_path = output_repo_dir / "repo_comments.json"
+    repo_comments_path = ensure_repo_text_artifact_path(output_repo_dir, "repo_comments.json")
     if repo_comments_path.exists():
         try:
             payload = json.loads(repo_comments_path.read_text(encoding="utf-8"))
@@ -32913,9 +32935,9 @@ def short_id(owner, repo):
 
 
 def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, default_branch="", source_dir=None):
-    repo_stats_path = os.path.join(output_repo_dir, "repo_stats.json")
-    repo_comments_path = os.path.join(output_repo_dir, "repo_comments.json")
-    repo_text_path = os.path.join(output_repo_dir, "repo_text.json")
+    repo_stats_path = str(ensure_repo_text_artifact_path(output_repo_dir, "repo_stats.json"))
+    repo_comments_path = str(ensure_repo_text_artifact_path(output_repo_dir, "repo_comments.json"))
+    repo_text_path = str(ensure_repo_text_artifact_path(output_repo_dir, "repo_text.json"))
     scim_dir = os.path.join(output_repo_dir, "scim")
     architecture_dir = os.path.join(output_repo_dir, "architecture")
     scim_manifest_path = os.path.join(architecture_dir, "manifest.json")
@@ -33427,7 +33449,7 @@ def code_md_endpoint(payload: dict):
     repo = match.group(2).rstrip(".git").strip()
     output_dir = repo_output_dir(owner, repo)
     artifact_root = artifact_root_for_output(output_dir)
-    repo_stats_path = Path(output_dir) / "repo_stats.json"
+    repo_stats_path = ensure_repo_text_artifact_path(output_dir, "repo_stats.json")
     if not repo_stats_path.exists():
         raise HTTPException(
             status_code=404,
@@ -33440,8 +33462,8 @@ def code_md_endpoint(payload: dict):
     def _load(path):
         return code_md_read_json(str(path)) or {}
     repo_stats = _load(repo_stats_path)
-    repo_text = _load(Path(output_dir) / "repo_text.json")
-    repo_comments = _load(Path(output_dir) / "repo_comments.json")
+    repo_text = _load(ensure_repo_text_artifact_path(output_dir, "repo_text.json"))
+    repo_comments = _load(ensure_repo_text_artifact_path(output_dir, "repo_comments.json"))
     static_quality_signals = _load(Path(output_dir) / "static_quality_signals.json")
     feature_catalog = {}
     feature_summaries = []
@@ -34146,8 +34168,7 @@ def analyze_local_source(owner, repo, repo_id, output_repo_dir, src_dir, repo_in
     results = {"_source_dir": src_dir}
     os.makedirs(output_repo_dir, exist_ok=True)
     repo_stats = build_repo_stats(src_dir, owner, repo, repo_info, default_branch)
-    write_json_artifact(repo_stats, output_repo_dir, "repo_stats.json")
-    results["repo_stats_path"] = os.path.join(output_repo_dir, "repo_stats.json")
+    results["repo_stats_path"] = write_json_artifact(repo_stats, output_repo_dir, "repo_stats.json")
 
     repo_text = extract_repo_text(src_dir)
     # Adding html_features to repo_text
@@ -34161,8 +34182,7 @@ def analyze_local_source(owner, repo, repo_id, output_repo_dir, src_dir, repo_in
     results["docs_sqlite_path"] = build_docs_sqlite_from_repo_text(output_repo_dir, repo_text).get("path", "")
 
     repo_comments = extract_repo_comments(src_dir)
-    write_json_artifact(repo_comments, output_repo_dir, "repo_comments.json")
-    results["repo_comments_path"] = os.path.join(output_repo_dir, "repo_comments.json")
+    results["repo_comments_path"] = write_json_artifact(repo_comments, output_repo_dir, "repo_comments.json")
 
     lang_map = detect_languages(src_dir)
     results.update(dispatch_parsers(lang_map, src_dir, output_repo_dir))
