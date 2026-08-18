@@ -1,69 +1,44 @@
 # CODEMD
 
+**Using AI to code? Check what your changes might break — before you commit.**
+
+Claude, Cursor, Codex, and Copilot are fast at writing code. They're not always fast at knowing what else in your codebase depends on the function they just touched. CODEMD looks at your uncommitted changes and shows you, right inside VS Code, what you changed, what calls it, and what's likely to break.
+
 > **Pre-release preview:** CODEMD is currently in early testing. Please report install issues, confusing flows, or inaccurate impact results.
 >
 > **Install note:** If the CODEMD icon or panel does not appear right after installing or updating the extension, run **Developer: Reload Window** from the VS Code Command Palette.
 
-CODEMD from [codemd.dev](https://www.codemd.dev) helps developers and coding agents understand code changes before they are committed. It combines local callgraphs, pre-commit risk analysis, blast-radius checks, signature-change detection, and navigable change maps inside VS Code.
-
-Give Claude, Codex, Cursor, and other coding agents compact local code intelligence through CODEMD artifacts and MCP, so they can use callgraphs and repository structure instead of repeatedly scanning the whole workspace.
-
-## Graphs
-
-CODEMD generates and displays local repository graphs:
-
-- **Callgraph**: who calls what across supported languages.
-- **File graph**: file-to-file dependencies.
-- **HTML UI graph**: buttons, links, inputs, forms, and frontend UI structure.
-- **Focused change graphs**: impact maps for specific search results, commits, and uncommitted edits.
-
 ![CODEMD impact graph and change report inside VS Code](https://github.com/codemd-dev/CODE.md/blob/main/uncommitted-edits.jpg?raw=true)
 
-![CODEMD search graphs](https://github.com/codemd-dev/CODE.md/blob/main/search-graph.jpg?raw=true)
+## How it works
 
-## What CODEMD Does
+1. Edit code — yourself, or let Claude, Codex, or Cursor do it.
+2. Click **Check Uncommitted Edits** in the CODEMD panel.
+3. See exactly what changed and what it affects, before you run `git commit`.
 
-1. **Reviews changes before commit**
-   Summarizes uncommitted edits, changed functions, deleted files, added files, removed folders, and other risky file changes before they land.
+## What it catches
 
-2. **Highlights risk and blast radius**
-   Scores changes by caller impact, sensitive paths, dependencies, CI/deploy files, migrations, schemas, and broad upstream usage.
+- **Deleted or renamed functions** that something else still calls.
+- **Changed function signatures** that break existing call sites.
+- **Blast radius** — every function, file, or route your edit touches indirectly, ranked by risk.
+- **Risky changes** — edits to CI/deploy config, migrations, schemas, or heavily-depended-on files.
 
-3. **Catches function-level breakage**
-   Detects deleted functions, Python signature changes, and provably incompatible direct call sites.
+## Also useful
 
-4. **Turns diffs into navigable context**
-   Lets developers jump from reports to source, diffs, changed functions, focused impact graphs, and recent commit analysis.
-
-5. **Gives coding agents local repo intelligence**
-   Generates `.codemd/` artifacts so Claude, Codex, Cursor, and other agents can use callgraphs and structure instead of repeatedly scanning files.
-
-6. **Runs local-first with MCP support**
-   Keeps core analysis in the workspace and exposes search, callers, callees, impact radius, status, and call paths through MCP.
-
-## Key Workflows
-
-- Click **Check Uncommitted Edits** to review local changes before committing.
-- Click **Blast Radius Report** to focus on changed functions whose caller footprint is risky.
-- Click **Check Latest Commits** to inspect committed changes and their impact.
-- Use the search box to find code through local CODEMD analysis.
-- Use **Set Up MCP** to connect Claude Code, Codex, and other MCP clients to CODEMD's local code intelligence.
+- **Check Latest Commits** — the same impact check, for changes that are already committed.
+- **Search** — jump straight to any function, file, or route and see what connects to it.
+- **Works with your AI agent directly** — CODEMD can expose its local repo index to Claude Code, Codex, and Cursor over MCP, so your agent checks what it's about to break instead of guessing. Opt-in via **Set Up MCP** in the CODEMD panel — nothing is configured automatically.
 
 ## Getting Started
 
 1. Install CODEMD.
 2. Click the CODEMD icon in the Activity Bar.
 3. Run **Generate CODEMD** to analyze the current workspace.
-4. Use **Check Uncommitted Edits**, **Blast Radius Report**, search, or graph navigation.
-5. Use **Set Up MCP** so Claude, Codex, and other coding agents can use CODEMD callgraphs and local repo intelligence.
+4. Click **Check Uncommitted Edits** before your next commit.
 
 ## Requirements
 
 - Python 3. CODEMD manages an isolated virtual environment automatically. You can also set `codemdGraphs.pythonPath` to use your own interpreter.
-
-## MCP Setup
-
-MCP configuration is opt-in. CODEMD writes workspace/client MCP configuration only when you run **CODEMD: Set Up MCP** or click **Set Up MCP** in the CODEMD panel.
 
 ## Learn More
 

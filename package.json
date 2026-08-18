@@ -1,8 +1,8 @@
 {
   "name": "codemd-graphs",
   "displayName": "CODEMD",
-  "description": "Pre-commit risk and impact analysis for developers and coding agents, powered by local CODEMD callgraphs and MCP.",
-  "version": "0.0.68",
+  "description": "Using AI to code? Check what your changes might break — before you commit.",
+  "version": "0.0.76",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -18,7 +18,21 @@
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Visualization",
     "Other"
+  ],
+  "keywords": [
+    "callgraph",
+    "code review",
+    "blast radius",
+    "pre-commit",
+    "impact analysis",
+    "static analysis",
+    "MCP",
+    "claude",
+    "cursor",
+    "codex",
+    "AI coding agent"
   ],
   "activationEvents": [
     "onStartupFinished",

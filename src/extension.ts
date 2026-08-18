@@ -2161,6 +2161,30 @@ function execGitAsync(args: string[], cwd: string): Promise<{ status: number | n
   });
 }
 
+/**
+ * Runs the bundled codemd-mcp-server.js in one-shot `--cli` mode (see that
+ * script) rather than as a long-lived MCP stdio server — lets read-only
+ * lookups like "find tests for this function" reuse the MCP tool's exact
+ * logic without requiring MCP to be set up at all. Uses VS Code's own
+ * bundled Node (process.execPath) so this works even if `node` isn't on PATH.
+ */
+function execNodeCliAsync(scriptPath: string, args: string[], cwd: string, timeoutMs = 20000): Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [scriptPath, ...args], { cwd });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    proc.on('error', () => { clearTimeout(timer); resolve({ status: null, stdout, stderr, timedOut }); });
+    proc.on('exit', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr, timedOut }); });
+  });
+}
+
 // Git's canonical hash for an empty tree — used as the "base" side when
 // diffing a repo's root commit, which has no parent to diff against.
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -2462,7 +2486,7 @@ interface NormalizedSearchResult {
 }
 
 interface ChangeCard {
-  kind: 'modified' | 'removed' | 'files' | 'blastRadius';
+  kind: 'modified' | 'removed' | 'added' | 'files' | 'blastRadius';
   title: string;
   symbol?: string;
   change: string;
@@ -2683,6 +2707,14 @@ function impactScoreForDeletedChange(change: any): number {
   const directCallees = Number(change?.direct_callees || 0);
   const stillReferenced = change?.still_referenced ? 100 : 0;
   return stillReferenced + (directCallers * 25) + (directCallees * 5);
+}
+
+// A new symbol has no node in the last-generated callgraph to score impact
+// against (see deletion-report.py's "added" section) — flat and low on
+// purpose, so new functions never outrank an actual deletion/modification
+// finding within the same risk bucket.
+function impactScoreForAddedChange(_change: any): number {
+  return 1;
 }
 
 function fileTypeLabel(file: string): string {
@@ -3031,6 +3063,27 @@ function buildDeletedChangeCard(change: any): ChangeCard {
   };
 }
 
+function buildAddedChangeCard(change: any): ChangeCard {
+  const symbol = String(change?.symbol || '');
+  return {
+    kind: 'added',
+    title: 'New function',
+    symbol,
+    change: 'Function added in this change set.',
+    risk: 'New',
+    riskLevel: 'low',
+    // No metrics/impact-graph action: a brand-new symbol has no node in the
+    // last-generated callgraph (it didn't exist when that graph was built),
+    // so there's no real caller/callee count to show — see
+    // deletion-report.py's "added" section for why this stays this simple.
+    metrics: [],
+    evidence: ['Not present in the base version'],
+    checks: ['Confirm this is intentional and covered by tests'],
+    actions: ['View diff'],
+    startCollapsed: true,
+  };
+}
+
 function buildOtherFilesCard(files: any[]): ChangeCard {
   const labels = files.map(uncommittedFileLabel).filter(Boolean);
   const deletedCount = files.filter((file) => uncommittedFileStatus(file) === 'deleted').length;
@@ -3166,6 +3219,7 @@ function buildBlastRadiusCard(entry: BlastRadiusEntry): ChangeCard {
 function buildChangesAnswer(report: any): string {
   const modified = Array.isArray(report?.modified) ? report.modified : [];
   const deleted = Array.isArray(report?.deleted) ? report.deleted : [];
+  const added = Array.isArray(report?.added) ? report.added : [];
   const unsupported = Array.isArray(report?.unsupported_files) ? report.unsupported_files.map((f: unknown) => String(f || '')).filter(Boolean) : [];
   const uncommittedFiles = Array.isArray(report?.uncommitted_files) ? report.uncommitted_files : [];
   const impactedFileSet = new Set<string>();
@@ -3203,6 +3257,9 @@ function buildChangesAnswer(report: any): string {
   lines.push(
     `${modified.length + deleted.length} function(s) touched in total (${noSignatureChange} body-only edit(s) with no signature change${cosmeticNote}) — see "Other Modified Functions" below.`,
   );
+  if (added.length) {
+    lines.push(`${added.length} new function(s) added — see "New Functions" below.`);
+  }
   if (impactedFileSet.size) {
     lines.push(`${impactedFileSet.size} impacted file(s) found by the callgraph.`);
   } else {
@@ -3383,6 +3440,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   // webview URI is a no-op (iframe.src unchanged), it would stay blank.
   private localGraphReadyPromise: Promise<void> | null = null;
   private searchHistory: any[] = [];
+  // Cached so markWebviewReady() can replay the Product Feature List card
+  // (like it already does for the graph/search history/MCP usage) instead
+  // of leaving it empty until the next Generate/Regenerate click.
+  private lastFeatureCatalog: any = null;
+  private lastFeatureCatalogRepoStats: any = null;
   private lastStatus = 'Preparing callgraph in the background…';
   private sidePanel?: vscode.WebviewPanel;
   private graphPanel?: vscode.WebviewPanel;
@@ -3753,6 +3815,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (result) {
       this.ownerName = String(result?.owner_name || '');
       this.repoName = String(result?.repo_name || '');
+      // Populate the Product Feature List card from the last cached
+      // analysis on disk, so it's already there on startup/reopen instead
+      // of staying empty until the next Generate/Regenerate click.
+      this.postFeatureCatalog(result);
     }
   }
 
@@ -3835,7 +3901,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
 
   private postDisplayedGraph(): void {
     if (this.lastDisplayedServerGraphUrl) {
-      this.post({ type: 'graph', url: this.lastDisplayedServerGraphUrl });
+      this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
       return;
     }
     this.postGraph();
@@ -3907,6 +3973,25 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'searchSuggestions', functions: this.scimFunctionSuggestions(folder) });
   }
 
+  /**
+   * `feature_catalog` and `repo_stats` are both embedded directly in the
+   * analyze result (see analyze_response()/backend/scim.py
+   * feature_catalog_payload and build_repo_stats/local_git_head_info)
+   * rather than mirrored as separate artifact fetches, so this just
+   * forwards whatever the last analysis (fresh or cached) produced to the
+   * webview's collapsible "Product Feature List" card — the feature catalog
+   * plus the commit it was computed from.
+   */
+  private postFeatureCatalog(analyzeResult: any): void {
+    this.lastFeatureCatalog = analyzeResult?.feature_catalog || {};
+    this.lastFeatureCatalogRepoStats = analyzeResult?.repo_stats || {};
+    this.post({
+      type: 'featureCatalog',
+      data: this.lastFeatureCatalog,
+      repoStats: this.lastFeatureCatalogRepoStats,
+    });
+  }
+
   private post(message: any): void {
     if (this.view && this.viewReady) {
       this.view.webview.postMessage(message);
@@ -3940,6 +4025,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.openGraphPanel(message.currentGraphUrl);
     } else if (message.type === 'graphForResult') {
       this.runResultGraph(message.result || {});
+    } else if (message.type === 'findTestsForResult') {
+      this.runFindTestsForResult(message.result || {}, String(message.requestId || ''));
     } else if (message.type === 'checkChanges') {
       this.runChangesCheck();
     } else if (message.type === 'blastRadius') {
@@ -4003,6 +4090,9 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.postSearchSuggestions();
     if (this.hasGenerated) {
       this.post({ type: 'generated' });
+    }
+    if (this.lastFeatureCatalog) {
+      this.post({ type: 'featureCatalog', data: this.lastFeatureCatalog, repoStats: this.lastFeatureCatalogRepoStats || {} });
     }
     this.refreshMcpUsage();
   }
@@ -4361,6 +4451,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.postGraph();
         this.postSearchSuggestions(folder);
         this.post({ type: 'generated' });
+        this.postFeatureCatalog(result);
         this.refreshMcpUsage(folder);
         statusBarItem.text = '$(check) CODE.md: up to date';
         statusBarItem.tooltip = 'CODE.md';
@@ -4430,6 +4521,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         status(`Ready. Generated ${ARTIFACT_OUTPUT_DIR}/ — search below to explore the callgraph.`);
         this.postSearchSuggestions(folder);
         this.post({ type: 'generated' });
+        this.postFeatureCatalog(uploadResult);
         this.refreshMcpUsage(folder);
         statusBarItem.text = '$(check) CODE.md: up to date';
         statusBarItem.tooltip = 'CODE.md';
@@ -4718,6 +4810,52 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * "Does anything test this?" for a single changed/impacted function — pure
+   * lookup, never executes the tests themselves. Runs the bundled MCP
+   * server's find_tests tool as a one-shot CLI (see execNodeCliAsync) so it
+   * works whether or not the user has ever set up MCP.
+   */
+  private async runFindTestsForResult(result: any, requestId: string): Promise<void> {
+    const query = String(result?.graphSymbol || result?.fullName || result?.symbol || result?.name || '').trim();
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!query || !folder) {
+      this.post({ type: 'testGapResult', requestId, ok: false, error: 'No symbol to check.' });
+      return;
+    }
+    const scriptPath = vscode.Uri.joinPath(this.context.extensionUri, 'scripts', 'codemd-mcp-server.js').fsPath;
+    if (!fs.existsSync(scriptPath)) {
+      this.post({ type: 'testGapResult', requestId, ok: false, error: 'Test lookup script not found in this build.' });
+      return;
+    }
+    try {
+      const { status, stdout, timedOut } = await execNodeCliAsync(
+        scriptPath,
+        ['--workspace', folder.uri.fsPath, '--cli', 'find_tests', '--query', query, '--limit', '5'],
+        folder.uri.fsPath,
+      );
+      if (timedOut) {
+        this.post({ type: 'testGapResult', requestId, ok: false, error: 'Test lookup timed out.' });
+        return;
+      }
+      if (status !== 0) {
+        this.post({ type: 'testGapResult', requestId, ok: false, error: 'Test lookup failed.' });
+        return;
+      }
+      const data = JSON.parse(stdout);
+      this.post({
+        type: 'testGapResult',
+        requestId,
+        ok: true,
+        query,
+        matchCount: Number(data.match_count || 0),
+        matches: Array.isArray(data.matches) ? data.matches.slice(0, 5).map((m: any) => String(m.file || '')) : [],
+      });
+    } catch (err: any) {
+      this.post({ type: 'testGapResult', requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
+  /**
    * "What changed since I started this session, and is anything I deleted
    * still referenced elsewhere?" Diffs the working tree against the git ref
    * captured at session start (scripts/deletion-report.py), scoring deleted
@@ -4986,6 +5124,29 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         diffTarget,
       });
     }
+    for (const a of report.added || []) {
+      const symbol = String(a.symbol || '');
+      const tail = symbol.split('.').pop() || symbol;
+      const file = String(a.file || '');
+      const card = buildAddedChangeCard(a);
+      results.push({
+        label: `${card.title}: ${compactSymbolName(symbol)}`,
+        file,
+        line: String(a.line || ''),
+        snippet: card.change,
+        changeCard: card,
+        graphSymbol: symbol,
+        fullName: symbol,
+        symbol: tail,
+        name: tail,
+        impactNodes: [],
+        impactFiles: file ? [file] : [],
+        impactScore: impactScoreForAddedChange(a),
+        changeTime: changeTimeFor(file),
+        diffBase,
+        diffTarget,
+      });
+    }
     const representedFiles = new Set<string>();
     for (const d of report.deleted || []) {
       const file = String(d?.file || '').replace(/\\/g, '/');
@@ -4995,6 +5156,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
     for (const m of report.modified || []) {
       const file = String(m?.file || '').replace(/\\/g, '/');
+      if (file) {
+        representedFiles.add(file);
+      }
+    }
+    for (const a of report.added || []) {
+      const file = String(a?.file || '').replace(/\\/g, '/');
       if (file) {
         representedFiles.add(file);
       }
@@ -5437,6 +5604,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
   #mcpUsageByClient { margin: 4px 0 0 18px; font-size: 12px; opacity: 0.85; }
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
+  #mcpUsageCard.is-collapsed #mcpUsageDetails { display: none; }
+  #mcpUsageCard.is-collapsed #mcpActionRow { display: none; }
   #setupMcpBtn { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
   body.has-results #mcpUsageCard { margin: 6px 8px; padding: 6px 10px; }
   body.has-results #mcpUsageLabel { font-size: 12px; }
@@ -5444,6 +5613,24 @@ function getHtml(host: string, port: number, cspSource: string): string {
   body.has-results #mcpUsageSubtitle,
   body.has-results #mcpSetupStatus,
   body.has-results #mcpUsageByClient { display: none; }
+  #featureListCard { margin: 8px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  #featureListCard.is-empty #featureListDetails { display: none; }
+  #featureListHeadline { display: flex; align-items: center; gap: 8px; }
+  #featureListLabel { font-size: 13px; font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #featureListNote { font-size: 11px; opacity: 0.7; margin: 3px 0 0 18px; }
+  #featureListDetails { margin: 6px 0 0; }
+  #featureListCard.is-collapsed #featureListDetails { display: none; }
+  #featureListCard.is-collapsed:not(.is-empty) #featureListNote { display: none; }
+  body.has-results #featureListCard { margin: 6px 8px; padding: 6px 10px; }
+  .featureRow { border-top: 1px solid var(--vscode-panel-border); padding: 4px 0; }
+  .featureRow:first-child { border-top: none; }
+  .featureRowHead { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .featureRowName { font-size: 12px; font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .featureRowMeta { font-size: 11px; opacity: 0.7; flex: 0 0 auto; white-space: nowrap; }
+  .featureRowBody { margin: 4px 0 4px 22px; font-size: 11px; }
+  .featureEvidenceItem { padding: 1px 0; opacity: 0.9; }
+  .featureEvidenceLink { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .featureEvidenceLink:hover { color: var(--vscode-textLink-activeForeground); }
   #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
   .msg .query { font-weight: 600; margin-bottom: 4px; }
@@ -5534,9 +5721,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
     </div>
-    <div id="mcpUsageCard" title="Claude/Codex CODEMD MCP usage observed by the MCP wrapper.">
+    <div id="messages"></div>
+    <div id="mcpUsageCard" class="is-collapsed" title="Claude/Codex CODEMD MCP usage observed by the MCP wrapper.">
       <div id="mcpUsageContent">
         <div id="mcpUsageHeadline">
+          <button id="mcpToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show MCP setup and controls">+</button>
           <span id="mcpUsageLabel">Calls to CODEMD MCP:</span>
           <span id="mcpClientStatuses">
             <span class="mcpClientStatus mcp-disconnected" id="mcpCodexStatus"><span class="mcpDot"></span><span>Codex 0</span></span>
@@ -5544,9 +5733,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
           </span>
           <span id="mcpUsageTimeSaved"></span>
         </div>
-        <div id="mcpUsageSubtitle"></div>
-        <div id="mcpSetupStatus"></div>
-        <div id="mcpUsageByClient"></div>
+        <div id="mcpUsageDetails">
+          <div id="mcpUsageSubtitle"></div>
+          <div id="mcpSetupStatus"></div>
+          <div id="mcpUsageByClient"></div>
+        </div>
       </div>
       <div id="mcpActionRow">
         <button id="setupMcpBtn" title="Add CODEMD MCP config for Claude Code, Codex, or both. You may still need to approve the server in your client.">Add CODEMD MCP Server</button>
@@ -5558,7 +5749,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
         <button id="cleanArtifactsBtn" title="Delete generated CODEMD graphs and indexes from .codemd. Source files are not changed.">Clean up .codemd</button>
       </div>
     </div>
-    <div id="messages"></div>
+    <div id="featureListCard" class="is-collapsed is-empty" title="Product features inferred from README/docs text, UI/API anchors, and functions in this codebase, as of the last analyzed commit.">
+      <div id="featureListHeadline">
+        <button id="featureListToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show detected features">+</button>
+        <span id="featureListLabel">Product Feature List</span>
+      </div>
+      <div id="featureListNote">Click Regenerate above to detect this codebase's product features.</div>
+      <div id="featureListDetails"></div>
+    </div>
     <form id="searchForm">
       <input id="queryInput" type="text" placeholder="Search this codebase…" autocomplete="off" aria-autocomplete="list" aria-controls="querySuggestionPanel" />
       <div id="querySuggestionPanel" role="listbox"></div>
@@ -5592,6 +5790,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   const emptyStateRetryBtn = document.getElementById('emptyStateRetryBtn');
   const statusLine = document.getElementById('statusLine');
   const mcpUsageCard = document.getElementById('mcpUsageCard');
+  const mcpToggleBtn = document.getElementById('mcpToggleBtn');
   const mcpUsageLabel = document.getElementById('mcpUsageLabel');
   const mcpCodexStatus = document.getElementById('mcpCodexStatus');
   const mcpClaudeStatus = document.getElementById('mcpClaudeStatus');
@@ -5607,6 +5806,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
   const cleanArtifactsBtn = document.getElementById('cleanArtifactsBtn');
   const mcpUsageByClient = document.getElementById('mcpUsageByClient');
   const setupMcpBtn = document.getElementById('setupMcpBtn');
+  const featureListCard = document.getElementById('featureListCard');
+  const featureListToggleBtn = document.getElementById('featureListToggleBtn');
+  const featureListLabel = document.getElementById('featureListLabel');
+  const featureListNote = document.getElementById('featureListNote');
+  const featureListDetails = document.getElementById('featureListDetails');
   const messages = document.getElementById('messages');
   const generateBtn = document.getElementById('generateBtn');
   const checkChangesBtn = document.getElementById('checkChangesBtn');
@@ -5962,8 +6166,25 @@ function getHtml(host: string, port: number, cspSource: string): string {
     vscode.postMessage({ type: 'generate' });
   });
 
+  mcpToggleBtn.addEventListener('click', () => {
+    const collapsed = mcpUsageCard.classList.toggle('is-collapsed');
+    mcpToggleBtn.textContent = collapsed ? '+' : '-';
+    mcpToggleBtn.title = collapsed ? 'Show MCP setup and controls' : 'Hide MCP setup and controls';
+    mcpToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (!collapsed) {
+      mcpActionRow.style.display = Array.from(mcpActionRow.children).some((button) => button.style.display !== 'none') ? '' : 'none';
+    }
+  });
+
   setupMcpBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'setupMcp' });
+  });
+
+  featureListToggleBtn.addEventListener('click', () => {
+    const collapsed = featureListCard.classList.toggle('is-collapsed');
+    featureListToggleBtn.textContent = collapsed ? '+' : '-';
+    featureListToggleBtn.title = collapsed ? 'Show detected features' : 'Hide detected features';
+    featureListToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   });
 
   removeMcpBtn.addEventListener('click', () => {
@@ -6039,6 +6260,125 @@ function getHtml(host: string, port: number, cspSource: string): string {
     const div = document.createElement('div');
     div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
+  }
+
+  // Renders the feature_catalog.json produced during the last analysis
+  // (backend/scim.py feature_catalog_payload) into the collapsible "Product
+  // Feature List" card, tagged with the commit (repo_stats.git_head_*) that
+  // analysis ran against. Each feature row is itself collapsible and
+  // expands into its evidence list (symbol/file/line), which opens the
+  // source file on click.
+  function commitSnapshotLabel(repoStats) {
+    const sha = repoStats && repoStats.git_head_short_sha;
+    if (!sha) { return ''; }
+    const date = repoStats.git_head_date ? new Date(repoStats.git_head_date) : null;
+    const dateText = date && !isNaN(date) ? date.toLocaleDateString() : '';
+    return 'as of commit ' + sha + (dateText ? ' (' + dateText + ')' : '') + (repoStats.git_dirty ? ' +uncommitted' : '');
+  }
+
+  function renderFeatureList(data, repoStats) {
+    if (!featureListCard) { return; }
+    const features = Array.isArray(data && data.features) ? data.features : [];
+    featureListDetails.textContent = '';
+    if (!features.length) {
+      featureListCard.classList.add('is-empty');
+      featureListLabel.textContent = 'Product Feature List';
+      // Distinguish "never generated" (data === {}, keep the built-in
+      // "click Regenerate" placeholder already in the HTML) from "ran, and
+      // genuinely found nothing" (data is a real payload from a completed
+      // run) — otherwise a real empty result silently looks identical to
+      // the not-yet-generated state and reads as a bug.
+      const hasRunPayload = data && (data.source || data.disabled || data.reason || typeof data.functions_analyzed === 'number');
+      if (hasRunPayload) {
+        featureListNote.textContent = data.reason || 'No product features detected for this codebase yet.';
+      }
+      return;
+    }
+    featureListCard.classList.remove('is-empty');
+    const productName = data && data.product_name ? ' — ' + data.product_name : '';
+    featureListLabel.textContent = 'Product Feature List (' + features.length + ')' + productName;
+    const snapshotLabel = commitSnapshotLabel(repoStats);
+    const note = (data && data.note) || '';
+    featureListNote.textContent = [note, snapshotLabel].filter(Boolean).join(' — ');
+    features
+      .slice()
+      .sort((a, b) => Number((b && b.match_count) || 0) - Number((a && a.match_count) || 0))
+      .forEach((feature) => {
+        const row = document.createElement('div');
+        row.className = 'featureRow';
+
+        const head = document.createElement('div');
+        head.className = 'featureRowHead';
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'detailsToggle';
+        toggle.textContent = '+';
+        toggle.title = 'Show evidence';
+        toggle.setAttribute('aria-expanded', 'false');
+
+        const name = document.createElement('span');
+        name.className = 'featureRowName';
+        name.textContent = String((feature && (feature.feature || feature.name)) || 'Unnamed feature');
+
+        const meta = document.createElement('span');
+        meta.className = 'featureRowMeta';
+        const bits = [];
+        const matchCount = Number((feature && feature.match_count) || 0);
+        if (matchCount) { bits.push(matchCount + ' function' + (matchCount === 1 ? '' : 's')); }
+        if (feature && feature.visibility) { bits.push(feature.visibility); }
+        meta.textContent = bits.join(' • ');
+
+        head.appendChild(toggle);
+        head.appendChild(name);
+        head.appendChild(meta);
+
+        const body = document.createElement('div');
+        body.className = 'featureRowBody';
+        body.style.display = 'none';
+        const evidence = Array.isArray(feature && feature.evidence) ? feature.evidence : [];
+        if (evidence.length) {
+          evidence.slice(0, 8).forEach((item) => {
+            const evRow = document.createElement('div');
+            evRow.className = 'featureEvidenceItem';
+            const hasPath = Boolean(item && item.path);
+            const label = document.createElement(hasPath ? 'button' : 'span');
+            if (hasPath) {
+              label.type = 'button';
+              label.className = 'featureEvidenceLink';
+            }
+            const location = hasPath ? item.path + (item.start_line ? ':' + item.start_line : '') : '';
+            label.textContent = [item && item.symbol, location].filter(Boolean).join(' — ');
+            if (hasPath) {
+              label.addEventListener('click', (event) => {
+                event.stopPropagation();
+                vscode.postMessage({ type: 'openFile', file: item.path, line: item.start_line || '' });
+              });
+            }
+            evRow.appendChild(label);
+            body.appendChild(evRow);
+          });
+        } else {
+          const empty = document.createElement('div');
+          empty.className = 'featureEvidenceItem';
+          empty.textContent = 'No evidence recorded.';
+          body.appendChild(empty);
+        }
+
+        const toggleRow = () => {
+          const collapsed = body.style.display === 'none';
+          body.style.display = collapsed ? '' : 'none';
+          toggle.textContent = collapsed ? '-' : '+';
+          toggle.title = collapsed ? 'Hide evidence' : 'Show evidence';
+          toggle.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
+        };
+        toggle.addEventListener('click', (event) => { event.stopPropagation(); toggleRow(); });
+        head.addEventListener('click', toggleRow);
+
+        row.appendChild(head);
+        row.appendChild(body);
+        featureListDetails.appendChild(row);
+      });
   }
 
   function parseEvidenceFileLabel(label) {
@@ -6337,6 +6677,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
 
   function resultRiskBucket(r) {
     const card = r && r.changeCard;
+    if (card && card.kind === 'added') {
+      // New functions are informational, not a risk finding (there's no
+      // callgraph node for them yet to score against — see
+      // deletion-report.py's "added" section) — their own group keeps them
+      // out of the risk-ranked buckets below instead of defaulting into
+      // "Review" alongside actually-uncertain findings.
+      return { key: 'added', title: 'New Functions', pillLabel: 'New', pillClass: 'low', rank: 6.5 };
+    }
     if (card && card.cosmeticOnly) {
       return { key: 'cosmetic only', title: 'Cosmetic Only', pillLabel: 'Cosmetic', pillClass: 'low', rank: 5 };
     }
@@ -6396,6 +6744,9 @@ function getHtml(host: string, port: number, cspSource: string): string {
   function bestGroupedChangeResult(results, mode) {
     return sortedChangeResults(results || [], mode)[0] || null;
   }
+
+  const testGapChipsByRequestId = new Map();
+  let testGapRequestSeq = 0;
 
   function appendResultItem(parent, r) {
     const item = document.createElement('div');
@@ -6494,6 +6845,38 @@ function getHtml(host: string, port: number, cspSource: string): string {
           vscode.postMessage({ type: 'graphForResult', result: r });
         }
       });
+    }
+    if (graphable) {
+      const actions = document.createElement('div');
+      actions.className = 'actionRow';
+      actions.style.marginTop = '4px';
+
+      const searchChip = document.createElement('span');
+      searchChip.className = 'actionChip actionChipClickable';
+      searchChip.textContent = 'Search this';
+      searchChip.title = 'Search the codebase for ' + graphable;
+      searchChip.addEventListener('click', (event) => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'search', query: graphable });
+      });
+      actions.appendChild(searchChip);
+
+      const testsChip = document.createElement('span');
+      testsChip.className = 'actionChip actionChipClickable';
+      testsChip.textContent = 'Check tests';
+      testsChip.title = 'Look for tests covering ' + graphable + ' (does not run anything)';
+      testsChip.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (testsChip.dataset.pending === '1') { return; }
+        testsChip.dataset.pending = '1';
+        testsChip.textContent = 'Checking tests…';
+        const requestId = 'testgap_' + (testGapRequestSeq++) + '_' + Date.now();
+        testGapChipsByRequestId.set(requestId, testsChip);
+        vscode.postMessage({ type: 'findTestsForResult', result: r, requestId });
+      });
+      actions.appendChild(testsChip);
+
+      item.appendChild(actions);
     }
     parent.appendChild(item);
   }
@@ -6894,7 +7277,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
       setMcpAction(approveCodexBtn, configured && setup.codexDetected && !setup.codexApproved, false);
       setMcpAction(approveClaudeBtn, configured && setup.claudeDetected && !setup.claudeApproved, false);
       setMcpAction(cleanArtifactsBtn, true, false);
-      mcpActionRow.style.display = Array.from(mcpActionRow.children).some((button) => button.style.display !== 'none') ? '' : 'none';
+      const anyMcpActionVisible = Array.from(mcpActionRow.children).some((button) => button.style.display !== 'none');
+      mcpActionRow.style.display = (anyMcpActionVisible && !mcpUsageCard.classList.contains('is-collapsed')) ? '' : 'none';
       mcpUsageCard.classList.remove('mcp-active', 'mcp-idle');
       if (configured) {
         mcpUsageCard.classList.add(total > 0 && !stale ? 'mcp-active' : 'mcp-idle');
@@ -6947,6 +7331,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
 	      }, 8000);
 	    } else if (msg.type === 'generated') {
       // graph message (if any) already handled separately
+    } else if (msg.type === 'featureCatalog') {
+      renderFeatureList(msg.data || {}, msg.repoStats || {});
     } else if (msg.type === 'searchHistory') {
       messages.textContent = '';
       searchHistoryQueries = (msg.items || []).map(item => item?.query || '');
@@ -6957,6 +7343,24 @@ function getHtml(host: string, port: number, cspSource: string): string {
       updateQuerySuggestions();
     } else if (msg.type === 'searchResult') {
       renderSearchResult(msg);
+    } else if (msg.type === 'testGapResult') {
+      const chip = testGapChipsByRequestId.get(msg.requestId);
+      testGapChipsByRequestId.delete(msg.requestId);
+      if (!chip) { return; }
+      chip.dataset.pending = '0';
+      if (!msg.ok) {
+        chip.textContent = 'Check tests';
+        chip.title = msg.error || 'Test lookup failed.';
+        return;
+      }
+      const count = Number(msg.matchCount || 0);
+      if (count > 0) {
+        chip.textContent = '✓ ' + count + (count === 1 ? ' test found' : ' tests found');
+        chip.title = 'Likely covered by: ' + (msg.matches || []).join(', ');
+      } else {
+        chip.textContent = '⚠ No tests found';
+        chip.title = 'No test file appears to reference ' + msg.query + '. This is a heuristic, not proof — verify before assuming it is untested.';
+      }
     }
   });
 

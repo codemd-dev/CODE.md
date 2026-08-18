@@ -520,8 +520,19 @@ def format_summary_lines(report):
             f"{low_conf_edges} low-confidence edge(s)."
         )
 
+    if report["added"]:
+        symbols = ", ".join(a["symbol"] for a in report["added"][:6])
+        more = len(report["added"]) - 6
+        if more > 0:
+            symbols += f", +{more} more"
+        # No impact/severity claim here on purpose: a brand-new symbol has no
+        # node in the last-generated callgraph to score against (see the
+        # --only-file loop in main()), so anything beyond "here's what's new"
+        # would be a guess dressed up as a finding.
+        lines.append(f"Added: {len(report['added'])} new function(s) — {symbols}.")
+
     if not lines:
-        lines.append("No deletions or confirmed modifications detected in tracked Python/JavaScript/TypeScript/Java files.")
+        lines.append("No deletions, additions, or confirmed modifications detected in tracked Python/JavaScript/TypeScript/Java files.")
     return lines
 
 
@@ -554,6 +565,7 @@ def main():
     report = {
         "deleted": [],
         "modified": [],
+        "added": [],
         "uncommitted_files": [],
         "unsupported_files": [],
         "callgraph_available": False,
@@ -584,6 +596,7 @@ def main():
     node_files = load_function_files(repo_root, core_helpers)
     report["callgraph_available"] = callgraph is not None
     deleted_symbols = {}  # symbol -> {file, start_line, end_line}
+    added_symbols = {}  # symbol -> {file, start_line, end_line}
     confirmed_modified_symbols = {}  # symbol -> {file, start_line, end_line}
     cosmetic_only_symbols = {}  # symbol -> True/False/None (None = undeterminable)
     signature_diff_symbols = {}  # symbol -> dict|None (see python_function_signature_diff)
@@ -612,12 +625,18 @@ def main():
         if diffed is None:
             report["unsupported_files"].append(new_rel_path)
             continue
-        deleted, _added, confirmed_modified, pre_by_symbol, post_by_symbol, cosmetic_only, signature_diffs = diffed
+        deleted, added, confirmed_modified, pre_by_symbol, post_by_symbol, cosmetic_only, signature_diffs = diffed
         for symbol in deleted:
             deleted_symbols[symbol] = {
                 "file": old_rel_path,
                 "start_line": pre_by_symbol[symbol]["start_line"],
                 "end_line": pre_by_symbol[symbol]["end_line"],
+            }
+        for symbol in added:
+            added_symbols[symbol] = {
+                "file": new_rel_path,
+                "start_line": post_by_symbol[symbol]["start_line"],
+                "end_line": post_by_symbol[symbol]["end_line"],
             }
         for symbol in confirmed_modified:
             span = post_by_symbol.get(symbol) or pre_by_symbol.get(symbol) or {}
@@ -637,6 +656,13 @@ def main():
         else:
             entry.update({"direct_callers": 0, "direct_callees": 0, "still_referenced": False, "severity": "UNKNOWN"})
         report["deleted"].append(entry)
+
+    # No score_added_symbol counterpart to score_deleted_symbol: a brand-new
+    # symbol has no node in the last-generated callgraph (it didn't exist
+    # when that graph was built), so there's no real caller/callee edge to
+    # report — just what's new and where.
+    for symbol, meta in sorted(added_symbols.items()):
+        report["added"].append({"symbol": symbol, "file": meta["file"], "line": meta["start_line"]})
 
     if callgraph is not None:
         modified_items = sorted(confirmed_modified_symbols.items())

@@ -123,9 +123,11 @@ class VisibleTextHTMLParser(HTMLParser):
         self._skip_depth = 0
         self.values = []
 
+    SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "pre", "code"}
+
     def handle_starttag(self, tag, attrs):
         tag = str(tag or "").lower()
-        if tag in {"script", "style", "noscript", "template", "svg"}:
+        if tag in self.SKIP_TAGS:
             self._skip_depth += 1
         attrs_dict = {str(key or "").lower(): str(value or "") for key, value in (attrs or [])}
         for key in ("aria-label", "alt", "title", "placeholder", "value"):
@@ -135,7 +137,7 @@ class VisibleTextHTMLParser(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = str(tag or "").lower()
-        if tag in {"script", "style", "noscript", "template", "svg"} and self._skip_depth:
+        if tag in self.SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
 
     def handle_data(self, data):
@@ -6414,6 +6416,16 @@ def build_navigatable_cytoscape_graph(
         initial_visible_nodes = list(dict.fromkeys(initial_visible_nodes or []))
     else:
         initial_visible_nodes = sorted(set(initial_visible_nodes or []))
+    repo_stats_snapshot = load_repo_stats_artifact(output_repo_dir)
+    snapshot_info = (
+        {
+            "sha": repo_stats_snapshot.get("git_head_short_sha", ""),
+            "date": repo_stats_snapshot.get("git_head_date", ""),
+            "dirty": bool(repo_stats_snapshot.get("git_dirty")),
+        }
+        if repo_stats_snapshot.get("git_head_short_sha")
+        else {}
+    )
     graph_data = {
         "mode": "navigatable_ordered_ga_graph",
         "title": graph_title,
@@ -6426,6 +6438,7 @@ def build_navigatable_cytoscape_graph(
         "node_labels": node_labels or {},
         "edge_labels": edge_labels or {},
         "highlight": highlight_data or {},
+        "snapshot": snapshot_info,
         "instructions": "Click a node to reveal the next connected node or edge.",
     }
     json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
@@ -6547,6 +6560,13 @@ def build_navigatable_cytoscape_graph(
       nodeLabels = data.node_labels && typeof data.node_labels === \"object\" ? data.node_labels : {{}};
       const edgeLabels = data.edge_labels && typeof data.edge_labels === \"object\" ? data.edge_labels : {{}};
       const highlight = data.highlight && typeof data.highlight === \"object\" ? data.highlight : {{}};
+      const snapshot = data.snapshot && typeof data.snapshot === \"object\" ? data.snapshot : {{}};
+      let snapshotText = \"\";
+      if (snapshot.sha) {{
+        const snapshotDate = snapshot.date ? new Date(snapshot.date) : null;
+        const dateText = snapshotDate && !isNaN(snapshotDate) ? snapshotDate.toLocaleDateString() : \"\";
+        snapshotText = ` · as of ${{snapshot.sha}}${{dateText ? ` (${{dateText}})` : \"\"}}${{snapshot.dirty ? \" +uncommitted\" : \"\"}}`;
+      }}
       function highlightIdSet(values) {{
         return new Set((Array.isArray(values) ? values : []).map(value => sanitize(value)).filter(Boolean));
       }}
@@ -7015,12 +7035,12 @@ def build_navigatable_cytoscape_graph(
           addMissingElements(oneStepElementsFor(next));
           relayout(true, next);
           setStatus(
-            `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}`,
+            `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}${{snapshotText}}`,
             `${{compactLabel(nodeById.get(id) || id)}} is fully expanded. Continuing from ${{compactLabel(nodeById.get(next) || next)}}. Click to keep going.`
           );
         }} else {{
           setStatus(
-            `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}`,
+            `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}${{snapshotText}}`,
             `All reachable nodes from ${{compactLabel(nodeById.get(id) || id)}} are now visible.`
           );
         }}
@@ -7029,7 +7049,7 @@ def build_navigatable_cytoscape_graph(
       const highlightCount = rootHighlightIds.size + affectedHighlightIds.size + fileHighlightIds.size;
       const highlightText = highlightCount ? ` · ${{rootHighlightIds.size}} changed, ${{affectedHighlightIds.size}} affected${{fileHighlightIds.size ? `, ${{fileHighlightIds.size}} file-mapped` : \"\"}}` : \"\";
       setStatus(
-        `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}${{highlightText}}`,
+        `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}${{highlightText}}${{snapshotText}}`,
         `Showing connections from ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}}. Click a node to reveal the next connected node or edge.`
       );
       requestAnimationFrame(() => relayout(true, firstRoot));
@@ -8885,7 +8905,15 @@ def build_scim_artifacts(
             batch_size=32,
             generic_graphs=True,
             max_chunks_per_repo=int(os.getenv("SCIM_MAX_CHUNKS_PER_REPO", "3000")),
-            max_file_bytes=int(os.getenv("SCIM_MAX_FILE_BYTES", "300000")),
+            # 300KB silently dropped legitimate large first-party source files
+            # (e.g. a single-file VS Code webview provider with an embedded
+            # HTML template can easily exceed it) from the feature/search
+            # index entirely -- no truncation, no fallback, just zero code
+            # evidence for anything implemented in that file. Vendored/minified
+            # bundles are already excluded earlier by SKIP_DIRS/.min.js/.bundle.js
+            # filtering, so anything reaching this point is real source; align
+            # with JS_MAX_TREE_SITTER_PARSE_BYTES's existing 1.5MB convention.
+            max_file_bytes=int(os.getenv("SCIM_MAX_FILE_BYTES", "1500000")),
             max_record_code_chars=int(os.getenv("SCIM_MAX_RECORD_CODE_CHARS", "2000")),
             progress_callback=progress,
         )
@@ -28827,8 +28855,13 @@ def collect_js_functions(masked, source, module_name, source_file):
         )
 
     class_pattern = re.compile(r"\bclass\s+([A-Za-z_$][\w$]*)[^{]*\{", re.MULTILINE)
+    # TypeScript methods almost always carry a return-type annotation between
+    # the closing paren and the body brace (e.g. `async foo(x: T): Promise<void> {`).
+    # Without tolerating that, this regex silently drops most real methods in
+    # any typed TS class -- see TS_RETURN_TYPE below, reused across patterns.
+    TS_RETURN_TYPE = r"(?::[^{;]*)?"
     method_pattern = re.compile(
-        r"(?:^|[;\n{}])\s*(?:async\s+)?(?:static\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{",
+        r"(?:^|[;\n{}])\s*(?:async\s+)?(?:static\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*" + TS_RETURN_TYPE + r"\{",
         re.MULTILINE,
     )
     for class_match in class_pattern.finditer(masked):
@@ -28847,10 +28880,10 @@ def collect_js_functions(masked, source, module_name, source_file):
             record(method_name if method_name != "constructor" else "<init>", method_open, class_name)
 
     patterns = [
-        re.compile(r"\b(?:export\s+default\s+|export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{", re.MULTILINE),
+        re.compile(r"\b(?:export\s+default\s+|export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*" + TS_RETURN_TYPE + r"\{", re.MULTILINE),
         re.compile(r"\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b[^{]*\{", re.MULTILINE),
-        re.compile(r"\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{", re.MULTILINE),
-        re.compile(r"\b(?:export\s+)?([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?(?:function\b[^{]*|\([^)]*\)\s*=>)\s*\{", re.MULTILINE),
+        re.compile(r"\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^{;=]*)?=>\s*\{", re.MULTILINE),
+        re.compile(r"\b(?:export\s+)?([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?(?:function\b[^{]*|\([^)]*\)\s*(?::[^{;=]*)?=>)\s*\{", re.MULTILINE),
     ]
     for pattern in patterns:
         for match in pattern.finditer(masked):
@@ -29965,6 +29998,32 @@ CODE_LINE_EXTENSIONS = ALLOWED_CODE_EXTENSIONS | HTML_UI_EXTENSIONS_FOR_ANALYSIS
 }
 
 
+def local_git_head_info(repo_src):
+    """HEAD short sha/date/dirty state for a local working tree, so graph
+    viewers can show which snapshot of the repo a rendered graph reflects.
+    Returns {} for downloaded-zip analyses (no .git dir) or if git fails."""
+    if not repo_src or not os.path.isdir(os.path.join(repo_src, ".git")):
+        return {}
+    try:
+        head = subprocess.run(
+            ["git", "log", "-1", "--format=%h|%cI"],
+            cwd=str(repo_src), text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+        if head.returncode != 0 or not head.stdout.strip():
+            return {}
+        short_sha, _, iso_date = head.stdout.strip().partition("|")
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(repo_src), text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+        dirty = bool(status.stdout.strip()) if status.returncode == 0 else False
+        return {"short_sha": short_sha, "date": iso_date, "dirty": dirty}
+    except Exception:
+        return {}
+
+
 def build_repo_stats(repo_src, owner, repo, repo_info=None, default_branch="", source="downloaded_zip"):
     extension_counts = defaultdict(int)
     language_counts = defaultdict(int)
@@ -29992,10 +30051,14 @@ def build_repo_stats(repo_src, owner, repo, repo_info=None, default_branch="", s
                 except OSError:
                     logger.warning("Unable to count source lines for %s", path)
 
+    git_head = local_git_head_info(repo_src)
     return {
         "repo_full_name": f"{owner}/{repo}",
         "default_branch": default_branch or (repo_info or {}).get("default_branch", ""),
         "source": source or "downloaded_zip",
+        "git_head_short_sha": git_head.get("short_sha", ""),
+        "git_head_date": git_head.get("date", ""),
+        "git_dirty": bool(git_head.get("dirty")),
         "total_files_seen": total_files,
         "source_line_count": source_line_count,
         "source_files_counted": source_files_counted,
@@ -30181,6 +30244,81 @@ def extract_yaml_properties_text(text: str, max_chars: int = 4000):
     return normalize_human_text("\n".join(dict.fromkeys(values)), max_chars)
 
 
+def find_js_template_literal_spans(source: str):
+    """Character-accurate scan for backtick template-literal spans.
+
+    Mirrors mask_js_non_code's state machine (comment/string skipping) but
+    records template-literal boundaries instead of blanking them. A naive
+    `` `([^`]+)` `` regex mis-pairs the moment a stray backtick shows up
+    inside a // comment, a '...' string, or a "..." string anywhere earlier
+    in the file, silently swallowing large spans of real code as if it were
+    template content.
+    """
+    spans = []
+    n = len(source)
+    i = 0
+    state = "code"
+    quote = ""
+    span_start = -1
+    while i < n:
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                i += 2
+                while i < n and source[i] != "\n":
+                    i += 1
+                continue
+            if ch == "/" and nxt == "*":
+                i += 2
+                while i + 1 < n and not (source[i] == "*" and source[i + 1] == "/"):
+                    i += 1
+                i = min(i + 2, n)
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+                state = "string"
+                if quote == "`":
+                    span_start = i + 1
+                i += 1
+                continue
+        elif state == "string":
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "`":
+                    spans.append((span_start, i))
+                state = "code"
+                quote = ""
+            i += 1
+            continue
+        i += 1
+    return spans
+
+
+def extract_embedded_html_ui_text(text: str, max_chars: int = 4000):
+    """Webview panels are often a big HTML string embedded in a .ts/.js
+    template literal rather than a real .html file, so real button/label
+    text (e.g. `<button title="...">Blast Radius Report</button>`) never
+    goes through the HTML visible-text parser and is invisible to
+    ui_feature_seeds. Pull out template-literal spans that look like HTML
+    and run the same visible-text extraction over them.
+    """
+    source = str(text or "")
+    values = []
+    for start, end in find_js_template_literal_spans(source):
+        if end - start < 40:
+            continue
+        block = source[start:end]
+        if block.count("<") < 3:
+            continue
+        extracted = extract_html_visible_text(block, max_chars)
+        if extracted:
+            values.append(extracted)
+    return normalize_human_text("\n".join(values), max_chars)
+
+
 def extract_human_text_from_file(text: str, rel_path: str, ext: str, max_chars: int = 5000):
     ext = ext.lower()
     lower_path = str(rel_path or "").lower()
@@ -30197,9 +30335,21 @@ def extract_human_text_from_file(text: str, rel_path: str, ext: str, max_chars: 
     if ext in {".yaml", ".yml", ".properties", ".strings", ".resx"}:
         return extract_yaml_properties_text(text, max_chars), "ui_text"
     if ext in REPO_UI_TEXT_SOURCE_EXTENSIONS:
-        comments = extract_source_comment_text(text, ext, max_chars // 2)
-        ui_literals = extract_source_ui_literals(text, max_chars // 2)
-        return normalize_human_text("\n\n".join(item for item in (comments, ui_literals) if item), max_chars), "comments_ui_text"
+        comments = extract_source_comment_text(text, ext, max_chars // 3)
+        ui_literals = extract_source_ui_literals(text, max_chars // 3)
+        embedded_html = (
+            extract_embedded_html_ui_text(text, max_chars // 3)
+            if ext in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte"}
+            else ""
+        )
+        # embedded_html first: it's real rendered UI text (button/label
+        # content), the highest-signal of the three. A file's comments can
+        # run long, and downstream candidate extraction budgets lines per
+        # item -- if comments came first, they'd exhaust that budget before
+        # ever reaching the actual UI strings later in the same blob.
+        return normalize_human_text(
+            "\n\n".join(item for item in (embedded_html, ui_literals, comments) if item), max_chars
+        ), "comments_ui_text"
     if "readme" in lower_path or ext in REPO_TEXT_EXTENSIONS:
         return clean_repo_text(text, max_chars), repo_text_kind(rel_path)
     return "", "text"
@@ -30460,6 +30610,17 @@ def load_repo_text_artifact(output_repo_dir):
         return {}
 
 
+def load_repo_stats_artifact(output_repo_dir):
+    path = repo_text_artifact_path(output_repo_dir, "repo_stats.json", legacy_ok=True)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("Unable to load repo stats artifact: %s", e)
+        return {}
+
+
 
 
 
@@ -30542,7 +30703,15 @@ def build_scim_artifacts_old(output_repo_dir, owner="", repo="", repo_info=None,
             batch_size=32,
             generic_graphs=True,
             max_chunks_per_repo=int(os.getenv("SCIM_MAX_CHUNKS_PER_REPO", "3000")),
-            max_file_bytes=int(os.getenv("SCIM_MAX_FILE_BYTES", "300000")),
+            # 300KB silently dropped legitimate large first-party source files
+            # (e.g. a single-file VS Code webview provider with an embedded
+            # HTML template can easily exceed it) from the feature/search
+            # index entirely -- no truncation, no fallback, just zero code
+            # evidence for anything implemented in that file. Vendored/minified
+            # bundles are already excluded earlier by SKIP_DIRS/.min.js/.bundle.js
+            # filtering, so anything reaching this point is real source; align
+            # with JS_MAX_TREE_SITTER_PARSE_BYTES's existing 1.5MB convention.
+            max_file_bytes=int(os.getenv("SCIM_MAX_FILE_BYTES", "1500000")),
             max_record_code_chars=int(os.getenv("SCIM_MAX_RECORD_CODE_CHARS", "2000")),
             progress_callback=progress,
         )
@@ -32949,7 +33118,13 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
     scim_train_pairs_path = os.path.join(architecture_dir, "train_pairs.jsonl")
     if not os.path.exists(scim_train_pairs_path):
         scim_train_pairs_path = os.path.join(scim_dir, "train_pairs.jsonl")
-    feature_catalog_path = ""
+    # Was hardcoded to "" here, so every cache-reuse analysis (the common
+    # path once .codemd/ already exists) reported an empty feature catalog
+    # to analyze_response() even though architecture/feature_catalog.json
+    # was sitting on disk from the last full build. Compute the same
+    # canonical path the full-build path writes, via the shared helper
+    # (core_helpers.feature_catalog_path_for_output), so cached runs surface it too.
+    feature_catalog_path = str(core_helpers.feature_catalog_path_for_output(output_repo_dir))
     callgraph_code_index_path = os.path.join(scim_dir, "callgraph_code_index.json")
     callgraph_code_index_jsonl_path = os.path.join(scim_dir, "callgraph_code_index.jsonl")
     python_dir = os.path.join(output_repo_dir, "python")
@@ -33258,7 +33433,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         "scim_functions_path": scim_functions_path if os.path.exists(scim_functions_path) else "",
         "scim_train_pairs_path": scim_train_pairs_path if os.path.exists(scim_train_pairs_path) else "",
         "scim_error": scim_result.get("scim_error", "") if isinstance(scim_result, dict) else "",
-        "feature_catalog_path": "",
+        "feature_catalog_path": feature_catalog_path if os.path.exists(feature_catalog_path) else "",
         "callgraph_code_index_path": "",
         "callgraph_code_index_jsonl_path": "",
         "python_callgraph_json_path": python_callgraph_json if os.path.exists(python_callgraph_json) else "",
@@ -34014,6 +34189,13 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
         except Exception:
             static_quality_signals = {}
     parser_diagnostics = static_quality_signals.get("parser_diagnostics") if isinstance(static_quality_signals, dict) else {}
+    feature_catalog = {}
+    if feature_catalog_path and os.path.exists(feature_catalog_path):
+        try:
+            with open(feature_catalog_path, "r", encoding="utf-8") as f:
+                feature_catalog = json.load(f)
+        except Exception:
+            feature_catalog = {}
     primary_graph_html = combined_navigatable_callgraph_html_path
     primary_graph_json = (
         combined_callgraph_json_path
@@ -34089,6 +34271,8 @@ def analyze_response(owner, repo, repo_id, output_repo_dir, results):
         "code_md_url": output_url(code_md_path),
         "static_quality_signals": static_quality_signals,
         "static_quality_signals_url": output_url(static_quality_signals_path_value),
+        "feature_catalog": feature_catalog,
+        "feature_catalog_url": output_url(feature_catalog_path),
         "parser_diagnostics": parser_diagnostics or {},
         "daily_change_cache": daily_change_cache,
         "daily_change_cache_url": output_url(daily_change_cache_path),

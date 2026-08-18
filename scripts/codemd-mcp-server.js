@@ -2121,6 +2121,25 @@ function processBuffer() {
   }
 }
 
+// One-shot CLI mode, e.g. `--cli find_tests --query "foo" --limit 5`. Reuses
+// this file's own tool functions directly instead of duplicating the logic
+// elsewhere, and exits immediately rather than entering the stdio MCP loop
+// below — so callers (e.g. the VS Code extension surfacing a quick "does
+// this function have tests?" check) don't need MCP set up at all, just this
+// bundled script.
+const cliMode = argValue('--cli');
+if (cliMode) {
+  let output;
+  if (cliMode === 'find_tests') {
+    const limitArg = argValue('--limit');
+    output = findTests({ query: argValue('--query'), limit: limitArg ? Number(limitArg) : undefined });
+  } else {
+    output = JSON.stringify({ error: `Unknown --cli mode: ${cliMode}` });
+  }
+  process.stdout.write(output + '\n');
+  process.exit(0);
+}
+
 process.stdin.on('data', (chunk) => {
   inputBuffer = Buffer.concat([inputBuffer, chunk]);
   processBuffer();

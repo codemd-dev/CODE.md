@@ -481,6 +481,82 @@ FEATURE_STOPWORDS = {
     "of",
     "and",
     "or",
+    # Common English filler words. Without these, prose extracted from
+    # READMEs/docs (see human_facing_feature_hypotheses) keeps grammatical
+    # glue words and produces labels like "Analyze Your Create The" instead
+    # of the actual noun phrase.
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "must",
+    "never",
+    "always",
+    "will",
+    "would",
+    "should",
+    "could",
+    "can",
+    "may",
+    "might",
+    "shall",
+    "your",
+    "you",
+    "yours",
+    "our",
+    "ours",
+    "us",
+    "we",
+    "they",
+    "them",
+    "their",
+    "its",
+    "not",
+    "but",
+    "if",
+    "then",
+    "than",
+    "when",
+    "while",
+    "where",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "what",
+    "why",
+    "how",
+    "all",
+    "any",
+    "each",
+    "such",
+    "also",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "again",
+    "once",
+    "here",
+    "there",
+    "just",
+    "only",
+    "very",
+    "about",
+    "because",
+    "before",
+    "after",
+    "above",
+    "below",
+    "between",
+    "during",
+    "through",
+    "against",
+    "both",
+    "for",
+    "with",
+    "without",
 }
 
 
@@ -4102,6 +4178,23 @@ def evidence_feature_candidates(
         prefix = re.split(r"[_/\\]", raw_path, maxsplit=1)[0]
         product_tokens.update(evidence_feature_tokens(prefix))
     product_tokens = expand_product_tokens(product_tokens)
+    # Identifier/path vocabulary that recurs across a large slice of the
+    # whole codebase (e.g. every function that touches HTTP has "resp",
+    # "json", "content", "type" in its name or path) isn't distinctive
+    # enough to name or group a feature by, even though it passes the
+    # per-record noise filters. Fold it into product_tokens (an exclusion
+    # set for evidence_feature_tokens) the same way repo/product identity
+    # tokens already are, so it stops winning group keys and labels.
+    if records:
+        identity_doc_counts: Counter[str] = Counter()
+        for record in records:
+            identity_doc_counts.update(set(record_identity_tokens(record, set())))
+        boilerplate_doc_frequency_threshold = max(10, round(len(records) * 0.12))
+        boilerplate_terms = {
+            term for term, count in identity_doc_counts.items()
+            if count >= boilerplate_doc_frequency_threshold
+        }
+        product_tokens |= boilerplate_terms
     by_file = records_by_source_file(records)
     text_hypotheses = human_facing_feature_hypotheses(
         repo_context,
@@ -4462,12 +4555,6 @@ def list_feature_catalog(dataset_dir: Path, repo_id: str | None, examples: int, 
 
 
 def feature_catalog_payload(dataset_dir: Path, repo_id: str | None = None, examples: int = 5, repo_context: dict | None = None) -> dict:
-    return {
-        "features": [],
-        "feature_count": 0,
-        "disabled": True,
-        "reason": "Feature catalog generation is disabled; CODE.md publishes deterministic truth-index artifacts only.",
-    }
     records = load_feature_records(dataset_dir, repo_id)
     product_name, product_type, product_name_source = infer_product_name(records, repo_id, repo_context)
     evidence_features = evidence_feature_candidates(records, product_name, product_type, examples, repo_context)

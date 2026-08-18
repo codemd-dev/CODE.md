@@ -147,6 +147,154 @@ def github_metadata_summary(repo_info, default_branch):
         "topics": repo_info.get("topics") or [],
     }
 
+_UI_FEATURE_SEED_MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s*\**\s*\*\*(.+?)\*\*")
+_UI_FEATURE_SEED_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+_UI_FEATURE_SEED_CODE_SHAPE_RE = re.compile(r'[{}"`;=]|://|^[/.]|[/.][a-z0-9_-]*/$')
+_UI_FEATURE_SEED_HTTP_VERB_RE = re.compile(r"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", re.IGNORECASE)
+# snake_case ("repo_url") or camelCase ("repoUrl") tokens are JSON/schema
+# field names from an API reference table, not human-written labels -- a
+# real button/menu label is written as words ("Open in Editor"), never as
+# an identifier.
+_UI_FEATURE_SEED_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+$")
+_UI_FEATURE_SEED_CAMEL_CASE_RE = re.compile(r"^[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*$")
+_UI_FEATURE_SEED_DOTTED_PATH_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$")
+# Generic API-reference/doc-heading vocabulary (parameter tables, request/
+# response sections, schema fields) that reads as a plausible short "label"
+# but is not a product feature. ui_feature_seed matches get an unconditional
+# score boost in evidence_feature_candidates (scim.py), so junk here isn't
+# just noise -- it can outrank real feature names outright.
+_UI_FEATURE_SEED_GENERIC_DOC_WORDS = {
+    "note", "notes", "request", "requests", "response", "responses",
+    "example", "examples", "overview", "introduction", "usage", "import",
+    "imports", "required", "optional", "parameter", "parameters",
+    "argument", "arguments", "return", "returns", "output", "input",
+    "body", "header", "headers", "query", "result", "results", "summary",
+    "description", "warning", "tip", "info", "endpoint", "endpoints",
+    "field", "fields", "schema", "type", "value", "values", "default",
+}
+
+
+def _is_plausible_ui_feature_seed(candidate: str) -> bool:
+    if not (3 <= len(candidate) <= 60):
+        return False
+    if not _UI_FEATURE_SEED_WORD_RE.search(candidate):
+        return False
+    # Code/JSON/URL/path shaped lines (curl examples, request bodies,
+    # route strings from an API reference doc) aren't UI labels.
+    if _UI_FEATURE_SEED_CODE_SHAPE_RE.search(candidate):
+        return False
+    if _UI_FEATURE_SEED_HTTP_VERB_RE.match(candidate.strip()):
+        return False
+    stripped = candidate.strip()
+    if (
+        _UI_FEATURE_SEED_SNAKE_CASE_RE.match(stripped)
+        or _UI_FEATURE_SEED_CAMEL_CASE_RE.match(stripped)
+        or _UI_FEATURE_SEED_DOTTED_PATH_RE.match(stripped)
+    ):
+        return False
+    word_count = len(candidate.split())
+    if word_count > 7:
+        return False
+    # Long, period-terminated lines are prose sentences, not button/menu labels.
+    if word_count > 4 and candidate.rstrip().endswith((".", "!", "?")):
+        return False
+    if word_count == 1 and candidate.strip().lower() in _UI_FEATURE_SEED_GENERIC_DOC_WORDS:
+        return False
+    return True
+
+
+def extract_ui_feature_seeds(repo_text: dict) -> list[str]:
+    """Pull candidate feature names straight from UI-facing strings.
+
+    Buttons, command titles, and menu labels already say what a product does
+    in the user's own words, so these are preferred over anything inferred
+    from code-identifier frequency (see evidence_feature_candidates in
+    scim.py, which scores ui_feature_seed-sourced labels above code-derived
+    ones).
+
+    Sources are combined with per-source budgets, not one global cap applied
+    at the end: a single verbose page (an API reference doc, say) can offer
+    hundreds of plausible-looking one-line candidates and would otherwise
+    fill the whole quota by itself, starving out every other source before
+    it gets a turn -- readme/document bullets are hand-authored by the repo's
+    own developer describing what the product does, so they go first and
+    keep a guaranteed slice of the budget regardless of what else is found.
+
+    The same starvation problem recurs *within* a tier when it spans many
+    files: e.g. text_items covers every scanned source file, and a repo's
+    files are processed in directory-walk order, so whichever files happen
+    to sort first (READMEs and top-level docs, then subdirectories
+    alphabetically) can burn the whole tier budget on their own comments
+    before a later file's genuinely good content (say a webview panel deep
+    in src/) ever gets a turn. So each item within a tier also gets its own
+    small cap, in addition to the tier's total budget.
+    """
+    repo_text = repo_text if isinstance(repo_text, dict) else {}
+    seeds: list[str] = []
+    seen: set[str] = set()
+
+    def add_from(items, extract_lines, budget: int, per_item_budget: int) -> None:
+        added = 0
+        for item in items or []:
+            if added >= budget:
+                return
+            added_for_item = 0
+            for candidate in extract_lines(item):
+                if added >= budget or added_for_item >= per_item_budget:
+                    break
+                candidate = re.sub(r"\s+", " ", str(candidate or "")).strip(" -:*#\t")
+                if not _is_plausible_ui_feature_seed(candidate):
+                    continue
+                key = candidate.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                seeds.append(candidate)
+                added += 1
+                added_for_item += 1
+
+    def bullet_lines(item):
+        text = str((item or {}).get("text", "")) if isinstance(item, dict) else ""
+        for line in text.splitlines():
+            match = _UI_FEATURE_SEED_MARKDOWN_BULLET_RE.match(line.strip())
+            if match:
+                yield match.group(1)
+
+    def raw_lines(item):
+        text = str((item or {}).get("text", "")) if isinstance(item, dict) else ""
+        yield from text.splitlines()
+
+    # Per-item caps bound how much any single file/doc can contribute (so one
+    # verbose page can't dominate a tier); tier and final totals are generous
+    # rather than tightly rationed, because the real curation happens
+    # downstream in evidence_feature_candidates (scim.py) -- a seed only
+    # becomes a visible feature if it finds matching code evidence, so a
+    # plausible-looking seed that never matches anything is free to include
+    # and simply drops out on its own. What actually breaks things is a
+    # good seed getting truncated away *before* it gets a chance to match.
+
+    # Highest-confidence, hand-authored: bolded lead-ins in markdown bullets,
+    # e.g. "- **Blast Radius** -- every function your edit touches...".
+    add_from(repo_text.get("readme_items"), bullet_lines, budget=60, per_item_budget=60)
+    add_from(repo_text.get("document_items"), bullet_lines, budget=60, per_item_budget=20)
+    # Second-tier: real UI strings already extracted from package.json
+    # command titles, HTML button/aria-label text, XML/YAML label fields
+    # (see extract_human_text_from_file in main.py).
+    add_from(repo_text.get("ui_text_items"), raw_lines, budget=150, per_item_budget=20)
+    # Third-tier, noisiest: comments_ui_text items, which is where HTML
+    # embedded in a .ts/.js template literal ends up (e.g. a VS Code webview
+    # panel's own markup) since it isn't a real .html file -- put those
+    # ahead of plain "text" items (freeform notes/doc files like AGENTS.md)
+    # within this tier, since they're closer to actual UI copy.
+    text_items = repo_text.get("text_items") or []
+    comments_ui_text_items = [it for it in text_items if (it or {}).get("kind") == "comments_ui_text"]
+    other_text_items = [it for it in text_items if (it or {}).get("kind") != "comments_ui_text"]
+    add_from(comments_ui_text_items, raw_lines, budget=150, per_item_budget=20)
+    add_from(other_text_items, raw_lines, budget=60, per_item_budget=10)
+
+    return seeds[:250]
+
+
 def build_repo_context(owner="", repo="", repo_info=None, default_branch="", repo_text=None):
     repo_text = repo_text if isinstance(repo_text, dict) else {}
     github = github_metadata_summary(repo_info, default_branch) if repo_info else {}
@@ -166,6 +314,7 @@ def build_repo_context(owner="", repo="", repo_info=None, default_branch="", rep
         "document_items": all_document_items[:100],
         "readme_text": "\n\n".join(str(item.get("text", "")) for item in readme_items[:5]),
         "document_text": "\n\n".join(str(item.get("text", "")) for item in all_document_items[:30]),
+        "ui_feature_seeds": extract_ui_feature_seeds(repo_text),
     }
 
 
