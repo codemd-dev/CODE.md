@@ -23,7 +23,7 @@ try {
 } catch (err) {
   console.error(
     `copy-backend: could not clear "${backendDir}" (${err.message}). ` +
-      'Stop any running CODE.md analyzer server (or Extension Development Host) and try again.',
+      'Stop any running CODEMD analyzer server (or Extension Development Host) and try again.',
   );
   process.exit(1);
 }

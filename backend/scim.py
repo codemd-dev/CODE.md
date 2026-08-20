@@ -557,6 +557,22 @@ FEATURE_STOPWORDS = {
     "for",
     "with",
     "without",
+    # Negative-test / error-path adjectives. These recur heavily in test
+    # module and fixture names ("test_invalid_sequence_param",
+    # "test_incorrect_multipart") that describe a code path exercising a
+    # failure case, not a distinct product capability -- letting them seed
+    # or dominate a feature label produces junk like "Invalid Sequence API"
+    # instead of the real feature the test is validating.
+    "invalid",
+    "invalidly",
+    "incorrect",
+    "incorrectly",
+    "malformed",
+    "unsupported",
+    "erroneous",
+    "raises",
+    "raise",
+    "wrong",
 }
 
 
@@ -3088,7 +3104,9 @@ def derive_feature_catalog_from_repo(records: list[dict], product_type: str) -> 
 
     def meaningful(token: str) -> bool:
         token = str(token).lower().strip()
-        return len(token) >= 3 and token not in feature_name_noise and not re.fullmatch(r"[0-9a-f]{6,}", token)
+        if len(token) < 3 or re.fullmatch(r"[0-9a-f]{6,}", token):
+            return False
+        return token not in feature_name_noise and _strip_trailing_digit_suffix(token) not in feature_name_noise
 
     def record_index_terms(record: dict) -> list[str]:
         """Terms from the SCIM index row, weighted toward real code symbols."""
@@ -3705,19 +3723,49 @@ def source_symbol_tail(record: dict) -> str:
     return symbol
 
 
+_TRAILING_DIGIT_SUFFIX_RE = re.compile(r"[0-9]{1,2}$")
+
+
+def _strip_trailing_digit_suffix(token: str) -> str:
+    """Auto-numbered example/fixture identifiers (Model1, Item2, Helper3 --
+    common in test and tutorial code that defines several near-identical
+    variants) tokenize as a single word-plus-digit token that fails an
+    exact-string noise-word match even when the base word alone ("model",
+    "item", "helper") is already excluded. Stripping a short trailing digit
+    run before the noise check catches those without touching real
+    tech terms like "oauth2" or "ipv6", whose base ("oauth", "ipv") was
+    never in the noise/stopword lists to begin with."""
+    if len(token) <= 3:
+        return token
+    stripped = _TRAILING_DIGIT_SUFFIX_RE.sub("", token)
+    return stripped if len(stripped) >= 3 else token
+
+
 def evidence_feature_tokens(text: str, product_tokens: set[str] | None = None) -> list[str]:
     product_tokens = product_tokens or set()
     tokens = []
     for token in tokenize_feature_text(text):
         normalized = token.lower()
-        if normalized in EVIDENCE_FEATURE_NOISE:
+        base = _strip_trailing_digit_suffix(normalized)
+        if normalized in EVIDENCE_FEATURE_NOISE or base in EVIDENCE_FEATURE_NOISE:
             continue
-        if normalized in product_tokens:
+        if normalized in product_tokens or base in product_tokens:
             continue
         if re.fullmatch(r"[0-9a-f]{6,}", normalized):
             continue
         tokens.append(normalized)
     return tokens
+
+
+# Product identity strings (GitHub owner/repo, package name) are almost
+# always coined as lowercase-slug + tech-acronym ("fastapi", "somesdk"),
+# so they never hit the camelCase word-boundary regex that
+# tokenize_feature_text uses. The *source* identifier for that same brand
+# ("class FastAPI", "SomeSDK") is mixed-case and DOES split there, into
+# e.g. "fast" + "api". Without expanding the acronym half out of the
+# product token here too, that fragment sails past the product-identity
+# exclusion filter and becomes its own "feature" (see evidence_feature_tokens).
+_PRODUCT_TOKEN_TECH_SUFFIXES = ("api", "sdk", "cli", "ui")
 
 
 def expand_product_tokens(tokens: set[str]) -> set[str]:
@@ -3727,6 +3775,10 @@ def expand_product_tokens(tokens: set[str]) -> set[str]:
             expanded.update({"butterknife", "butter", "knife"})
         if token == "codeval" or "codeval" in token:
             expanded.update({"codeval", "code", "val"})
+        for suffix in _PRODUCT_TOKEN_TECH_SUFFIXES:
+            if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+                expanded.add(suffix)
+                expanded.add(token[: -len(suffix)])
     return expanded
 
 
@@ -3752,6 +3804,15 @@ UI_SEED_MATCH_NOISE = {
     "app", "button", "card", "content", "dashboard", "dialog", "display", "form",
     "html", "label", "link", "main", "modal", "nav", "page", "panel", "screen",
     "section", "static", "tab", "tile", "ui", "view", "widget",
+    # Generic CRUD/lifecycle verbs that show up in almost every file in any
+    # codebase (a tracking-analytics helper and a "Clean up .codemd" command
+    # both contain "clean") -- alone, one of these can't tell two unrelated
+    # pieces of code apart, so a UI label whose only keyword is one of these
+    # must not be treated as "distinctive" enough to claim a code match.
+    "clean", "open", "close", "load", "save", "run", "check", "start", "stop",
+    "get", "set", "add", "remove", "update", "create", "delete", "analyze",
+    "process", "handle", "build", "generate", "parse", "format", "validate",
+    "resolve", "log", "read", "write", "send", "fetch", "init",
 }
 
 
@@ -3978,14 +4039,15 @@ def record_feature_group_key(record: dict, product_tokens: set[str], product_typ
     return ""
 
 
-def feature_label_from_evidence(key: str, records: list[dict], product_type: str) -> str:
-    key_terms = evidence_feature_tokens(key)
+def feature_label_from_evidence(key: str, records: list[dict], product_type: str, product_tokens: set[str] | None = None) -> str:
+    product_tokens = product_tokens or set()
+    key_terms = evidence_feature_tokens(key, product_tokens)
     record_terms: Counter[str] = Counter()
     method_terms: Counter[str] = Counter()
     anchors = {feature_anchor_type(record) for record in records}
     for record in records:
-        record_terms.update(record_identity_tokens(record, set()))
-        method_terms.update(evidence_feature_tokens(str(record.get("method_name", ""))))
+        record_terms.update(record_identity_tokens(record, product_tokens))
+        method_terms.update(evidence_feature_tokens(str(record.get("method_name", "")), product_tokens))
 
     term_set = set(key_terms)
     supporting_terms = set(record_terms)
@@ -4229,13 +4291,26 @@ def evidence_feature_candidates(
         distinctive_keywords = distinctive_feature_keywords(keywords)
         for record in hypothesis_records:
             score = record_matches_feature_keywords(record, keywords, product_tokens)
-            if score and hypothesis_sources[key] == "ui_feature_seed" and distinctive_keywords:
-                record_text = " ".join(
-                    str(record.get(field, ""))
-                    for field in ("symbol", "class_name", "method_name", "path", "code")
-                ).lower()
-                if not any(keyword in record_text for keyword in distinctive_keywords):
+            if score and hypothesis_sources[key] == "ui_feature_seed":
+                # A UI label with no distinctive keyword at all (e.g. its
+                # only token is a generic verb like "clean" or "open") has
+                # nothing that can safely tell it apart from unrelated code
+                # -- don't let it claim a code match on that basis alone.
+                # Previously this branch only ran when distinctive_keywords
+                # was non-empty, so an all-generic keyword set skipped the
+                # check entirely and kept whatever score the generic-word
+                # overlap produced (e.g. "Clean up .codemd" matching an
+                # unrelated analytics helper just because both contain
+                # "clean").
+                if not distinctive_keywords:
                     score = 0
+                else:
+                    record_text = " ".join(
+                        str(record.get(field, ""))
+                        for field in ("symbol", "class_name", "method_name", "path", "code")
+                    ).lower()
+                    if not any(keyword in record_text for keyword in distinctive_keywords):
+                        score = 0
             anchor_type = feature_anchor_type(record)
             if score and anchor_type in {"api_route", "html_ui", "frontend_ui_component", "android_ui_xml", "ui_logic"}:
                 score += 6
@@ -4280,7 +4355,7 @@ def evidence_feature_candidates(
         if source in {"ui_feature_seed", "human_facing_text"} and hypothesis_labels.get(key):
             label = hypothesis_labels[key]
         else:
-            label = feature_label_from_evidence(key, group_records, product_type)
+            label = feature_label_from_evidence(key, group_records, product_type, product_tokens)
         if not label or label.lower() in {"unnamed feature", "source", "project"}:
             continue
         by_label[label].extend(group_records)
@@ -4329,10 +4404,18 @@ def evidence_feature_candidates(
             else "code_evidence"
         )
         score = feature_candidate_score(unique_records, len(comment_evidence))
+        # Human-authored text is more trustworthy than a name guessed from
+        # code identifiers, so it gets a real edge -- but a *bounded* one.
+        # This used to be a flat +1000/+500, which let any UI-text match
+        # (including junk scraped from an API-reference code sample) beat
+        # every code-evidence candidate outright, no matter how weak the
+        # text match was or how strong the code evidence was. Scaling it to
+        # roughly the same range as feature_candidate_score keeps the
+        # preference without making it an unconditional veto.
         if primary_source == "ui_feature_seed":
-            score += 1000 + int(label_confidence.get(label, 0.95) * 100)
+            score += 30 + int(30 * label_confidence.get(label, 0.95))
         elif primary_source == "human_facing_text":
-            score += 500 + int(label_confidence.get(label, 0.5) * 100)
+            score += 15 + int(15 * label_confidence.get(label, 0.5))
         ranked_records = sorted(
             unique_records,
             key=lambda record: (
@@ -4344,6 +4427,7 @@ def evidence_feature_candidates(
         )
         candidates.append({
             "_score": score,
+            "_symbol_set": frozenset(str(record.get("symbol", "")) for record in unique_records),
             "feature": label,
             "status": "implemented",
             "visibility": aggregate_visibility(unique_records),
@@ -4386,6 +4470,7 @@ def evidence_feature_candidates(
         keywords = set(hypothesis.get("keywords") or [])
         candidates.append({
             "_score": int(90 * float(hypothesis.get("confidence") or 0.95)),
+            "_symbol_set": frozenset(),
             "feature": label,
             "status": "detected_from_ui",
             "visibility": "UI-visible",
@@ -4412,16 +4497,77 @@ def evidence_feature_candidates(
         })
         candidate_labels.add(label.lower())
 
-    ui_candidates = [row for row in candidates if row.get("source") in {"ui_feature_seed", "human_facing_text"}]
-    if len(ui_candidates) >= 5:
-        code_candidates = [row for row in candidates if row.get("source") not in {"ui_feature_seed", "human_facing_text"}]
-        ui_candidates.sort(key=lambda row: (row["_score"], row["match_count"]), reverse=True)
-        code_candidates.sort(key=lambda row: (row["_score"], row["match_count"]), reverse=True)
-        candidates = ui_candidates[:12] + code_candidates[: max(0, 12 - len(ui_candidates[:12]))]
-    else:
-        candidates.sort(key=lambda row: (row["_score"], row["match_count"]), reverse=True)
+    # Previously: whenever >=5 ui_feature_seed/human_facing_text candidates
+    # existed, ALL 12 slots went to that bucket first regardless of score,
+    # and code-evidence candidates only got whatever was left over -- so a
+    # page full of weak UI-text matches (e.g. junk scraped from an
+    # API-reference code sample) could shut code-evidence features out of
+    # the list entirely. Now that the source boost above is bounded rather
+    # than a flat +1000/+500, a single unified sort lets real signal from
+    # either source win on merit instead of by bucket quota.
+    candidates.sort(key=lambda row: (row["_score"], row["match_count"]), reverse=True)
+
+    # Two different labels can independently walk the callgraph from
+    # different entrypoints and land on the *same* reachable set (a single
+    # tightly-interconnected file, e.g. an MCP server module, makes this
+    # common) -- e.g. "callgraph" and "Callgraph API Explorer" resolving to
+    # identical evidence. Keep only the higher-scored label of any pair
+    # that shares almost all of its evidence, so one real feature doesn't
+    # eat two of the 12 slots under two different names.
+    # A camelCase symbol like `FastAPI` or `APIRouter` tokenizes into
+    # fragments ("fast"/"api", "api"/"router") that can each seed their own
+    # group -- so one label ("Fast") can end up as a strict word-boundary
+    # prefix/suffix of another, higher-scored label ("FastAPI") without their
+    # evidence overlapping enough to trip the symbol-set check above. Treat
+    # that as the same duplicate case: keep only the fuller (higher-scored)
+    # name.
+    def _label_alnum_words(label: str) -> list[str]:
+        # Split on both real spaces ("Multipart Installed API") and camelCase
+        # boundaries ("FastAPI" -> "Fast", "API") so a bare-fragment label
+        # like "Fast" is recognized as a prefix of "FastAPI" even though the
+        # latter has no space to split on. Deliberately not run through
+        # tokenize_feature_text: this needs the *whole* word sequence
+        # (including short/stopword-ish words) to compare structurally,
+        # not a noise-filtered bag of terms.
+        words = []
+        for chunk in re.findall(r"[A-Za-z][A-Za-z0-9]*", label):
+            for part in re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", chunk).split():
+                words.append(part.lower())
+        return words
+
+    deduped: list[dict] = []
+    kept_symbol_sets: list[frozenset] = []
+    kept_label_words: list[list[str]] = []
+    for row in candidates:
+        symbols = row.get("_symbol_set") or frozenset()
+        label_words = _label_alnum_words(row.get("feature", ""))
+        is_duplicate = False
+        if symbols:
+            for kept in kept_symbol_sets:
+                if not kept:
+                    continue
+                overlap = len(symbols & kept) / min(len(symbols), len(kept))
+                if overlap >= 0.85:
+                    is_duplicate = True
+                    break
+        if not is_duplicate and label_words:
+            for kept_words in kept_label_words:
+                if not kept_words:
+                    continue
+                shorter, longer = (label_words, kept_words) if len(label_words) <= len(kept_words) else (kept_words, label_words)
+                if shorter == longer[: len(shorter)] or shorter == longer[-len(shorter):]:
+                    is_duplicate = True
+                    break
+        if is_duplicate:
+            continue
+        deduped.append(row)
+        kept_symbol_sets.append(symbols)
+        kept_label_words.append(label_words)
+    candidates = deduped
+
     for row in candidates:
         row.pop("_score", None)
+        row.pop("_symbol_set", None)
     return candidates[:12]
 
 

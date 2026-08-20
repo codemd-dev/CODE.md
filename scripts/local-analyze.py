@@ -101,7 +101,7 @@ def mirror_artifacts(result, output_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CODE.md local analysis without starting FastAPI.")
+    parser = argparse.ArgumentParser(description="Run CODEMD local analysis without starting FastAPI.")
     parser.add_argument("--path", required=True, help="Workspace folder to analyze.")
     parser.add_argument("--name", default="", help="Display name for the workspace.")
     parser.add_argument("--mirror-out", required=True, help="Directory where VS Code should read mirrored artifacts.")

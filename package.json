@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "Using AI to code? Check what your changes might break — before you commit.",
-  "version": "0.0.76",
+  "version": "0.0.82",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",

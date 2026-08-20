@@ -149,8 +149,48 @@ def github_metadata_summary(repo_info, default_branch):
 
 _UI_FEATURE_SEED_MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s*\**\s*\*\*(.+?)\*\*")
 _UI_FEATURE_SEED_WORD_RE = re.compile(r"[A-Za-z]{3,}")
-_UI_FEATURE_SEED_CODE_SHAPE_RE = re.compile(r'[{}"`;=]|://|^[/.]|[/.][a-z0-9_-]*/$')
+# A word character immediately followed by "(" (no space) is call syntax --
+# resp.raise_for_status(), f.write(resp.text) -- as opposed to a real label
+# like "JavaScript (fetch)" or "Learn more (beta)", which always has a space
+# before the paren. This is what let API-reference code-sample fragments
+# (e.g. from an interactive "try it" console) pass as plausible UI labels.
+_UI_FEATURE_SEED_CODE_SHAPE_RE = re.compile(r'[{}"`;=]|://|^[/.]|[/.][a-z0-9_-]*/$|\w\(')
 _UI_FEATURE_SEED_HTTP_VERB_RE = re.compile(r"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", re.IGNORECASE)
+# Single-token language keywords that show up alone when a code sample gets
+# line-split (e.g. a "const" or "return" statement isolated on its own
+# line) -- never a button/menu label on their own.
+_UI_FEATURE_SEED_CODE_KEYWORDS = {
+    "const", "let", "var", "def", "class", "return", "import", "export",
+    "print", "function", "async", "await", "yield", "public", "private",
+    "static", "void", "new", "this", "self", "try", "catch", "finally",
+    "throw", "raise", "elif", "else", "lambda", "with", "true", "false",
+    "null", "none", "undefined",
+}
+# "Language (client library)" tab labels from an interactive API console
+# ("JavaScript (fetch)", "Python (requests)", "Shell (curl)") describe how
+# to call the API, not what the product does.
+_UI_FEATURE_SEED_LANG_TAB_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9+.# ]{0,20}\s\((curl|fetch|requests?|axios|httpx?|urllib|okhttp|retrofit|node(\.js)?|python|javascript|typescript|java|go|ruby|php|c#|swift)\)$",
+    re.IGNORECASE,
+)
+# Boilerplate copy from an interactive "try it" / API-explorer console --
+# generic across virtually any product with a live request tester, so it
+# never distinguishes one product's features from another's.
+_UI_FEATURE_SEED_API_CONSOLE_PHRASES = {
+    "send request", "send", "sending request", "sending…", "sending...",
+    "awaiting request", "awaiting response", "awaiting…", "awaiting...",
+    "live request body", "live response", "live response body",
+    "request body", "response body", "response headers", "request headers",
+    "copy", "copy code", "copy to clipboard", "try it", "try it out",
+    "api explorer", "api reference", "api console", "run request",
+    "body parameters", "query parameters", "path parameters",
+    "request parameters", "url parameters", "header parameters",
+    "rest api", "graphql api", "http api", "api endpoint",
+    "status code", "status codes", "error codes", "response schema",
+    "request schema", "json schema", "sample request", "sample response",
+    "response assets", "request assets", "error response", "error responses",
+    "to see the response", "no response yet", "click send request",
+}
 # snake_case ("repo_url") or camelCase ("repoUrl") tokens are JSON/schema
 # field names from an API reference table, not human-written labels -- a
 # real button/menu label is written as words ("Open in Editor"), never as
@@ -171,6 +211,7 @@ _UI_FEATURE_SEED_GENERIC_DOC_WORDS = {
     "body", "header", "headers", "query", "result", "results", "summary",
     "description", "warning", "tip", "info", "endpoint", "endpoints",
     "field", "fields", "schema", "type", "value", "values", "default",
+    "method", "status", "url", "path", "system",
 }
 
 
@@ -193,12 +234,25 @@ def _is_plausible_ui_feature_seed(candidate: str) -> bool:
     ):
         return False
     word_count = len(candidate.split())
+    # A single no-space token containing "/" is a MIME type, path, or
+    # namespace fragment ("application/json", "callgraph/") -- a real
+    # label is "written as words" (see snake/camel/dotted-path checks
+    # above), never a bare slash-joined token.
+    if word_count == 1 and "/" in stripped:
+        return False
     if word_count > 7:
         return False
     # Long, period-terminated lines are prose sentences, not button/menu labels.
     if word_count > 4 and candidate.rstrip().endswith((".", "!", "?")):
         return False
-    if word_count == 1 and candidate.strip().lower() in _UI_FEATURE_SEED_GENERIC_DOC_WORDS:
+    if word_count == 1 and stripped.lower() in _UI_FEATURE_SEED_GENERIC_DOC_WORDS:
+        return False
+    if word_count == 1 and stripped.lower() in _UI_FEATURE_SEED_CODE_KEYWORDS:
+        return False
+    if _UI_FEATURE_SEED_LANG_TAB_RE.match(stripped):
+        return False
+    normalized = re.sub(r"[…]|\.{2,}", "", stripped).strip().lower()
+    if normalized in _UI_FEATURE_SEED_API_CONSOLE_PHRASES:
         return False
     return True
 

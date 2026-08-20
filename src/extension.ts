@@ -124,7 +124,7 @@ function assertWorkspaceWriteAllowed(uri: vscode.Uri, operation: string, kind: '
   const normalized = relPath.replace(/^\.?\//, '');
   if (!workspaceWriteIsAllowed(normalized, kind)) {
     throw new Error(
-      `Blocked ${operation} to workspace file "${relPath}". CODE.md only writes ${ARTIFACT_OUTPUT_DIR}/, ${WORKSPACE_MCP_CONFIG_FILE}, and ${WORKSPACE_CLAUDE_SETTINGS_FILE}.`,
+      `Blocked ${operation} to workspace file "${relPath}". CODEMD only writes ${ARTIFACT_OUTPUT_DIR}/, ${WORKSPACE_MCP_CONFIG_FILE}, and ${WORKSPACE_CLAUDE_SETTINGS_FILE}.`,
     );
   }
 }
@@ -164,7 +164,7 @@ function initializeDebugLog(context: vscode.ExtensionContext): void {
     fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
     fs.appendFileSync(
       debugLogPath,
-      `\n===== CODE.md extension session ${new Date().toISOString()} =====\n`,
+      `\n===== CODEMD extension session ${new Date().toISOString()} =====\n`,
       'utf8',
     );
   } catch (err: any) {
@@ -452,7 +452,7 @@ function isClaudeMcpServerApproved(folder: vscode.WorkspaceFolder): boolean {
 }
 
 // Writes only a narrow, named allowlist entry (never enableAllProjectMcpServers)
-// so approval is scoped to CODE.md's own server and can't be used to
+// so approval is scoped to CODEMD's own server and can't be used to
 // silently trust other/future entries in .mcp.json.
 async function approveClaudeMcpServer(folder: vscode.WorkspaceFolder): Promise<void> {
   const settingsUri = claudeLocalSettingsUri(folder);
@@ -516,7 +516,7 @@ async function migrateClaudeLegacyMcpApproval(folder: vscode.WorkspaceFolder): P
 }
 
 // Asks the user before pre-approving the codemd MCP server for Claude Code,
-// so CODE.md never grants itself trust silently. Returns true only if the
+// so CODEMD never grants itself trust silently. Returns true only if the
 // user said yes and the approval was written.
 async function requestClaudeMcpApproval(folder: vscode.WorkspaceFolder): Promise<boolean> {
   if (await migrateClaudeLegacyMcpApproval(folder)) {
@@ -533,7 +533,7 @@ async function requestClaudeMcpApproval(folder: vscode.WorkspaceFolder): Promise
     return true;
   }
   const choice = await vscode.window.showInformationMessage(
-    `CODE.md: allow the "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) server to run automatically with Claude Code in "${folder.name}"? ` +
+    `CODEMD: allow the "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) server to run automatically with Claude Code in "${folder.name}"? ` +
       'This skips the manual /mcp approval step in Claude Code for this one server.',
     'Allow',
     'Not now',
@@ -563,7 +563,7 @@ function tomlKey(value: string): string {
 // "never" is not valid and makes config.toml fail to load.
 function codexMcpBlock(context: vscode.ExtensionContext, workspaceRoot: string, approvalMode: 'prompt' | 'auto' = 'prompt'): string {
   const block = [
-    '# BEGIN CODE.md MCP',
+    '# BEGIN CODEMD MCP',
     `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}]`,
     'command = "node"',
     `args = ${tomlStringArray(mcpServerArgs(context, workspaceRoot))}`,
@@ -571,18 +571,23 @@ function codexMcpBlock(context: vscode.ExtensionContext, workspaceRoot: string, 
     '',
     `[mcp_servers.${tomlKey(MCP_SERVER_NAME)}.env]`,
     `CODEMD_WORKSPACE = ${tomlString(workspaceRoot)}`,
-    '# END CODE.md MCP',
+    '# END CODEMD MCP',
     '',
   ].join('\n');
   return block;
 }
+
+// Matches both the current "CODEMD" marker and the "CODEMD" marker written
+// by older versions of this extension, so upgrading doesn't orphan a block
+// an earlier install already wrote into the user's config.toml.
+const CODEX_MCP_MARKER_RE = /# BEGIN (?:CODEMD|CODE\.md) MCP[\s\S]*?# END (?:CODEMD|CODE\.md) MCP/;
 
 // Reads the codemd table's current approval mode out of a Codex config.toml's
 // text so re-running Set Up MCP doesn't silently downgrade an "auto" approval
 // back to "prompt". Also recognizes the legacy invalid "never" value written
 // by older versions of this extension, so it's treated as already-approved.
 function codexApprovalModeInConfig(configText: string): 'prompt' | 'auto' {
-  const match = configText.match(/# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP/);
+  const match = configText.match(CODEX_MCP_MARKER_RE);
   const scoped = match ? match[0] : configText;
   return /default_tools_approval_mode\s*=\s*"(auto|never)"/.test(scoped) ? 'auto' : 'prompt';
 }
@@ -599,7 +604,7 @@ function isCodexConfigApproved(configPath: string): boolean {
 }
 
 function removeCodexMcpServerTables(existing: string): string {
-  const markerPattern = /# BEGIN CODE\.md MCP[\s\S]*?# END CODE\.md MCP\r?\n?/;
+  const markerPattern = /# BEGIN (?:CODEMD|CODE\.md) MCP[\s\S]*?# END (?:CODEMD|CODE\.md) MCP\r?\n?/;
   const withoutMarkedBlock = existing.replace(markerPattern, '');
   const lines = withoutMarkedBlock.split(/\r?\n/);
   const kept: string[] = [];
@@ -754,7 +759,7 @@ async function setupProjectMcpConfigs(
   const folders = vscode.workspace.workspaceFolders || [];
   if (folders.length === 0) {
     if (!options.quiet) {
-      vscode.window.showErrorMessage('CODE.md: Open a workspace before setting up MCP.');
+      vscode.window.showErrorMessage('CODEMD: Open a workspace before setting up MCP.');
     }
     return false;
   }
@@ -786,7 +791,7 @@ async function setupProjectMcpConfigs(
   }
 
   if (failures.length) {
-    const message = `CODE.md: MCP setup had ${failures.length} issue(s). ${failures.join(' ')}`;
+    const message = `CODEMD: MCP setup had ${failures.length} issue(s). ${failures.join(' ')}`;
     outputChannel?.appendLine(message);
     if (!options.quiet) {
       vscode.window.showWarningMessage(message);
@@ -795,11 +800,11 @@ async function setupProjectMcpConfigs(
     const codexUserConfigNote = changedCodexUserConfigs.size
       ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
       : '';
-    const message = `CODE.md: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new ${mcpTargetsLabel(targets)} session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`;
+    const message = `CODEMD: Updated MCP config for ${changedFolders.join(', ')}.${codexUserConfigNote} Open a new ${mcpTargetsLabel(targets)} session in this workspace, then check /mcp or the client's MCP server list for "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`;
     outputChannel?.appendLine(message);
     vscode.window.showInformationMessage(message);
   } else if (!options.quiet) {
-    vscode.window.showInformationMessage(`CODE.md: MCP config is already up to date for ${mcpTargetsLabel(targets)}, and "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is approved where applicable. No client restart needed.`);
+    vscode.window.showInformationMessage(`CODEMD: MCP config is already up to date for ${mcpTargetsLabel(targets)}, and "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is approved where applicable. No client restart needed.`);
   }
   return !failures.length && changedFolders.length > 0;
 }
@@ -807,7 +812,7 @@ async function setupProjectMcpConfigs(
 async function removeProjectMcpConfigs(targetsInput?: McpSetupTarget[]): Promise<boolean> {
   const folders = vscode.workspace.workspaceFolders || [];
   if (folders.length === 0) {
-    vscode.window.showErrorMessage('CODE.md: Open a workspace before removing MCP setup.');
+    vscode.window.showErrorMessage('CODEMD: Open a workspace before removing MCP setup.');
     return false;
   }
 
@@ -833,18 +838,18 @@ async function removeProjectMcpConfigs(targetsInput?: McpSetupTarget[]): Promise
   }
 
   if (failures.length) {
-    const message = `CODE.md: MCP removal had ${failures.length} issue(s). ${failures.join(' ')}`;
+    const message = `CODEMD: MCP removal had ${failures.length} issue(s). ${failures.join(' ')}`;
     outputChannel?.appendLine(message);
     vscode.window.showWarningMessage(message);
   } else if (changedFolders.length) {
     const codexUserConfigNote = changedCodexUserConfigs.size
       ? ` Codex user config updated: ${Array.from(changedCodexUserConfigs).join(', ')}.`
       : '';
-    const message = `CODE.md: Removed MCP setup for ${changedFolders.join(', ')}.${codexUserConfigNote} Start a new ${mcpTargetsLabel(targets)} session for the change to take effect.`;
+    const message = `CODEMD: Removed MCP setup for ${changedFolders.join(', ')}.${codexUserConfigNote} Start a new ${mcpTargetsLabel(targets)} session for the change to take effect.`;
     outputChannel?.appendLine(message);
     vscode.window.showInformationMessage(message);
   } else {
-    vscode.window.showInformationMessage('CODE.md: No CODE.md MCP setup was found to remove.');
+    vscode.window.showInformationMessage('CODEMD: No CODEMD MCP setup was found to remove.');
   }
   return !failures.length && changedFolders.length > 0;
 }
@@ -1039,7 +1044,7 @@ async function openMcpClientTerminal(client: McpClientCli, folder: vscode.Worksp
   if (!commandPath) {
     const displayName = mcpClientDisplayName(client);
     vscode.window.showWarningMessage(
-      `CODE.md: MCP config is ready, but ${displayName} CLI "${client}" was not found by VS Code. Install ${displayName}, add "${client}" to PATH, or restart VS Code after updating PATH.`,
+      `CODEMD: MCP config is ready, but ${displayName} CLI "${client}" was not found by VS Code. Install ${displayName}, add "${client}" to PATH, or restart VS Code after updating PATH.`,
     );
     return;
   }
@@ -1048,7 +1053,7 @@ async function openMcpClientTerminal(client: McpClientCli, folder: vscode.Worksp
   let createdTerminal = false;
   if (!terminal || terminal.exitStatus) {
     terminal = vscode.window.createTerminal({
-      name: `CODE.md ${mcpClientDisplayName(client)}`,
+      name: `CODEMD ${mcpClientDisplayName(client)}`,
       cwd: folder.uri.fsPath,
       env: client === 'codex' ? { CODEX_HOME: path.dirname(codexUserConfigPath()) } : undefined,
     });
@@ -1062,11 +1067,11 @@ async function openMcpClientTerminal(client: McpClientCli, folder: vscode.Worksp
   openMcpApprovalCommand(terminal);
   if (client === 'claude') {
     const message = isClaudeMcpServerApproved(folder)
-      ? `CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for this workspace, Claude Code should pick it up automatically.`
-      : `CODE.md: Claude Code started and CODE.md will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`;
+      ? `CODEMD: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for this workspace, Claude Code should pick it up automatically.`
+      : `CODEMD: Claude Code started and CODEMD will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`;
     vscode.window.showInformationMessage(message);
   } else {
-    vscode.window.showInformationMessage(`CODE.md: Codex started and CODE.md will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`);
+    vscode.window.showInformationMessage(`CODEMD: Codex started and CODEMD will open /mcp automatically. Approve "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) if it is pending.`);
   }
 }
 
@@ -1118,7 +1123,7 @@ function warnIfReactivatedInStaleWindow(context: vscode.ExtensionContext): void 
   );
   vscode.window
     .showInformationMessage(
-      'CODE.md was reinstalled/updated while this window was open. Reload the window to finish activating the graph view.',
+      'CODEMD was reinstalled/updated while this window was open. Reload the window to finish activating the graph view.',
       'Reload Now',
     )
     .then((choice) => {
@@ -1129,7 +1134,7 @@ function warnIfReactivatedInStaleWindow(context: vscode.ExtensionContext): void 
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-  outputChannel = vscode.window.createOutputChannel('CODE.md');
+  outputChannel = vscode.window.createOutputChannel('CODEMD');
   context.subscriptions.push(outputChannel);
   initializeDebugLog(context);
   outputChannel.appendLine('[activate] begin');
@@ -1144,8 +1149,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'codemdGraphs.open';
-  statusBarItem.text = '$(circle-outline) CODE.md';
-  statusBarItem.tooltip = 'CODE.md';
+  statusBarItem.text = '$(circle-outline) CODEMD';
+  statusBarItem.tooltip = 'CODEMD';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
@@ -1220,7 +1225,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const startupAnalysis = provider.runGenerate({ quiet: true });
     // Surface the panel itself, unprompted — previously the extension only
     // prepared the graph in the background and waited for the user to
-    // discover and click the new "CODE.md" activity bar icon, so the
+    // discover and click the new "CODEMD" activity bar icon, so the
     // callgraph never actually appeared unless they knew to look for it.
     if (config.get('autoReveal') !== false) {
       outputChannel.appendLine('[activate] calling provider.reveal()');
@@ -1274,16 +1279,16 @@ async function resolveBackendDir(context: vscode.ExtensionContext, quiet: boolea
   // folder picker popping up unprompted during automatic startup analysis
   // steals OS focus from whatever else is running (editor, terminal, other
   // tools). Fail quietly instead and let the user fix it via Settings or a
-  // manual "Generate CODE.md" run, which is allowed to prompt.
+  // manual "Generate CODEMD" run, which is allowed to prompt.
   if (quiet) {
     throw new Error(
       'codemdGraphs.backendDir is not set and no bundled backend was found. ' +
-        'Set it in Settings, or run "Generate CODE.md" manually to be prompted for the folder.',
+        'Set it in Settings, or run "Generate CODEMD" manually to be prompted for the folder.',
     );
   }
 
   const picked = await vscode.window.showOpenDialog({
-    title: 'Select the folder containing the CODE.md analyzer backend (main.py)',
+    title: 'Select the folder containing the CODEMD analyzer backend (main.py)',
     canSelectFiles: false,
     canSelectFolders: true,
     canSelectMany: false,
@@ -1378,7 +1383,7 @@ function runCommand(
       if (timedOut) {
         reject(
           new Error(
-            `"${cmd} ${args.join(' ')}" timed out after ${Math.round(options.timeoutMs! / 1000)}s and was killed. Check the "CODE.md" output channel for what it was doing.`,
+            `"${cmd} ${args.join(' ')}" timed out after ${Math.round(options.timeoutMs! / 1000)}s and was killed. Check the "CODEMD" output channel for what it was doing.`,
           ),
         );
         return;
@@ -1472,7 +1477,7 @@ async function ensureManagedVenvUnlocked(
     if (code !== 0 || !fs.existsSync(pythonExe)) {
       throw new Error(
         `Failed to create a Python virtual environment at "${venvDir}" (exit code ${code}). ` +
-          'Check the "CODE.md" output channel.',
+          'Check the "CODEMD" output channel.',
       );
     }
   }
@@ -1491,8 +1496,8 @@ async function ensureManagedVenvUnlocked(
     );
     if (code !== 0) {
       throw new Error(
-        `Failed to install backend dependencies (exit code ${code}). Check the "CODE.md" output channel. ` +
-          `If this repeats after closing VS Code, delete "${venvDir}" so CODE.md can recreate a clean environment.`,
+        `Failed to install backend dependencies (exit code ${code}). Check the "CODEMD" output channel. ` +
+          `If this repeats after closing VS Code, delete "${venvDir}" so CODEMD can recreate a clean environment.`,
       );
     }
     await fs.promises.writeFile(hashFile, requirementsHash, 'utf8');
@@ -1599,7 +1604,7 @@ async function ensureServerRunning(
   const mainPyPath = path.join(backendDir, 'main.py');
   if (!fs.existsSync(mainPyPath)) {
     throw new Error(
-      `Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODE.md analyzer backend.`,
+      `Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODEMD analyzer backend.`,
     );
   }
 
@@ -1653,7 +1658,7 @@ function waitForServerReady(
       if (proc.exitCode !== null) {
         reject(
           new Error(
-            'The local FastAPI server exited before it became ready. Check the "CODE.md" output channel, ' +
+            'The local FastAPI server exited before it became ready. Check the "CODEMD" output channel, ' +
               'and make sure requirements.txt is installed for the configured codemdGraphs.pythonPath.',
           ),
         );
@@ -2377,7 +2382,7 @@ async function analyzeLocalPathCli(
   const mainPyPath = path.join(backendDir, 'main.py');
   if (!fs.existsSync(mainPyPath)) {
     throw new Error(
-      `Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODE.md analyzer backend.`,
+      `Could not find main.py in "${backendDir}". Set codemdGraphs.backendDir to the folder containing the CODEMD analyzer backend.`,
     );
   }
 
@@ -2403,7 +2408,7 @@ async function analyzeLocalPathCli(
 
   outputChannel.appendLine(`\n--- Running local analyzer CLI: ${pythonPath} ${args.join(' ')} (cwd: ${backendDir}) ---`);
   outputChannel.show(true);
-  report('Analyzing locally with the CODE.md CLI (no FastAPI server needed for generation)...');
+  report('Analyzing locally with the CODEMD CLI (no FastAPI server needed for generation)...');
 
   const exitCode = await runCommand(pythonPath, args, backendDir, (text) => outputChannel.append(text), {
     env: localBackendEnv(context),
@@ -2411,7 +2416,7 @@ async function analyzeLocalPathCli(
     timeoutMs: ANALYZE_CLI_TIMEOUT_MS,
   });
   if (exitCode !== 0) {
-    throw new Error(`Local analyzer CLI failed with exit code ${exitCode}. Check the "CODE.md" output channel.`);
+    throw new Error(`Local analyzer CLI failed with exit code ${exitCode}. Check the "CODEMD" output channel.`);
   }
   if (!fs.existsSync(resultPath)) {
     throw new Error(`Local analyzer CLI completed but did not write "${resultPath}".`);
@@ -3317,7 +3322,7 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
         'Claude Code:',
         `1. Close any running Claude Code session for ${workspace}.`,
         `2. Open a terminal in ${workspace} and run: claude`,
-        `3. The CODE.md button can open Claude Code and send /mcp automatically.`,
+        `3. The CODEMD button can open Claude Code and send /mcp automatically.`,
         `"${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) was already approved for this workspace (.claude/settings.local.json), so no /mcp approval should be needed.`,
         'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
       ]
@@ -3325,12 +3330,12 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
         'Claude Code:',
         `1. Close any running Claude Code session for ${workspace}.`,
         `2. Open a terminal in ${workspace} and run: claude`,
-        '3. In Claude Code, type: /mcp. The CODE.md button can do this automatically after launching Claude Code.',
+        '3. In Claude Code, type: /mcp. The CODEMD button can do this automatically after launching Claude Code.',
         `4. If "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pending approval, approve it there. You can also check from a terminal with: claude mcp list`,
         'If Windows says "claude is not recognized", the Claude Code CLI is not installed or is not on PATH yet.',
       ];
   const lines = [
-    `CODE.md MCP config has been written for ${mcpTargetsLabel(selected)}.`,
+    `CODEMD MCP config has been written for ${mcpTargetsLabel(selected)}.`,
     '',
   ];
   if (selected.has('claude')) {
@@ -3343,7 +3348,7 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
       `2. Open a new terminal in ${workspace} and run: codex`,
       `3. Codex should read "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) from: ${codexUserConfigPath()}`,
       '4. The current session will not hot-reload MCP config; it must be a new session.',
-      `5. Type /mcp, or use the CODE.md button to send it automatically after launching Codex. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
+      `5. Type /mcp, or use the CODEMD button to send it automatically after launching Codex. If Codex asks whether to allow "${MCP_SERVER_NAME}", approve it there.`,
       'If Windows says "codex is not recognized", install the Codex CLI or add it to PATH first.',
       '',
     );
@@ -3352,7 +3357,7 @@ function mcpSetupHelpText(folder: vscode.WorkspaceFolder, context: vscode.Extens
     'Other MCP clients:',
     `Use a stdio MCP server named "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}).`,
     `Command: node ${mcpServerArgs(context, workspace).join(' ')}`,
-    'Approval is controlled by the MCP client. CODE.md can register the server, but the user must approve/trust it inside the client when prompted.',
+    'Approval is controlled by the MCP client. CODEMD can register the server, but the user must approve/trust it inside the client when prompted.',
     '',
     'What the number means:',
     'The access count is historical. If the timestamp is old, Claude/Codex are not currently connected even though the config exists.',
@@ -3386,7 +3391,7 @@ class GitShowContentProvider implements vscode.TextDocumentContentProvider {
     try {
       ({ cwd, base, file } = JSON.parse(decodeURIComponent(uri.query)));
     } catch {
-      return '# CODE.md: malformed diff request.';
+      return '# CODEMD: malformed diff request.';
     }
     try {
       const parsed = JSON.parse(decodeURIComponent(uri.query));
@@ -3401,10 +3406,10 @@ class GitShowContentProvider implements vscode.TextDocumentContentProvider {
     // exactly like "file not found at that ref" below unless raised.
     const result = spawnSync('git', ['show', `${base}:${file}`], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     if (result.error) {
-      return `# CODE.md: could not load ${file} at ${base} — ${result.error.message}`;
+      return `# CODEMD: could not load ${file} at ${base} — ${result.error.message}`;
     }
     if (result.status !== 0) {
-      return `# CODE.md: could not load ${file} at ${base} (it may be newly added).\n# ${(result.stderr || '').trim()}`;
+      return `# CODEMD: could not load ${file} at ${base} (it may be newly added).\n# ${(result.stderr || '').trim()}`;
     }
     return result.stdout;
   }
@@ -3583,7 +3588,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
 
   private openGraphPanel(currentGraphUrl?: string): void {
     if (!this.lastGraphFileUri && !this.lastServerGraphUrl && !this.lastDisplayedServerGraphUrl) {
-      vscode.window.showInformationMessage('CODE.md: The callgraph is still being generated.');
+      vscode.window.showInformationMessage('CODEMD: The callgraph is still being generated.');
       return;
     }
 
@@ -3779,8 +3784,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.lastDisplayedServerGraphUrl = '';
       this.displayedGraphFileUri = candidate;
       this.lastStatus = `Showing existing ${ARTIFACT_OUTPUT_DIR}/ callgraph.`;
-      statusBarItem.text = '$(check) CODE.md: graph ready';
-      statusBarItem.tooltip = 'CODE.md: showing existing callgraph';
+      statusBarItem.text = '$(check) CODEMD: graph ready';
+      statusBarItem.tooltip = 'CODEMD: showing existing callgraph';
       outputChannel?.appendLine(`[ensureLocalGraphLoaded] adopting on-disk graph, posting to webview (view=${!!this.view} viewReady=${this.viewReady}).`);
       this.post({ type: 'status', text: this.lastStatus });
       this.postDisplayedGraph();
@@ -3803,8 +3808,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           this.lastDisplayedServerGraphUrl = '';
           this.displayedGraphFileUri = candidate;
           this.lastStatus = `Showing existing ${ARTIFACT_OUTPUT_DIR}/ callgraph. Refreshing analysis in the background if needed.`;
-          statusBarItem.text = '$(check) CODE.md: graph ready';
-          statusBarItem.tooltip = 'CODE.md: showing existing callgraph';
+          statusBarItem.text = '$(check) CODEMD: graph ready';
+          statusBarItem.tooltip = 'CODEMD: showing existing callgraph';
           this.post({ type: 'status', text: this.lastStatus });
           this.postDisplayedGraph();
         });
@@ -4124,8 +4129,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       // (e.g. its CLI isn't on PATH), so the user needs this action every time.
       const choice = await vscode.window.showInformationMessage(
         changed
-          ? 'CODE.md: MCP config is ready. Start a fresh client session and open /mcp to approve/use codemd.'
-          : 'CODE.md: MCP config is already up to date. Open a client terminal to connect/reconnect codemd.',
+          ? 'CODEMD: MCP config is ready. Start a fresh client session and open /mcp to approve/use codemd.'
+          : 'CODEMD: MCP config is already up to date. Open a client terminal to connect/reconnect codemd.',
         ...(targets.includes('codex') ? ['Open Codex /mcp'] : []),
         ...(targets.includes('claude') ? ['Open Claude Code /mcp'] : []),
       );
@@ -4136,7 +4141,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       return;
     }
-    vscode.window.showInformationMessage('CODE.md: MCP config is ready. See the CODE.md panel for exact Claude Code and Codex restart/check steps.');
+    vscode.window.showInformationMessage('CODEMD: MCP config is ready. See the CODEMD panel for exact Claude Code and Codex restart/check steps.');
   }
 
   async removeMcpFromPanel(): Promise<void> {
@@ -4145,7 +4150,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const choice = await vscode.window.showWarningMessage(
-      'CODE.md: remove CODE.md MCP setup from this workspace? This removes only CODE.md MCP entries from local config files. Other MCP servers are left unchanged.',
+      'CODEMD: remove CODEMD MCP setup from this workspace? This removes only CODEMD MCP entries from local config files. Other MCP servers are left unchanged.',
       { modal: true },
       'Remove MCP Setup',
     );
@@ -4159,18 +4164,18 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   async cleanArtifactsFromPanel(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showWarningMessage('CODE.md: Open a workspace before cleaning up .codemd.');
+      vscode.window.showWarningMessage('CODEMD: Open a workspace before cleaning up .codemd.');
       return;
     }
     const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
     if (!fs.existsSync(outDirUri.fsPath)) {
-      vscode.window.showInformationMessage(`CODE.md: ${ARTIFACT_OUTPUT_DIR}/ does not exist in this workspace.`);
+      vscode.window.showInformationMessage(`CODEMD: ${ARTIFACT_OUTPUT_DIR}/ does not exist in this workspace.`);
       return;
     }
     const setup = await mcpSetupStatus(folder);
     const mcpConfigured = setup.workspaceConfig || setup.codexProjectConfig || setup.codexUserConfig;
     const choice = await vscode.window.showWarningMessage(
-      `CODE.md: clean up ${ARTIFACT_OUTPUT_DIR}/ in this workspace? This deletes generated graphs, search indexes, logs, and MCP usage history. Source files and MCP config files are not changed.`,
+      `CODEMD: clean up ${ARTIFACT_OUTPUT_DIR}/ in this workspace? This deletes generated graphs, search indexes, logs, and MCP usage history. Source files and MCP config files are not changed.`,
       { modal: true },
       `Clean up ${ARTIFACT_OUTPUT_DIR}`,
     );
@@ -4199,20 +4204,20 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.refreshMcpUsage(folder);
       vscode.window.showInformationMessage(
         mcpConfigured
-          ? `CODE.md: cleaned up generated artifacts and refreshed the MCP wrapper. Click Regenerate to rebuild ${ARTIFACT_OUTPUT_DIR}/.`
-          : `CODE.md: cleaned up ${ARTIFACT_OUTPUT_DIR}/. Click Regenerate to rebuild it.`,
+          ? `CODEMD: cleaned up generated artifacts and refreshed the MCP wrapper. Click Regenerate to rebuild ${ARTIFACT_OUTPUT_DIR}/.`
+          : `CODEMD: cleaned up ${ARTIFACT_OUTPUT_DIR}/. Click Regenerate to rebuild it.`,
       );
     } catch (err: any) {
       const message = err?.message || String(err);
       outputChannel?.appendLine(`[cleanArtifactsFromPanel] failed: ${message}`);
-      vscode.window.showErrorMessage(`CODE.md: could not clean up ${ARTIFACT_OUTPUT_DIR}/: ${message}`);
+      vscode.window.showErrorMessage(`CODEMD: could not clean up ${ARTIFACT_OUTPUT_DIR}/: ${message}`);
     }
   }
 
   private async pickMcpSetupTargets(action: 'add' | 'remove'): Promise<McpSetupTarget[] | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showWarningMessage('CODE.md: Open a workspace before changing MCP setup.');
+      vscode.window.showWarningMessage('CODEMD: Open a workspace before changing MCP setup.');
       return undefined;
     }
     const setup = await mcpSetupStatus(folder);
@@ -4260,41 +4265,41 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   private async approveClaudeFromPanel(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showWarningMessage('CODE.md: Open a workspace before approving an MCP client.');
+      vscode.window.showWarningMessage('CODEMD: Open a workspace before approving an MCP client.');
       return;
     }
     try {
       await approveClaudeMcpServer(folder);
       this.refreshMcpUsage();
       vscode.window.showInformationMessage(
-        `CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for Claude Code in "${folder.name}". Start a new Claude Code session to pick it up.`,
+        `CODEMD: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) is pre-approved for Claude Code in "${folder.name}". Start a new Claude Code session to pick it up.`,
       );
     } catch (err: any) {
-      vscode.window.showErrorMessage(`CODE.md: Could not approve Claude MCP: ${err?.message || String(err)}`);
+      vscode.window.showErrorMessage(`CODEMD: Could not approve Claude MCP: ${err?.message || String(err)}`);
     }
   }
 
   private async approveCodexFromPanel(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showWarningMessage('CODE.md: Open a workspace before approving an MCP client.');
+      vscode.window.showWarningMessage('CODEMD: Open a workspace before approving an MCP client.');
       return;
     }
     try {
       await approveCodexMcpServer(this.context, folder);
       this.refreshMcpUsage();
       vscode.window.showInformationMessage(
-        `CODE.md: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) tools are auto-approved for Codex in "${folder.name}". Start a new Codex session to pick it up.`,
+        `CODEMD: "${MCP_SERVER_NAME}" (${MCP_SERVER_LABEL}) tools are auto-approved for Codex in "${folder.name}". Start a new Codex session to pick it up.`,
       );
     } catch (err: any) {
-      vscode.window.showErrorMessage(`CODE.md: Could not approve Codex MCP: ${err?.message || String(err)}`);
+      vscode.window.showErrorMessage(`CODEMD: Could not approve Codex MCP: ${err?.message || String(err)}`);
     }
   }
 
   private openMcpClient(client: string): void {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      vscode.window.showWarningMessage('CODE.md: Open a workspace before starting an MCP client.');
+      vscode.window.showWarningMessage('CODEMD: Open a workspace before starting an MCP client.');
       return;
     }
     if (client === 'codex' || client === 'claude') {
@@ -4320,7 +4325,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       editor.selection = new vscode.Selection(range.start, range.start);
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
     } catch (err: any) {
-      vscode.window.showWarningMessage(`CODE.md: Could not open ${file} — ${err?.message || String(err)}`);
+      vscode.window.showWarningMessage(`CODEMD: Could not open ${file} — ${err?.message || String(err)}`);
     }
   }
 
@@ -4362,7 +4367,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, label);
     } catch (err: any) {
-      vscode.window.showWarningMessage(`CODE.md: Could not open diff for ${file} — ${err?.message || String(err)}`);
+      vscode.window.showWarningMessage(`CODEMD: Could not open diff for ${file} — ${err?.message || String(err)}`);
     }
   }
 
@@ -4399,14 +4404,14 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
     if (this.busy) {
       if (!quiet) {
-        vscode.window.showInformationMessage('CODE.md: Already analyzing — please wait for it to finish.');
+        vscode.window.showInformationMessage('CODEMD: Already analyzing — please wait for it to finish.');
       }
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       if (!quiet) {
-        vscode.window.showErrorMessage('CODE.md: Open a folder or workspace before generating CODE.md callgraphs.');
+        vscode.window.showErrorMessage('CODEMD: Open a folder or workspace before generating CODEMD callgraphs.');
       }
       return;
     }
@@ -4453,14 +4458,14 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'generated' });
         this.postFeatureCatalog(result);
         this.refreshMcpUsage(folder);
-        statusBarItem.text = '$(check) CODE.md: up to date';
-        statusBarItem.tooltip = 'CODE.md';
+        statusBarItem.text = '$(check) CODEMD: up to date';
+        statusBarItem.tooltip = 'CODEMD';
         return;
       }
     }
 
     this.busy = true;
-    statusBarItem.text = '$(sync~spin) CODE.md: analyzing…';
+    statusBarItem.text = '$(sync~spin) CODEMD: analyzing…';
     const status = (text: string) => {
       this.lastStatus = text;
       this.post({ type: 'status', text });
@@ -4523,15 +4528,15 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'generated' });
         this.postFeatureCatalog(uploadResult);
         this.refreshMcpUsage(folder);
-        statusBarItem.text = '$(check) CODE.md: up to date';
-        statusBarItem.tooltip = 'CODE.md';
+        statusBarItem.text = '$(check) CODEMD: up to date';
+        statusBarItem.tooltip = 'CODEMD';
       } catch (err: any) {
         const messageText = err?.message || String(err);
         status(`Error: ${messageText}`);
-        statusBarItem.text = '$(error) CODE.md: analysis failed';
-        statusBarItem.tooltip = `CODE.md: ${messageText}`;
+        statusBarItem.text = '$(error) CODEMD: analysis failed';
+        statusBarItem.tooltip = `CODEMD: ${messageText}`;
         if (!quiet) {
-          vscode.window.showErrorMessage(`CODE.md: Failed to generate CODE.md callgraphs — ${messageText}`);
+          vscode.window.showErrorMessage(`CODEMD: Failed to generate CODEMD callgraphs — ${messageText}`);
         } else {
           outputChannel.appendLine(`Background analysis failed: ${messageText}`);
         }
@@ -4542,7 +4547,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       await runBody(status);
     } else {
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Generate CODE.md', cancellable: false },
+        { location: vscode.ProgressLocation.Notification, title: 'Generate CODEMD', cancellable: false },
         async (progress) => {
           await runBody((text) => {
             progress.report({ message: text });
@@ -5542,7 +5547,7 @@ function getFullGraphHtml(graphUrl: string, cspSource: string): string {
 </style>
 </head>
 <body>
-  <iframe src="${graphUrl}" title="CODE.md callgraph"></iframe>
+  <iframe src="${graphUrl}" title="CODEMD callgraph"></iframe>
 </body>
 </html>`;
 }
@@ -5745,7 +5750,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
         <button id="approveClaudeBtn" title="Pre-approve codemd for Claude Code via .claude/settings.local.json.">Approve Claude MCP</button>
         <button id="openCodexBtn" title="Start a fresh Codex session in this workspace and open /mcp.">Open Codex /mcp</button>
         <button id="openClaudeBtn" title="Start Claude Code in this workspace and open /mcp.">Open Claude Code /mcp</button>
-        <button id="removeMcpBtn" title="Remove only CODE.md MCP entries from local workspace/client config files.">Remove CODEMD MCP Server</button>
+        <button id="removeMcpBtn" title="Remove only CODEMD MCP entries from local workspace/client config files.">Remove CODEMD MCP Server</button>
         <button id="cleanArtifactsBtn" title="Delete generated CODEMD graphs and indexes from .codemd. Source files are not changed.">Clean up .codemd</button>
       </div>
     </div>
@@ -7177,7 +7182,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       const claudeConfigured = Boolean(setup.workspaceConfig);
       const codexConfigured = Boolean(setup.codexProjectConfig || setup.codexUserConfig);
       const allSupportedConfigured = claudeConfigured && codexConfigured;
-      const serverName = msg.serverName || 'CODE.md MCP';
+      const serverName = msg.serverName || 'CODEMD MCP';
       const restartNeeded = Boolean(msg.restartNeeded);
       const updatedAt = msg.updatedAt ? new Date(msg.updatedAt).toLocaleString() : '';
       const toolsByClient = msg.toolsByClient && typeof msg.toolsByClient === 'object' ? msg.toolsByClient : {};

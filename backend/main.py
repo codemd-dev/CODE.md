@@ -26486,7 +26486,7 @@ def add_feature_reference_urls(summaries: list[dict], artifact_root):
     return summaries
 
 
-def generate_feature_descriptions_old(features: list[dict], product_name: str = "", product_type: str = "", user_guidance: str = "", return_prompt: bool = False):
+def generate_feature_descriptions(features: list[dict], product_name: str = "", product_type: str = "", user_guidance: str = "", return_prompt: bool = False, ui_feature_seeds: list[str] | None = None):
     compact_features = [
         compact_feature_for_llm(feature, f"feature_{index + 1}")
         for index, feature in enumerate(features[:12])
@@ -27160,12 +27160,6 @@ def product_feature_metadata(request: Request, payload: dict):
 
 @app.post("/feature-summary")
 def feature_summary(request: Request, payload: dict):
-    return {
-        "feature_summaries": [],
-        "feature_summary_count": 0,
-        "disabled": True,
-        "message": "Feature summaries are disabled. CODE.md now publishes deterministic truth-index artifacts only.",
-    }
     owner = str(payload.get("owner_name") or payload.get("owner") or "").strip()
     repo = str(payload.get("repo_name") or payload.get("repo") or "").strip()
     if not owner or not repo:
@@ -27192,7 +27186,7 @@ def feature_summary(request: Request, payload: dict):
 
     repo_text_for_seeds = load_repo_text_artifact(output_repo_dir)
     repo_context_for_seeds = build_repo_context(owner, repo, {}, "", repo_text_for_seeds)
-    ui_feature_seeds = extract_ui_feature_seeds(repo_text_for_seeds, repo_context_for_seeds)
+    ui_feature_seeds = repo_context_for_seeds.get("ui_feature_seeds", [])
     if not ui_feature_seeds and isinstance(feature_catalog, dict):
         ui_feature_seeds = feature_catalog.get("ui_feature_seeds", []) or []
 
@@ -30319,13 +30313,43 @@ def extract_embedded_html_ui_text(text: str, max_chars: int = 4000):
     return normalize_human_text("\n".join(values), max_chars)
 
 
+def _looks_like_api_reference_page(visible_text: str) -> bool:
+    # Matched against the parser's *visible*-text output, which already
+    # drops <pre>/<code> content -- so this can't rely on markers that only
+    # ever appear inside a code sample (curl/fetch snippets). It has to key
+    # off the surrounding console chrome instead: endpoint/method listings,
+    # a live request/response panel, and REST-style error documentation.
+    lower = str(visible_text or "").lower()
+    markers = (
+        "rest api", "graphql api", "http api", "endpoints", "base url",
+        "code samples", "send request", "api explorer", "api reference",
+        "request body", "response body", "response schema", "request schema",
+        "response headers", "status code", "bad request", "not found",
+        "server error", "health check", "sample request", "sample response",
+        "json schema", "awaiting", "try it",
+    )
+    return sum(1 for marker in markers if marker in lower) >= 3
+
+
 def extract_human_text_from_file(text: str, rel_path: str, ext: str, max_chars: int = 5000):
     ext = ext.lower()
     lower_path = str(rel_path or "").lower()
     
     if ext in {".html", ".htm", ".xhtml"}:
         visible_text = extract_html_visible_text(text, max_chars)
-        return normalize_human_text(visible_text, max_chars), "ui_text"
+        cleaned = normalize_human_text(visible_text, max_chars)
+        # An interactive "try it" API console/reference page (curl/JS/Python
+        # code-sample tabs, a Send/Copy button, a live response viewer)
+        # describes how to CALL the product's API, not what the product
+        # DOES -- its copy ("Send Request", "JavaScript (fetch)", language
+        # tab labels) reads like plausible short UI labels but isn't a
+        # product feature. Rather than chase every individual phrase this
+        # kind of page can produce, detect the page structurally and route
+        # it into the lower-priority/lower-budget "text" tier in
+        # extract_repo_text instead of the high-priority "ui_text" tier.
+        if _looks_like_api_reference_page(cleaned):
+            return cleaned, "text"
+        return cleaned, "ui_text"
     
     
     if ext == ".xml":
