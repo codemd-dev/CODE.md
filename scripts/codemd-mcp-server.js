@@ -844,7 +844,9 @@ function isTestFile(relPath) {
     /(^|\/)(__tests__|tests?|spec)(\/|$)/.test(normalized) ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
     /(_test|test_)[A-Za-z0-9_-]*\.py$/.test(name) ||
-    /Test\.(java|kt|cs|go|rs)$/i.test(name)
+    /Test\.(java|kt|cs)$/i.test(name) ||
+    /_test\.go$/.test(name) ||
+    /_test(s)?\.rs$/.test(name)
   );
 }
 
@@ -858,7 +860,7 @@ function sourceExtensionsForTests() {
 
 function walkWorkspaceFiles(root, predicate, maxFiles = 20000) {
   const out = [];
-  const skipped = new Set(['.git', '.codemd', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', '__pycache__', '.pytest_cache', '.venv', 'venv', 'env']);
+  const skipped = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', '__pycache__', '.pytest_cache', '.venv', 'venv', 'env']);
   const shouldSkipDir = (name) => {
     const lower = String(name || '').toLowerCase();
     return skipped.has(lower) || /^output[_-]/.test(lower) || /^artifact[_-]/.test(lower) || /^release[_-]/.test(lower);
@@ -879,6 +881,18 @@ function walkWorkspaceFiles(root, predicate, maxFiles = 20000) {
       }
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (entry.name.toLowerCase() === '.codemd') {
+          // .codemd is mostly generated cache/artifact data (scim, python
+          // callgraph, vectors) — not source to scan for test coverage. The
+          // one exception is generated_tests: real pytest/*.test files the
+          // "Generate regression test" flow writes there, which find_tests
+          // must still be able to discover on a later look-up.
+          const genTests = path.join(full, 'generated_tests');
+          if (fs.existsSync(genTests)) {
+            visit(genTests);
+          }
+          continue;
+        }
         if (!shouldSkipDir(entry.name)) {
           visit(full);
         }
@@ -1011,6 +1025,98 @@ function likelySourceImportSpecifiers(relPath) {
   ].filter(Boolean)));
 }
 
+// Best-effort "which named test touches this" — approximate spans (each test
+// declaration's body runs from its own line to the start of the next one, or
+// EOF), not a real parser. Good enough to tell a user "test_foo mentions
+// this" instead of just "this file mentions this"; not good enough to be the
+// only signal a Run result relies on (see runTestFileForResult's coverage
+// check for the ground-truth version of this question).
+function pythonTestSpans(lines) {
+  const classRe = /^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)/;
+  const defRe = /^(\s*)(?:async\s+)?def\s+(test[A-Za-z0-9_]*)\s*\(/;
+  const spans = [];
+  let lastClass = null;
+  for (let i = 0; i < lines.length; i++) {
+    const classMatch = lines[i].match(classRe);
+    if (classMatch) {
+      lastClass = { name: classMatch[2], indent: classMatch[1].length };
+      continue;
+    }
+    const defMatch = lines[i].match(defRe);
+    if (defMatch) {
+      const indent = defMatch[1].length;
+      const name = defMatch[2];
+      const nodeId = (lastClass && indent > lastClass.indent) ? `${lastClass.name}::${name}` : name;
+      if (!(lastClass && indent > lastClass.indent)) {
+        lastClass = null;
+      }
+      spans.push({ name, nodeId, startLineIdx: i });
+    }
+  }
+  for (let k = 0; k < spans.length; k++) {
+    spans[k].endLineIdx = k + 1 < spans.length ? spans[k + 1].startLineIdx : lines.length;
+  }
+  return spans;
+}
+
+// Shared by any language where a test declaration is a single recognizable
+// line and bodies don't meaningfully nest (JS/TS test() calls are usually
+// flat within a describe block for this purpose; Go test funcs are always
+// top-level) — a span just runs from one declaration to the next, or EOF.
+function sequentialNamedSpans(lines, declRe, buildEntry) {
+  const spans = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(declRe);
+    if (m) {
+      spans.push({ ...buildEntry(m), startLineIdx: i });
+    }
+  }
+  for (let k = 0; k < spans.length; k++) {
+    spans[k].endLineIdx = k + 1 < spans.length ? spans[k + 1].startLineIdx : lines.length;
+  }
+  return spans;
+}
+
+function jsTestSpans(lines) {
+  return sequentialNamedSpans(
+    lines,
+    /(?:^|[\s;])(?:it|test)\s*(?:\.\w+)?\(\s*(['"`])((?:\\.|(?!\1).)*)\1/,
+    (m) => ({ name: m[2], nodeId: m[2] }),
+  );
+}
+
+// Go test functions are always top-level (Go doesn't nest function
+// declarations), so there's no class/indent tracking needed the way Python
+// has — just `func TestXxx(t *testing.T)` at column 0. Table-driven t.Run()
+// subtests inside one Test func aren't named individually here; the whole
+// enclosing TestXxx is the runnable/nameable unit.
+function goTestSpans(lines) {
+  return sequentialNamedSpans(
+    lines,
+    /^func\s+(Test[A-Za-z0-9_]*)\s*\(/,
+    (m) => ({ name: m[1], nodeId: m[1] }),
+  );
+}
+
+const NAMED_TEST_SPAN_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
+
+function namedTestMatchesForFile(ext, text, targetTerms) {
+  const lines = text.split(/\r?\n/);
+  const spans = ext === '.py' ? pythonTestSpans(lines)
+    : ext === '.go' ? goTestSpans(lines)
+    : NAMED_TEST_SPAN_EXTS.has(ext) ? jsTestSpans(lines)
+    : [];
+  const results = [];
+  for (const span of spans) {
+    const body = lines.slice(span.startLineIdx, span.endLineIdx).join('\n').toLowerCase();
+    const hit = Array.from(targetTerms).some((term) => term.length >= 3 && body.includes(term));
+    if (hit) {
+      results.push({ name: span.name, nodeId: span.nodeId, line: span.startLineIdx + 1 });
+    }
+  }
+  return results.slice(0, 6);
+}
+
 function findTests(args) {
   const query = String(args.query || args.symbol || args.node_query || '').trim();
   const limit = Math.max(1, Math.min(Number(args.limit || 12), 50));
@@ -1081,6 +1187,7 @@ function findTests(args) {
       score,
       reasons: Array.from(new Set(reasons)).slice(0, 8),
       snippet: snippetForTerms(text, query, Array.from(targetTerms)).slice(0, 1200),
+      test_names: namedTestMatchesForFile(path.extname(full).toLowerCase(), text, targetTerms),
     });
   }
   matches.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
@@ -1097,8 +1204,30 @@ function findTests(args) {
     matches: matches.slice(0, limit),
     note: matches.length
       ? 'Likely test coverage based on test-file naming, imports/path references, and symbol mentions. Verify assertions in the source test file.'
-      : 'No likely test file references were found. This may mean the target is untested, tests use indirect integration coverage, or the target symbol was not indexed.',
+      : noTestsFoundNote(targetRecords),
   }, null, 2);
+}
+
+// Zero matches, especially for a symbol just added or changed in this
+// session, is worth surfacing as a to-do, not a shrug — an agent reading this
+// tool result is exactly who's in a position to act on it immediately. When
+// caller data is available, point at exercising a real call path rather than
+// suggesting a generic isolated unit test: the risk this whole toolset exists
+// to catch is a downstream caller silently breaking, which a test of the
+// function alone won't reveal.
+function noTestsFoundNote(targetRecords) {
+  const base = 'No likely test file references were found. This may mean the target is untested, '
+    + 'tests use indirect integration coverage, or the target symbol was not indexed. If this is new '
+    + 'or recently changed code, consider adding a test before finishing this change.';
+  const callerCounts = targetRecords
+    .map((record) => Array.isArray(record.callers) ? record.callers.length : 0)
+    .filter((count) => count > 0);
+  if (!callerCounts.length) {
+    return base;
+  }
+  const maxCallers = Math.max(...callerCounts);
+  return `${base} This function has ${maxCallers} known caller(s) (see codemd_get_callers/codemd_get_impact_radius) — `
+    + 'a test that exercises one of those real call paths is more valuable here than one that only calls this function in isolation.';
 }
 
 function runGit(args, timeout = 15000) {

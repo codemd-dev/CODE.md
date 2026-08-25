@@ -1846,6 +1846,11 @@ interface LocalCallgraphIndex {
   // (thousands of nodes) is what crashes/blanks the webview's Cytoscape
   // renderer, so we default to a single well-connected node instead.
   degree: Map<string, number>;
+  // In-degree only (real confirmed callers), unlike `degree` above which
+  // combines in+out for "pick any well-connected default node" purposes —
+  // this is specifically for ranking "how many things call this," i.e. blast
+  // radius / criticality, used by the Critical Functions report.
+  fanIn: Map<string, number>;
   // Curated real entry points (route handlers, CLI mains, etc.) the analyzer
   // already identified — preferred over the raw highest-degree node, which
   // tends to be an incidental hub like a static HTML/demo file rather than
@@ -1901,6 +1906,7 @@ function loadLocalCallgraphIndex(outDirFsPath: string): LocalCallgraphIndex | nu
       }
       const nodeLabels = data?.node_labels && typeof data.node_labels === 'object' ? data.node_labels : {};
       const degree = new Map<string, number>();
+      const fanIn = new Map<string, number>();
       const edges = Array.isArray(data?.edges) ? data.edges : [];
       for (const edge of edges) {
         const from = Array.isArray(edge) ? String(edge[0]) : String(edge?.from ?? edge?.source ?? '');
@@ -1910,6 +1916,7 @@ function loadLocalCallgraphIndex(outDirFsPath: string): LocalCallgraphIndex | nu
         }
         if (to) {
           degree.set(to, (degree.get(to) || 0) + 1);
+          fanIn.set(to, (fanIn.get(to) || 0) + 1);
         }
       }
       const entryPoints = Array.isArray(data?.entry_points) ? data.entry_points.map((n: any) => String(n)) : [];
@@ -1920,6 +1927,7 @@ function loadLocalCallgraphIndex(outDirFsPath: string): LocalCallgraphIndex | nu
         nodeLabels,
         fileByNode: buildFileByNodeIndex(outDirFsPath),
         degree,
+        fanIn,
         entryPoints,
       };
     } catch {
@@ -2188,6 +2196,474 @@ function execNodeCliAsync(scriptPath: string, args: string[], cwd: string, timeo
     proc.on('error', () => { clearTimeout(timer); resolve({ status: null, stdout, stderr, timedOut }); });
     proc.on('exit', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr, timedOut }); });
   });
+}
+
+/** Generic timed-and-captured subprocess run, used for the "Run" button's
+ * pytest/coverage invocations — these run in the user's OWN project
+ * environment (see resolveWorkspaceTestPython), not CODEMD's isolated
+ * analyzer venv, so they need their own exec helper rather than reusing
+ * execNodeCliAsync (which always launches VS Code's bundled Node).
+ *
+ * On win32, retries once with `shell: true` if the bare spawn fails —
+ * Windows' CreateProcess can't directly execute a .cmd/.bat file (only a
+ * real .exe), and a globally npm-installed CLI (e.g. `npm install -g
+ * @anthropic-ai/claude-code`) is exactly that shape: a .cmd shim, not an
+ * .exe. `claude.exe` in a native install works fine on the first attempt;
+ * this only matters for the npm-shim case, which the first attempt alone
+ * would otherwise report as "couldn't launch" even though typing the same
+ * command in a terminal works (the shell there is what resolves the shim).
+ */
+function execCommandAsync(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 90000,
+): Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean; spawnError?: string }> {
+  return execCommandOnceAsync(cmd, args, cwd, env, timeoutMs, false).then((result) => {
+    if (result.spawnError && process.platform === 'win32') {
+      return execCommandOnceAsync(cmd, args, cwd, env, timeoutMs, true);
+    }
+    return result;
+  });
+}
+
+function execCommandOnceAsync(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  useShell: boolean,
+): Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean; spawnError?: string }> {
+  return new Promise((resolve) => {
+    let proc: ChildProcessWithoutNullStreams;
+    try {
+      proc = spawn(cmd, args, { cwd, env, shell: useShell });
+    } catch (err: any) {
+      resolve({ status: null, stdout: '', stderr: '', timedOut: false, spawnError: err?.message || String(err) });
+      return;
+    }
+    trackProcess(proc);
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // Plain proc.kill() only signals the direct child — go test always
+      // execs a separate compiled test binary, and pytest can spawn its own
+      // workers, so a hung run would survive a bare kill (and outlive the
+      // extension itself). Tree-kill it the same way every other spawned
+      // process in this file already does.
+      if (proc.pid) {
+        killProcessTree(proc.pid);
+      } else {
+        proc.kill();
+      }
+    }, timeoutMs);
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    proc.on('error', (err) => { clearTimeout(timer); resolve({ status: null, stdout, stderr, timedOut, spawnError: err?.message || String(err) }); });
+    proc.on('exit', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr, timedOut }); });
+  });
+}
+
+/**
+ * Python interpreter to run the USER'S OWN test suite with — deliberately
+ * separate from backendPythonPath's isolated analyzer venv, which only has
+ * CODEMD's own backend deps (PyCG, FastAPI for the local server, etc.) and
+ * almost certainly lacks the project's own dependencies/pytest. Prefers the
+ * interpreter the Python extension has resolved for this workspace (the same
+ * one the user already sees in VS Code's status bar); falls back to common
+ * venv conventions, then bare `python`/`python3` on PATH.
+ */
+async function resolveWorkspaceTestPython(folder: vscode.WorkspaceFolder): Promise<string> {
+  const candidates: string[] = [];
+  try {
+    const pyExt = vscode.extensions.getExtension('ms-python.python');
+    if (pyExt) {
+      const api = pyExt.isActive ? pyExt.exports : await pyExt.activate();
+      const active = await api?.environments?.getActiveEnvironmentPath?.(folder.uri);
+      if (active?.path) {
+        candidates.push(active.path);
+      }
+      const legacy = api?.settings?.getExecutionDetails?.(folder.uri)?.execCommand;
+      if (Array.isArray(legacy) && legacy[0]) {
+        candidates.push(legacy[0]);
+      }
+    }
+  } catch {
+    // Python extension not installed, not activated cleanly, or its API
+    // shape changed — fall through to convention-based lookup below.
+  }
+  const venvCandidates = process.platform === 'win32'
+    ? [path.join(folder.uri.fsPath, '.venv', 'Scripts', 'python.exe'), path.join(folder.uri.fsPath, 'venv', 'Scripts', 'python.exe')]
+    : [path.join(folder.uri.fsPath, '.venv', 'bin', 'python'), path.join(folder.uri.fsPath, 'venv', 'bin', 'python')];
+  for (const candidate of venvCandidates) {
+    if (fs.existsSync(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  candidates.push(process.platform === 'win32' ? 'python' : 'python3');
+  // The Python extension's "active environment" is a global/workspace pick
+  // that can point at a venv from an unrelated project (e.g. the user last
+  // selected an interpreter for different work). Probe candidates in order
+  // and use the first one that actually has pytest, rather than trusting
+  // the active environment blindly and failing the whole test run when it
+  // doesn't have the project's own dependencies installed.
+  for (const candidate of candidates) {
+    try {
+      const probe = await execCommandAsync(candidate, ['-c', 'import pytest'], folder.uri.fsPath, process.env, 10000);
+      if (probe.status === 0) {
+        return candidate;
+      }
+    } catch {
+      // Unusable candidate (missing, unlaunchable) — try the next one.
+    }
+  }
+  // Nothing has pytest — return the best-guess candidate so the caller's
+  // error message still names a real, informative path.
+  return candidates[0];
+}
+
+/** Mirrors _python_module_name_for in backend/features/core/helpers.py — a
+ * repo-relative .py path to the dotted module name Python's own import
+ * statement needs. Kept as a small standalone TS copy rather than shelling
+ * out to Python for one string transform. */
+function pythonModuleNameFor(relPath: string): string {
+  let rel = relPath.replace(/\\/g, '/');
+  if (rel.toLowerCase().endsWith('.py')) {
+    rel = rel.slice(0, -3);
+  }
+  const parts = rel.split('/').filter(Boolean);
+  if (parts.length && parts[parts.length - 1] === '__init__') {
+    parts.pop();
+  }
+  return parts.length ? parts.join('.') : '__init__';
+}
+
+interface PythonCallSite {
+  file: string;
+  line: number;
+  callText: string;
+}
+
+/**
+ * Looks up exact call-site locations for a Python function's confirmed
+ * callers from the cached callgraph artifact (.codemd/python/python_callgraph.json's
+ * `ordered_calls`, which already records {caller, callee, file, line,
+ * call_text} for every real call edge). Used to hand generateCallPathTestForResult's
+ * Claude prompt precise "read this file at this line" locations instead of
+ * bare symbol names — without this, Claude has to Grep/Glob the whole repo
+ * to even find where a caller lives before it can read how the function is
+ * actually invoked, which is exactly the exploration that was burning turns
+ * and wall-clock. Returns an empty map (never throws) if the artifact is
+ * missing or unreadable — callers fall back to the old bare-name prompt.
+ */
+async function resolvePythonCallSites(
+  folder: vscode.WorkspaceFolder,
+  calleeSymbol: string,
+  callerCompactNames: string[],
+): Promise<Map<string, PythonCallSite>> {
+  const sites = new Map<string, PythonCallSite>();
+  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
+  let data: any;
+  try {
+    data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
+  } catch {
+    return sites;
+  }
+  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
+  const calleeCompact = compactSymbolName(calleeSymbol);
+  const wanted = new Set(callerCompactNames);
+  for (const call of orderedCalls) {
+    const callerCompact = compactSymbolName(String(call?.caller || ''));
+    if (!wanted.has(callerCompact) || sites.has(callerCompact)) { continue; }
+    const callee = String(call?.callee || '');
+    if (callee !== calleeSymbol && compactSymbolName(callee) !== calleeCompact) { continue; }
+    const file = String(call?.file || '');
+    const line = Number(call?.line || 0);
+    if (!file || !line) { continue; }
+    sites.set(callerCompact, { file, line, callText: String(call?.call_text || '') });
+  }
+  return sites;
+}
+
+/**
+ * Best-effort "how far does this Python def/class block extend" — used only
+ * to bound the coverage line-range check for the "Run" button, so it needs a
+ * boundary, not a perfect one. Indentation-based: the block ends at the first
+ * later non-blank line that's no more indented than the def/class line
+ * itself. A dedented comment can end it a little early; that's an acceptable
+ * imprecision for a best-effort signal, not a correctness claim.
+ */
+function estimatePythonBlockEndLine(absFilePath: string, startLine: number): number | null {
+  try {
+    const lines = fs.readFileSync(absFilePath, 'utf8').split(/\r?\n/);
+    const startIdx = startLine - 1;
+    if (startIdx < 0 || startIdx >= lines.length) {
+      return null;
+    }
+    const startIndent = lines[startIdx].match(/^[ \t]*/)?.[0].length ?? 0;
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      if (!lines[i].trim()) {
+        continue;
+      }
+      const indent = lines[i].match(/^[ \t]*/)?.[0].length ?? 0;
+      if (indent <= startIndent) {
+        return i;
+      }
+    }
+    return lines.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Same idea as estimatePythonBlockEndLine but for Go, where indentation isn't
+ * semantically meaningful — bounds the function by counting braces from the
+ * `func` line to its matching close. This is a naive character count, so a
+ * brace inside a string/rune literal or comment (e.g. `fmt.Sprint("{")`)
+ * throws the depth off — same acceptable-imprecision tradeoff as the Python
+ * version; only used to bound a best-effort coverage-range fallback when
+ * `go tool cover`'s own per-line data doesn't otherwise disambiguate.
+ */
+function estimateGoBlockEndLine(absFilePath: string, startLine: number): number | null {
+  try {
+    const lines = fs.readFileSync(absFilePath, 'utf8').split(/\r?\n/);
+    const startIdx = startLine - 1;
+    if (startIdx < 0 || startIdx >= lines.length) {
+      return null;
+    }
+    let depth = 0;
+    let started = false;
+    for (let i = startIdx; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+        if (ch === '{') { depth++; started = true; }
+        else if (ch === '}') { depth--; }
+      }
+      if (started && depth <= 0) {
+        return i + 1;
+      }
+    }
+    return lines.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses `go tool cover`'s plain-text profile format — verified against real
+ * `go test -coverprofile` output shape from Go's documented format:
+ * `mode: <mode>` header, then one line per statement block:
+ * `path/to/file.go:startLine.startCol,endLine.endCol numStatements count`.
+ * Returns how many of the profiled blocks overlapping [rangeStart, rangeEnd]
+ * in the target file were actually hit (count > 0) vs. tracked at all.
+ */
+function parseGoCoverageProfile(profileText: string, targetPathPosix: string, rangeStart: number, rangeEnd: number): { executedInRange: number; trackedInRange: number } {
+  let executedInRange = 0;
+  let trackedInRange = 0;
+  const blockRe = /^(.+\.go):(\d+)\.\d+,(\d+)\.\d+\s+\d+\s+(\d+)$/;
+  for (const line of profileText.split(/\r?\n/)) {
+    const m = line.match(blockRe);
+    if (!m) {
+      continue;
+    }
+    const fileRef = m[1].replace(/\\/g, '/');
+    // A bare endsWith would let "discover.go" match a target of "cover.go" —
+    // require the match to land on a path boundary (start of string, or
+    // right after a "/"), not just a matching character suffix.
+    if (fileRef !== targetPathPosix && !fileRef.endsWith(`/${targetPathPosix}`)) {
+      continue;
+    }
+    const blockStart = Number(m[2]);
+    const blockEnd = Number(m[3]);
+    const count = Number(m[4]);
+    if (blockEnd < rangeStart || blockStart > rangeEnd) {
+      continue;
+    }
+    trackedInRange++;
+    if (count > 0) {
+      executedInRange++;
+    }
+  }
+  return { executedInRange, trackedInRange };
+}
+
+/** Runs a full shell command LINE (as a user would type it in a terminal) —
+ * distinct from execCommandAsync, which expects a separate program+args
+ * array. Used for commands whose exact invocation (npm/npx/mvn/gradle/etc.,
+ * with project-specific flags) is discovered dynamically rather than built
+ * up as argv, e.g. the Claude-assisted test-run fallback. */
+const JS_TS_TEST_EXTS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'];
+
+function execShellLineAsync(
+  commandLine: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 120000,
+): Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean; spawnError?: string }> {
+  return execCommandOnceAsync(commandLine, [], cwd, env, timeoutMs, true);
+}
+
+/** Same brace-counting best-effort block-end estimate as estimateGoBlockEndLine,
+ * for any brace-delimited language (JS/TS/JSX/TSX, Rust) — same acceptable
+ * imprecision (a brace inside a string, template literal, regex, or comment
+ * throws the depth off); only used to bound a coverage-range check, never
+ * as a correctness claim. */
+function estimateBraceBlockEndLine(absFilePath: string, startLine: number): number | null {
+  try {
+    const lines = fs.readFileSync(absFilePath, 'utf8').split(/\r?\n/);
+    const startIdx = startLine - 1;
+    if (startIdx < 0 || startIdx >= lines.length) {
+      return null;
+    }
+    let depth = 0;
+    let started = false;
+    for (let i = startIdx; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+        if (ch === '{') { depth++; started = true; }
+        else if (ch === '}') { depth--; }
+      }
+      if (started && depth <= 0) {
+        return i + 1;
+      }
+    }
+    return lines.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses c8/nyc/Istanbul's "json" reporter output (coverage-final.json: a
+ * map of absolute-file-path -> { statementMap: {id: {start:{line}, end:{line}}},
+ * s: {id: count} }, the raw per-file coverage map — distinct from the
+ * "json-summary" reporter, which only has totals). Returns how many
+ * statements overlapping [rangeStart, rangeEnd] in the target file were
+ * actually executed (s[id] > 0) vs. tracked at all — same shape as
+ * parseGoCoverageProfile / coverage.py's executed_lines, so the extension's
+ * existing coverageConfirmed/executedInRange/trackedInRange payload and
+ * webview rendering apply unchanged.
+ */
+function parseIstanbulCoverageForRange(
+  jsonPath: string,
+  targetAbsPath: string,
+  rangeStart: number,
+  rangeEnd: number,
+): { executedInRange: number; trackedInRange: number } {
+  let executedInRange = 0;
+  let trackedInRange = 0;
+  let data: any;
+  try {
+    data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  } catch {
+    return { executedInRange, trackedInRange };
+  }
+  const wantedNorm = targetAbsPath.replace(/\\/g, '/').toLowerCase();
+  const fileEntry = Object.values(data || {}).find((entry: any) => {
+    const p = String(entry?.path || '').replace(/\\/g, '/').toLowerCase();
+    return p === wantedNorm || p.endsWith('/' + wantedNorm.split('/').pop());
+  }) as any;
+  if (!fileEntry || !fileEntry.statementMap || !fileEntry.s) {
+    return { executedInRange, trackedInRange };
+  }
+  for (const id of Object.keys(fileEntry.statementMap)) {
+    const stmt = fileEntry.statementMap[id];
+    const stmtStart = Number(stmt?.start?.line || 0);
+    const stmtEnd = Number(stmt?.end?.line || stmtStart);
+    if (!stmtStart || stmtEnd < rangeStart || stmtStart > rangeEnd) {
+      continue;
+    }
+    trackedInRange++;
+    if (Number(fileEntry.s[id] || 0) > 0) {
+      executedInRange++;
+    }
+  }
+  return { executedInRange, trackedInRange };
+}
+
+/** Cheap heuristic for "the wrapper/tooling itself never really ran" (c8/npx
+ * missing, network-blocked install, wrong package name) vs. a genuine test
+ * failure — same role as Python's "no module named X" check, just for the
+ * npm/npx side. Only used to decide whether to retry without the coverage
+ * wrapper, never to judge the actual test result. */
+function looksLikeToolingFailure(stderr: string): boolean {
+  const s = (stderr || '').toLowerCase();
+  return s.includes('npm err!')
+    || s.includes('404 not found')
+    || s.includes('enotfound')
+    || s.includes('command not found')
+    || s.includes('is not recognized as an internal or external command')
+    || s.includes("cannot find module 'c8'");
+}
+
+/** Walks upward from a Rust file's directory to find the nearest Cargo.toml
+ * — `cargo test`/`cargo llvm-cov` must run from inside a crate (or
+ * workspace) directory, which for a repo with multiple crates is not
+ * necessarily the workspace root. */
+function findCargoRootDir(absFilePath: string): string | null {
+  let dir = path.dirname(absFilePath);
+  for (let i = 0; i < 20; i++) {
+    if (fs.existsSync(path.join(dir, 'Cargo.toml'))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Parses the standard LCOV tracefile format (`cargo llvm-cov --lcov`'s
+ * output; also the common export format for many other coverage tools):
+ * one `SF:<path>` section per file, each followed by `DA:<line>,<hits>`
+ * lines until `end_of_record`. Path matching is bidirectional-suffix
+ * because whether cargo-llvm-cov emits crate-relative or absolute paths
+ * varies by version/platform, and the crate root is not always the repo
+ * root (see findCargoRootDir) — same tolerant matching as
+ * parseGoCoverageProfile, just checked both ways instead of one. Returns
+ * how many DA lines overlapping [rangeStart, rangeEnd] were actually hit
+ * (hits > 0) vs. tracked at all.
+ */
+function parseLcovForRange(lcovText: string, targetPathPosix: string, rangeStart: number, rangeEnd: number): { executedInRange: number; trackedInRange: number } {
+  let executedInRange = 0;
+  let trackedInRange = 0;
+  let inTargetFile = false;
+  for (const line of lcovText.split(/\r?\n/)) {
+    if (line.startsWith('SF:')) {
+      const fileRef = line.slice(3).trim().replace(/\\/g, '/');
+      inTargetFile = fileRef === targetPathPosix
+        || targetPathPosix.endsWith(`/${fileRef}`)
+        || fileRef.endsWith(`/${targetPathPosix}`);
+      continue;
+    }
+    if (line === 'end_of_record') {
+      inTargetFile = false;
+      continue;
+    }
+    if (!inTargetFile || !line.startsWith('DA:')) {
+      continue;
+    }
+    const m = line.match(/^DA:(\d+),(\d+)/);
+    if (!m) {
+      continue;
+    }
+    const lineNo = Number(m[1]);
+    const hits = Number(m[2]);
+    if (lineNo < rangeStart || lineNo > rangeEnd) {
+      continue;
+    }
+    trackedInRange++;
+    if (hits > 0) {
+      executedInRange++;
+    }
+  }
+  return { executedInRange, trackedInRange };
 }
 
 // Git's canonical hash for an empty tree — used as the "base" side when
@@ -3031,6 +3507,11 @@ function buildModifiedChangeCard(change: any): ChangeCard {
     // out inline, so a wide fan-out (e.g. 30 nodes) doesn't dump every name
     // in front of the user by default.
     impactedFunctions: confirmed.map(compactSymbolName),
+    // Generate-test actions live only on the "no tests found" flow below the
+    // Search/Check-tests chips, contextual to that finding and sequenced
+    // (mechanical first, Claude fallback only if that fails) — they used to
+    // also duplicate here unconditionally, which meant the same two actions
+    // could appear twice on one card via two independent code paths.
     actions: ['View diff', 'View impact graph'],
     startCollapsed: true,
     cosmeticOnly: isCosmeticOnlyChange(change),
@@ -3436,6 +3917,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   // which only exist on the running local server.
   private lastServerGraphUrl = '';
   private lastDisplayedServerGraphUrl = '';
+  // Short label shown above the graph (e.g. "Commit c3f316b — "Update release
+  // notes"") so a commit-specific subgraph doesn't look identical to the
+  // full-repo graph. Empty outside commit views.
+  private lastGraphTitle = '';
   // Guards the on-disk-graph adoption below so it only ever repairs once and
   // so nothing gets displayed (lastGraphFileUri/displayedGraphFileUri) until
   // that repair — which copies cytoscape.min.js into the workspace and
@@ -3782,6 +4267,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.hasGenerated = true;
       this.lastGraphFileUri = candidate;
       this.lastDisplayedServerGraphUrl = '';
+      this.lastGraphTitle = '';
       this.displayedGraphFileUri = candidate;
       this.lastStatus = `Showing existing ${ARTIFACT_OUTPUT_DIR}/ callgraph.`;
       statusBarItem.text = '$(check) CODEMD: graph ready';
@@ -3806,6 +4292,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           // just adopted from disk and the default navigatable graph
           // silently never appears.
           this.lastDisplayedServerGraphUrl = '';
+          this.lastGraphTitle = '';
           this.displayedGraphFileUri = candidate;
           this.lastStatus = `Showing existing ${ARTIFACT_OUTPUT_DIR}/ callgraph. Refreshing analysis in the background if needed.`;
           statusBarItem.text = '$(check) CODEMD: graph ready';
@@ -3820,10 +4307,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (result) {
       this.ownerName = String(result?.owner_name || '');
       this.repoName = String(result?.repo_name || '');
-      // Populate the Product Feature List card from the last cached
-      // analysis on disk, so it's already there on startup/reopen instead
-      // of staying empty until the next Generate/Regenerate click.
-      this.postFeatureCatalog(result);
+      // Product Feature List card population is temporarily disabled --
+      // see the featureListCard CSS rule and other postFeatureCatalog()
+      // call sites; left uncalled rather than removed.
+      // this.postFeatureCatalog(result);
     }
   }
 
@@ -3849,7 +4336,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const url = this.resolveGraphUrlForWebview(this.view.webview);
       outputChannel?.appendLine(`[postGraph] view ready, resolved url=${url ? url.slice(0, 120) : '(empty)'}`);
       if (url) {
-        this.view.webview.postMessage({ type: 'graph', url });
+        this.view.webview.postMessage({ type: 'graph', url, title: this.lastGraphTitle });
         posted = true;
       }
     } else {
@@ -3858,7 +4345,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (this.sidePanel && this.sidePanelReady) {
       const url = this.resolveGraphUrlForWebview(this.sidePanel.webview);
       if (url) {
-        this.sidePanel.webview.postMessage({ type: 'graph', url });
+        this.sidePanel.webview.postMessage({ type: 'graph', url, title: this.lastGraphTitle });
         posted = true;
       }
     }
@@ -3906,7 +4393,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
 
   private postDisplayedGraph(): void {
     if (this.lastDisplayedServerGraphUrl) {
-      this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
+      this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl), title: this.lastGraphTitle });
       return;
     }
     this.postGraph();
@@ -4006,6 +4493,23 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Same as post({ type: 'testRunResult', ... }) but also mirrors the run's
+   * raw stdout/stderr into the CODEMD output channel — the webview's own
+   * "View output" toggle is easy to miss and gets wiped on the next run, so
+   * anyone who wants to grep/scroll back through prior runs needs a durable
+   * copy somewhere outside the webview.
+   */
+  private postTestRunResult(payload: any): void {
+    const label = payload?.ok === false ? 'error' : payload?.passed === false ? 'FAILED' : payload?.passed === true ? 'passed' : 'result';
+    if (typeof payload?.output === 'string' && payload.output) {
+      outputChannel?.appendLine(`\n--- Test run (${label}) ---\n${payload.output}`);
+    } else if (payload?.error) {
+      outputChannel?.appendLine(`\n--- Test run (${label}): ${payload.error} ---`);
+    }
+    this.post({ type: 'testRunResult', ...payload });
+  }
+
   private handleMessage(message: any, source: 'view' | 'side' = 'view'): void {
     if (!message || typeof message.type !== 'string') {
       outputChannel?.appendLine(`[handleMessage] dropped malformed message from ${source}: ${JSON.stringify(message)}`);
@@ -4032,6 +4536,28 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.runResultGraph(message.result || {});
     } else if (message.type === 'findTestsForResult') {
       this.runFindTestsForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateRegressionTest') {
+      this.generateRegressionTestForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateCallPathTest') {
+      this.generateCallPathTestForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'getCriticalFunctions') {
+      this.postCriticalFunctions();
+    } else if (message.type === 'runTestFile') {
+      this.runTestFileForResult(message);
+    } else if (message.type === 'runTestViaClaude') {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        this.postTestRunResult({ requestId: String(message.requestId || ''), ok: false, error: 'No workspace folder open.' });
+      } else {
+        this.runTestViaClaudeForResult(message, folder);
+      }
+    } else if (message.type === 'fixTestFailure') {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        this.post({ type: 'fixTestResult', requestId: String(message.requestId || ''), ok: false, error: 'No workspace folder open.' });
+      } else {
+        this.fixTestFailureForResult(message, folder);
+      }
     } else if (message.type === 'checkChanges') {
       this.runChangesCheck();
     } else if (message.type === 'blastRadius') {
@@ -4096,9 +4622,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (this.hasGenerated) {
       this.post({ type: 'generated' });
     }
-    if (this.lastFeatureCatalog) {
-      this.post({ type: 'featureCatalog', data: this.lastFeatureCatalog, repoStats: this.lastFeatureCatalogRepoStats || {} });
-    }
+    // Product Feature List replay is temporarily disabled -- see the
+    // featureListCard CSS rule and other postFeatureCatalog() call sites;
+    // left uncalled rather than removed.
+    // if (this.lastFeatureCatalog) {
+    //   this.post({ type: 'featureCatalog', data: this.lastFeatureCatalog, repoStats: this.lastFeatureCatalogRepoStats || {} });
+    // }
     this.refreshMcpUsage();
   }
 
@@ -4191,6 +4720,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.displayedGraphFileUri = null;
       this.lastServerGraphUrl = '';
       this.lastDisplayedServerGraphUrl = '';
+      this.lastGraphTitle = '';
       this.localGraphReadyPromise = null;
       this.localSearchIndex = null;
       this.hasGenerated = false;
@@ -4421,6 +4951,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (quiet && fs.existsSync(graphFileUri.fsPath)) {
       this.ensureLocalGraphLoaded(folder);
       this.post({ type: 'status', text: this.lastStatus });
+      this.lastGraphTitle = '';
       this.postGraph();
       this.postSearchSuggestions(folder);
       this.post({ type: 'generated' });
@@ -4453,10 +4984,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         if (!this.displayedGraphFileUri && !this.lastDisplayedServerGraphUrl) {
           this.displayedGraphFileUri = graphFileUri;
         }
+        this.lastGraphTitle = '';
         this.postGraph();
         this.postSearchSuggestions(folder);
         this.post({ type: 'generated' });
-        this.postFeatureCatalog(result);
+        // this.postFeatureCatalog(result); // Product Feature List temporarily disabled
         this.refreshMcpUsage(folder);
         statusBarItem.text = '$(check) CODEMD: up to date';
         statusBarItem.tooltip = 'CODEMD';
@@ -4512,6 +5044,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.lastGraphFileUri = fs.existsSync(graphFileUri.fsPath) ? graphFileUri : null;
         if (!quiet || !this.lastDisplayedServerGraphUrl) {
           this.lastDisplayedServerGraphUrl = '';
+          this.lastGraphTitle = '';
         }
         if (this.lastGraphFileUri && (!quiet || !this.displayedGraphFileUri || this.lastDisplayedServerGraphUrl)) {
           this.displayedGraphFileUri = this.lastGraphFileUri;
@@ -4526,7 +5059,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         status(`Ready. Generated ${ARTIFACT_OUTPUT_DIR}/ — search below to explore the callgraph.`);
         this.postSearchSuggestions(folder);
         this.post({ type: 'generated' });
-        this.postFeatureCatalog(uploadResult);
+        // this.postFeatureCatalog(uploadResult); // Product Feature List temporarily disabled
         this.refreshMcpUsage(folder);
         statusBarItem.text = '$(check) CODEMD: up to date';
         statusBarItem.tooltip = 'CODEMD';
@@ -4578,6 +5111,28 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     return this.localSearchIndex;
   }
 
+  /**
+   * "Critical Functions" report — ranks the whole codebase's callgraph by
+   * confirmed fan-in (real caller count), not just whatever happens to be in
+   * the current diff. Deliberately a pure read of the already-generated
+   * callgraph (same cached index the search box uses) — no subprocess, no
+   * AST re-parsing, so it stays fast enough to compute on a button click
+   * rather than needing its own progress/cancel affordance.
+   */
+  private postCriticalFunctions(): void {
+    const index = this.getLocalSearchIndex();
+    if (!index) {
+      this.post({ type: 'criticalFunctionsResult', ok: false, error: 'No callgraph found yet — click Regenerate first.' });
+      return;
+    }
+    const items = index.nodes
+      .map((symbol) => ({ symbol, fanIn: index.fanIn.get(symbol) || 0, file: index.fileByNode.get(symbol) || '' }))
+      .filter((item) => item.fanIn > 0)
+      .sort((a, b) => b.fanIn - a.fanIn)
+      .slice(0, 25);
+    this.post({ type: 'criticalFunctionsResult', ok: true, items });
+  }
+
   private runLocalSearchFallback(trimmed: string, fallbackReason = ''): void {
     const index = this.getLocalSearchIndex();
     if (!index) {
@@ -4599,12 +5154,42 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'status', text: results.length ? 'Ready.' : `No local matches for "${trimmed}".` });
   }
 
+  /**
+   * A query that's a bare hex string (a commit hash/prefix) will never match
+   * a function/file/route name, so semantic search always fails on it —
+   * confusingly, since the user is usually pasting a real commit they saw in
+   * "Check Latest Commits". Resolve it against git first and, if it's really
+   * a commit, show that commit's impact report instead of searching for it.
+   */
+  private async resolveSearchQueryAsCommit(trimmed: string): Promise<string | null> {
+    if (!/^[0-9a-f]{7,40}$/i.test(trimmed)) {
+      return null;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return null;
+    }
+    try {
+      const resolved = await execGitAsync(['rev-parse', '--verify', '--quiet', `${trimmed}^{commit}`], folder.uri.fsPath);
+      const fullHash = (resolved.stdout || '').trim();
+      return resolved.status === 0 && fullHash ? fullHash : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async runSearch(query: string): Promise<void> {
     const trimmed = query.trim();
     if (!trimmed) {
       return;
     }
     outputChannel?.appendLine(`[runSearch] query="${trimmed}"`);
+    const commitHash = await this.resolveSearchQueryAsCommit(trimmed);
+    if (commitHash) {
+      outputChannel?.appendLine(`[runSearch] "${trimmed}" resolved to commit ${commitHash} — showing commit detail instead of semantic search.`);
+      await this.runCommitCheck(commitHash);
+      return;
+    }
     if (!this.ownerName || !this.repoName) {
       this.runLocalSearchFallback(trimmed, 'Repository identity was not available yet.');
       return;
@@ -4654,7 +5239,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const graphUrl = data.search_graph_url || data.graph_url || '';
       if (graphUrl) {
         this.lastDisplayedServerGraphUrl = `${this.baseUrl}${graphUrl}`;
-        this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
+        this.lastGraphTitle = '';
+        this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl), title: this.lastGraphTitle });
       }
       const resultMessage = {
         type: 'searchResult',
@@ -4756,7 +5342,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Renders a focused subgraph for a single search result — the server derives it on demand, so this lazily starts the local companion server rather than requiring it up front. */
-  private async runResultGraph(result: any): Promise<void> {
+  private async runResultGraph(result: any, title = ''): Promise<void> {
     if (!this.ownerName || !this.repoName) {
       return;
     }
@@ -4796,12 +5382,14 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const graphUrl = data.search_graph_url || data.diff_graph_url || data.file_graph_url || '';
       if (graphUrl) {
         this.lastDisplayedServerGraphUrl = `${this.baseUrl}${graphUrl}`;
-        this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl) });
+        this.lastGraphTitle = title;
+        this.post({ type: 'graph', url: withCacheBust(this.lastDisplayedServerGraphUrl), title: this.lastGraphTitle });
         this.post({ type: 'status', text: (result?.impactNodes || result?.impactFiles) ? 'Showing diff graph.' : 'Ready.' });
       } else {
         // No callgraph node matched this result — fall back to whichever
         // durable graph (local mirror or last full-repo server graph) was
         // showing before the search, instead of leaving a stale graph up.
+        this.lastGraphTitle = '';
         this.postGraph();
         this.post({
           type: 'status',
@@ -4820,6 +5408,230 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    * server's find_tests tool as a one-shot CLI (see execNodeCliAsync) so it
    * works whether or not the user has ever set up MCP.
    */
+  /**
+   * "Generate regression test" action on a Modified function card — scopes
+   * deletion-report.py's --emit-regression-tests to just this one symbol
+   * (via --regression-test-symbol) rather than regenerating for every
+   * modified function in the diff, since this is a single explicit click on
+   * one specific change, not a batch operation.
+   */
+  private async generateRegressionTestForResult(result: any, requestId: string): Promise<void> {
+    const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!symbol || !folder) {
+      this.post({ type: 'regressionTestResult', requestId, ok: false, error: 'No symbol to generate a test for.' });
+      return;
+    }
+    const diffRefs = result?.diffBase ? { base: String(result.diffBase), target: result.diffTarget ? String(result.diffTarget) : undefined } : undefined;
+    try {
+      const { report } = await this.runDeletionReportScript(folder, undefined, diffRefs, undefined, {
+        emitRegressionTestsDir: `${ARTIFACT_OUTPUT_DIR}/generated_tests`,
+        regressionTestSymbol: symbol,
+      });
+      const entry = Array.isArray(report?.modified) ? report.modified.find((m: any) => m?.symbol === symbol) : null;
+      const regressionTest = entry?.regression_test;
+      if (!regressionTest) {
+        this.post({
+          type: 'regressionTestResult', requestId, ok: true, generated: false,
+          reason: 'This function has no confirmed callers, or none pass literal-only arguments that can be safely replayed.',
+        });
+        return;
+      }
+      if (!regressionTest.path) {
+        this.post({
+          type: 'regressionTestResult', requestId, ok: true, generated: false,
+          reason: `Found ${regressionTest.skipped_non_literal_count} caller(s), but none pass only literal arguments — every real call site uses a variable or computed expression, which can't be safely replayed outside its own scope.`,
+        });
+        return;
+      }
+      this.post({
+        type: 'regressionTestResult',
+        requestId,
+        ok: true,
+        generated: true,
+        path: regressionTest.path,
+        replayedCallCount: regressionTest.replayed_call_count,
+        skippedCount: regressionTest.skipped_non_literal_count,
+        targetPath: String(result?.file || ''),
+        targetStartLine: Number(result?.line || 0) || 0,
+        targetSymbol: symbol,
+      });
+    } catch (err: any) {
+      this.post({ type: 'regressionTestResult', requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
+  /**
+   * "Call Path Test" — the Claude-assisted complement to the mechanical
+   * literal-replay generator above. That generator is reliable but narrow:
+   * dogfooding this session found it produces nothing for the exact
+   * functions most worth testing, because a high-fan-in function's real
+   * callers almost always pass variables, not literals. This asks Claude to
+   * read the target function and a real caller, then WRITE a test — no
+   * literal-argument restriction, because a human/agent's judgment replaces
+   * the "only touch what's provably safe" guardrail the mechanical path
+   * relies on.
+   *
+   * Deliberately no filesystem write access for Claude: it returns the test
+   * source as a string in the structured JSON result, and the HOST writes
+   * it to a path it chose — tighter permissions than even the test-running
+   * flow (Read/Grep/Glob only, no Bash at all), and no ambiguity afterward
+   * about where the file landed or what to run.
+   */
+  private async generateCallPathTestForResult(result: any, requestId: string): Promise<void> {
+    const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
+    const file = String(result?.file || '');
+    const startLine = Number(result?.line || 0) || 0;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!symbol || !file || !folder) {
+      this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
+      return;
+    }
+    if (!file.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Call Path Test currently only supports Python.' });
+      return;
+    }
+    const tail = symbol.split('.').pop() || symbol;
+    const moduleName = pythonModuleNameFor(file);
+    const callers: string[] = Array.isArray(result?.changeCard?.impactedFunctions)
+      ? result.changeCard.impactedFunctions.slice(0, 8)
+      : [];
+    const callSites = callers.length ? await resolvePythonCallSites(folder, symbol, callers) : new Map<string, PythonCallSite>();
+    let callerLine: string;
+    if (!callers.length) {
+      callerLine = 'No confirmed callers were found in the current callgraph — write a direct test of the function using realistic inputs based on its own signature and body.';
+    } else {
+      const described = callers.map((name) => {
+        const site = callSites.get(name);
+        return site ? `${name} (${site.file}:${site.line}${site.callText ? `, calls it as \`${site.callText}(...)\`` : ''})` : name;
+      });
+      callerLine = `Its confirmed real callers in this codebase: ${described.join(', ')}.`
+        + (callSites.size
+          // At least one caller already has an exact file:line above — no
+          // search needed for that one, just Read it directly.
+          ? ' Read ONE of the callers with an exact file:line given above — go straight to that location, no need to search for it.'
+          : ' Read at least one of these to see how it\'s actually invoked in practice.');
+    }
+    const targetLocation = startLine ? ` at line ${startLine}` : '';
+    const prompt = [
+      `Read the function "${symbol}" defined in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`).`,
+      callerLine,
+      // Verified against a real invocation (backend/scim.py's
+      // evidence_feature_candidates): without this, Claude reasonably tries
+      // to fully understand every helper function called internally too,
+      // which burned through a much larger turn budget than expected and
+      // hit --max-turns twice before producing nothing. Scoping it to just
+      // the target + one caller, treating internal calls as black boxes,
+      // converged in 9 turns with a genuinely good test.
+      'Do not read or trace any other helper functions this one calls internally — reason about them only from their names and how',
+      'their results are used, not their own implementations. Do not grep or explore the rest of the codebase beyond the one caller above.',
+      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises this function the way it is really',
+      'used — realistic constructed inputs, not placeholders — so the test would catch a real caller breaking, not just a syntax error.',
+      'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
+      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
+      `${moduleName} exactly as shown above.`,
+    ].join(' ');
+    const schema = JSON.stringify({
+      type: 'object',
+      properties: {
+        testSource: { type: 'string', description: 'Complete, self-contained pytest file source, including imports.' },
+        notes: { type: 'string', description: 'One or two sentences on what the test exercises and why.' },
+      },
+      required: ['testSource', 'notes'],
+    });
+    const claudeCommand = await resolveCommand('claude');
+    if (!claudeCommand) {
+      this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' });
+      return;
+    }
+    const startedAt = Date.now();
+    // 120s (the original value) was observed timing out on real functions in
+    // this very codebase (backend/main.py, high fan-in, large file) even
+    // though the 16-turn budget above has margin — turns aren't the binding
+    // constraint for a big file, wall-clock is. 180s gives that same turn
+    // budget room to actually finish instead of getting cut off mid-read.
+    const CALL_PATH_TEST_TIMEOUT_MS = 180000;
+    try {
+      const run = await execCommandAsync(
+        claudeCommand,
+        [
+          '-p', prompt,
+          // Verified against a real function: even with the scoped-prompt
+          // fix above, reading the target + one real caller took 9 turns.
+          // 8 (the first value tried) failed twice, burning ~$0.85 across
+          // both attempts before producing nothing — this has real margin
+          // above the observed real-world minimum, not just a guess.
+          '--max-turns', '16',
+          '--allowedTools', 'Read,Grep,Glob',
+          '--output-format', 'json',
+          '--json-schema', schema,
+        ],
+        folder.uri.fsPath,
+        { ...process.env },
+        CALL_PATH_TEST_TIMEOUT_MS,
+      );
+      const generationMs = Date.now() - startedAt;
+      // Raw CLI transcript (stdout+stderr), independent of whether it parses
+      // as JSON — surfaced to the user on every branch below (behind a "View
+      // output" toggle, same as the run-test flow) so a failure or an
+      // unexpected result can be debugged instead of trusting the one-line
+      // error summary alone.
+      const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
+      if (run.spawnError) {
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: `Couldn't launch Claude Code CLI: ${run.spawnError}` });
+        return;
+      }
+      if (run.timedOut) {
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: `Claude did not finish within ${CALL_PATH_TEST_TIMEOUT_MS / 1000}s — this can happen for a function in a large file with many callers. Safe to just try again.`, generationMs, output: rawOutput });
+        return;
+      }
+      if (run.status !== 0) {
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput });
+        return;
+      }
+      let envelope: any;
+      try {
+        envelope = JSON.parse(run.stdout);
+      } catch {
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', generationMs, output: rawOutput });
+        return;
+      }
+      const structured = envelope?.structured_output;
+      const testSource = typeof structured?.testSource === 'string' ? structured.testSource : '';
+      if (!testSource.trim()) {
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Claude did not return any test source.', generationMs, output: rawOutput });
+        return;
+      }
+      const generationCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
+      const outDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests');
+      await fs.promises.mkdir(outDir, { recursive: true });
+      const outName = `test_callpath_${tail.replace(/[^A-Za-z0-9_]/g, '_')}.py`;
+      const outPath = path.join(outDir, outName);
+      await fs.promises.writeFile(outPath, testSource, 'utf8');
+      const relPath = path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
+
+      // Write-only — running is a separate, explicit action (its own
+      // button in the webview) so a user who just wants to read the
+      // generated test isn't forced to also execute it.
+      this.post({
+        type: 'callPathTestResult',
+        requestId,
+        ok: true,
+        path: relPath,
+        targetPath: file,
+        targetStartLine: startLine,
+        targetSymbol: symbol,
+        claudeNotes: String(structured?.notes || ''),
+        generationMs,
+        generationCostUsd,
+        output: rawOutput,
+      });
+    } catch (err: any) {
+      this.post({ type: 'callPathTestResult', requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
   private async runFindTestsForResult(result: any, requestId: string): Promise<void> {
     const query = String(result?.graphSymbol || result?.fullName || result?.symbol || result?.name || '').trim();
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -4847,16 +5659,661 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       const data = JSON.parse(stdout);
+      const targetCandidate = Array.isArray(data.target_candidates) && data.target_candidates[0]
+        ? {
+            path: String(data.target_candidates[0].path || ''),
+            startLine: Number(data.target_candidates[0].start_line || 0) || 0,
+            symbol: String(data.target_candidates[0].symbol || ''),
+          }
+        : null;
       this.post({
         type: 'testGapResult',
         requestId,
         ok: true,
         query,
         matchCount: Number(data.match_count || 0),
-        matches: Array.isArray(data.matches) ? data.matches.slice(0, 5).map((m: any) => String(m.file || '')) : [],
+        target: targetCandidate,
+        matches: Array.isArray(data.matches) ? data.matches.slice(0, 5).map((m: any) => ({
+          file: String(m.file || ''),
+          testNames: Array.isArray(m.test_names) ? m.test_names.slice(0, 6).map((t: any) => ({
+            name: String(t.name || ''),
+            nodeId: String(t.nodeId || t.name || ''),
+            line: Number(t.line || 0) || 0,
+          })) : [],
+        })) : [],
       });
     } catch (err: any) {
       this.post({ type: 'testGapResult', requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
+  /**
+   * Actually runs a matched test file (or, when a specific test function was
+   * identified, just that one node id) with the user's OWN Python
+   * environment — never CODEMD's isolated analyzer venv, which doesn't have
+   * the project's own dependencies. Best-effort by construction: pass/fail is
+   * a hard fact once pytest runs, but "did it really exercise the changed
+   * lines" is only upgraded from a heuristic to a confirmed answer when
+   * coverage.py is installed and produces a report for the target file.
+   */
+  /** Dispatches to the right direct runner by file extension, or reports that
+   * this language needs the Claude-assisted path (runTestViaClaudeForResult)
+   * instead — kept as a thin router so each language's actual subprocess
+   * orchestration stays independently readable. */
+  private async runTestFileForResult(message: any): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !file) {
+      this.postTestRunResult({ requestId, ok: false, error: 'No test file to run.' });
+      return;
+    }
+    const lower = file.toLowerCase();
+    if (lower.endsWith('.py')) {
+      return this.runPythonTestFileForResult(message, folder);
+    }
+    if (lower.endsWith('.go')) {
+      return this.runGoTestFileForResult(message, folder);
+    }
+    if (lower.endsWith('.rs')) {
+      return this.runRustTestFileForResult(message, folder);
+    }
+    this.postTestRunResult({ requestId, ok: false, error: 'Running tests for this file type isn\'t supported directly yet — use "Ask Claude to run" instead.' });
+  }
+
+  private async runPythonTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const payload = await this.computePythonTestRunPayload(message, folder);
+    this.postTestRunResult({ requestId, ...payload });
+  }
+
+  /**
+   * Core of the Python "Run" path, factored out so the Call Path Test flow
+   * (generateCallPathTestForResult) can chain straight into it after writing
+   * a new file — same exact logic the already-tested button uses, not a
+   * second reimplementation that could quietly drift from it. Returns the
+   * result payload instead of posting it; callers decide how to present it.
+   */
+  private async computePythonTestRunPayload(message: any, folder: vscode.WorkspaceFolder): Promise<any> {
+    const file = String(message?.file || '');
+    const nodeId = String(message?.nodeId || '');
+    const targetPath = String(message?.targetPath || '');
+    const targetStartLine = Number(message?.targetStartLine || 0);
+    const targetSymbol = String(message?.targetSymbol || '');
+    const pythonPath = await resolveWorkspaceTestPython(folder);
+    const target = nodeId ? `${file}::${nodeId}` : file;
+    const env = { ...process.env };
+    const tmpBase = path.join(os.tmpdir(), `codemd-testrun-${crypto.randomBytes(6).toString('hex')}`);
+    const dataFile = `${tmpBase}.coverage`;
+    const jsonFile = `${tmpBase}.json`;
+    let output = '';
+    try {
+      const covRun = await execCommandAsync(
+        pythonPath,
+        ['-m', 'coverage', 'run', '--branch', `--data-file=${dataFile}`, '-m', 'pytest', target, '-q'],
+        folder.uri.fsPath,
+        env,
+      );
+      output = `${covRun.stdout}\n${covRun.stderr}`.trim();
+      if (covRun.spawnError) {
+        return { ok: false, error: `Couldn't launch "${pythonPath}": ${covRun.spawnError}` };
+      }
+      if (covRun.timedOut) {
+        return { ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) };
+      }
+      const stderrLower = covRun.stderr.toLowerCase();
+      const noCoverage = stderrLower.includes('no module named coverage') || stderrLower.includes('no module named \'coverage\'');
+      const noPytest = stderrLower.includes('no module named pytest') || stderrLower.includes('no module named \'pytest\'');
+      if (noPytest) {
+        return { ok: false, error: `pytest isn't installed in this Python environment (${pythonPath}).`, output: output.slice(-4000) };
+      }
+      if (noCoverage) {
+        // Fall back to a plain pytest run (still a real pass/fail — just no
+        // confirmed-execution data for the changed lines).
+        const plainRun = await execCommandAsync(pythonPath, ['-m', 'pytest', target, '-q'], folder.uri.fsPath, env);
+        output = `${plainRun.stdout}\n${plainRun.stderr}`.trim();
+        if (plainRun.timedOut) {
+          return { ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) };
+        }
+        if (plainRun.stderr.toLowerCase().includes('no module named pytest') || plainRun.stderr.toLowerCase().includes('no module named \'pytest\'')) {
+          return { ok: false, error: `Neither coverage.py nor pytest is installed in this Python environment (${pythonPath}).`, output: output.slice(-4000) };
+        }
+        if (plainRun.status === 4) {
+          return {
+            ok: false,
+            error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.',
+            environmentIssue: true,
+            output: output.slice(-4000),
+          };
+        }
+        const passed = plainRun.status === 0;
+        const ranAtAll = plainRun.status === 0 || plainRun.status === 1;
+        if (!ranAtAll) {
+          return { ok: false, error: 'pytest could not collect/run this test — see output.', output: output.slice(-4000) };
+        }
+        return {
+          ok: true, passed, coverageConfirmed: false,
+          reason: 'coverage.py is not installed in this Python environment.', output: output.slice(-4000),
+        };
+      }
+      if (covRun.status === 4) {
+        return {
+          ok: false,
+          error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.',
+          environmentIssue: true,
+          output: output.slice(-4000),
+        };
+      }
+      const ranAtAll = covRun.status === 0 || covRun.status === 1;
+      if (!ranAtAll) {
+        return { ok: false, error: 'pytest could not collect/run this test — see output.', output: output.slice(-4000) };
+      }
+      const passed = covRun.status === 0;
+      if (!targetPath || !targetStartLine) {
+        return { ok: true, passed, coverageConfirmed: false, reason: 'No target line range available to check.', output: output.slice(-4000) };
+      }
+      const absTargetPath = path.join(folder.uri.fsPath, targetPath);
+      const jsonRun = await execCommandAsync(
+        pythonPath,
+        ['-m', 'coverage', 'json', `--data-file=${dataFile}`, '-o', jsonFile, `--include=${absTargetPath}`],
+        folder.uri.fsPath,
+        env,
+        30000,
+      );
+      if (jsonRun.spawnError || jsonRun.status !== 0 || !fs.existsSync(jsonFile)) {
+        return { ok: true, passed, coverageConfirmed: false, reason: 'Could not read coverage data for this file.', output: output.slice(-4000) };
+      }
+      const report = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+      const fileEntries = Object.entries(report?.files || {});
+      const normalizedTargetPath = targetPath.replace(/\\/g, '/');
+      const matchEntry = fileEntries.find(([key]) => {
+        const normalizedKey = key.replace(/\\/g, '/');
+        // Boundary-aware suffix match — a bare endsWith would let
+        // "no_coverage.py" match a target of "coverage.py".
+        return normalizedKey === normalizedTargetPath || normalizedKey.endsWith(`/${normalizedTargetPath}`);
+      }) || fileEntries[0];
+      if (!matchEntry) {
+        return { ok: true, passed, coverageConfirmed: false, reason: 'Coverage report had no data for this file (it may not have been imported during the test).', output: output.slice(-4000) };
+      }
+      const entry: any = matchEntry[1];
+      // coverage.py's own per-function breakdown (functions.<name>.executed_lines)
+      // is ground truth from the tool itself — prefer it over guessing the
+      // function's line range by indentation. Confirmed against a real
+      // coverage.py 7.x JSON report before relying on this: the key is the
+      // simple function name (or Class.method for methods), not the fully
+      // qualified symbol CODEMD uses internally.
+      const functionsMap = entry?.functions && typeof entry.functions === 'object' ? entry.functions : null;
+      const tail = targetSymbol.split(/[.:]/).filter(Boolean).slice(-2);
+      const funcEntry = functionsMap
+        ? (functionsMap[targetSymbol] || functionsMap[tail.join('.')] || functionsMap[tail[tail.length - 1] || ''])
+        : null;
+      let executedInRange: number;
+      let trackedInRange: number;
+      if (funcEntry) {
+        const fnExecuted: number[] = Array.isArray(funcEntry.executed_lines) ? funcEntry.executed_lines : [];
+        const fnMissing: number[] = Array.isArray(funcEntry.missing_lines) ? funcEntry.missing_lines : [];
+        executedInRange = fnExecuted.length;
+        trackedInRange = fnExecuted.length + fnMissing.length;
+      } else {
+        const executedLines: number[] = Array.isArray(entry?.executed_lines) ? entry.executed_lines : [];
+        const missingLines: number[] = Array.isArray(entry?.missing_lines) ? entry.missing_lines : [];
+        const rangeEnd = estimatePythonBlockEndLine(absTargetPath, targetStartLine) || targetStartLine;
+        const inRange = (n: number) => n >= targetStartLine && n <= rangeEnd;
+        executedInRange = executedLines.filter(inRange).length;
+        trackedInRange = executedInRange + missingLines.filter(inRange).length;
+      }
+      return {
+        ok: true,
+        passed,
+        coverageConfirmed: true,
+        executed: executedInRange > 0,
+        executedInRange,
+        trackedInRange,
+        output: output.slice(-4000),
+      };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err), output: output.slice(-4000) };
+    } finally {
+      for (const f of [dataFile, jsonFile]) {
+        fs.promises.unlink(f).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Go's toolchain is simpler than Python's here: `go` itself is the only
+   * external dependency (no separate "is coverage installed" question —
+   * -coverprofile is a built-in flag of `go test`), and there's exactly one
+   * test framework since Go doesn't fragment the way JS does. `go test`
+   * operates per-package (a directory), not per-file, so the target is
+   * `<packageDir> -run '^Name$'`, not a file::name node id.
+   */
+  private async runGoTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '').replace(/\\/g, '/');
+    const nodeId = String(message?.nodeId || '');
+    const targetPath = String(message?.targetPath || '').replace(/\\/g, '/');
+    const targetStartLine = Number(message?.targetStartLine || 0);
+    const pkgDir = path.posix.dirname(file);
+    const pkgArg = pkgDir === '.' ? '.' : `./${pkgDir}`;
+    const env = { ...process.env };
+    const profilePath = path.join(os.tmpdir(), `codemd-gocover-${crypto.randomBytes(6).toString('hex')}.out`);
+    let output = '';
+    try {
+      const args = ['test'];
+      if (nodeId) {
+        args.push('-run', `^${nodeId}$`);
+      }
+      args.push(`-coverprofile=${profilePath}`, pkgArg, '-v');
+      const run = await execCommandAsync('go', args, folder.uri.fsPath, env);
+      output = `${run.stdout}\n${run.stderr}`.trim();
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "go": ${run.spawnError}. Is the Go toolchain installed and on PATH?` });
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) });
+        return;
+      }
+      const combined = output.toLowerCase();
+      const couldNotRun = combined.includes('[build failed]')
+        || combined.includes('go.mod file not found')
+        || combined.includes('no go files in')
+        || combined.includes('no test files');
+      if (couldNotRun) {
+        this.postTestRunResult({ requestId, ok: false, error: 'go test could not build/collect this test — see output.', output: output.slice(-4000) });
+        return;
+      }
+      const passed = run.status === 0;
+      if (!targetPath || !targetStartLine || !fs.existsSync(profilePath)) {
+        this.postTestRunResult({
+          requestId, ok: true, passed, coverageConfirmed: false,
+          reason: !fs.existsSync(profilePath) ? 'No coverage profile was produced.' : 'No target line range available to check.',
+          output: output.slice(-4000),
+        });
+        return;
+      }
+      const absTargetPath = path.join(folder.uri.fsPath, targetPath);
+      const profileText = fs.readFileSync(profilePath, 'utf8');
+      const rangeEnd = estimateGoBlockEndLine(absTargetPath, targetStartLine) || targetStartLine;
+      const { executedInRange, trackedInRange } = parseGoCoverageProfile(profileText, targetPath, targetStartLine, rangeEnd);
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed,
+        coverageConfirmed: trackedInRange > 0,
+        executed: executedInRange > 0,
+        executedInRange,
+        trackedInRange,
+        reason: trackedInRange === 0 ? 'Coverage profile had no data for this line range.' : undefined,
+        output: output.slice(-4000),
+      });
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) });
+    } finally {
+      fs.promises.unlink(profilePath).catch(() => {});
+    }
+  }
+
+  /**
+   * Rust's third direct-run tier alongside Python/Go — `cargo test`'s
+   * conventions are as single-toolchain and convention-locked as Go's (no
+   * framework fragmentation to guess through), so it needs no Claude-
+   * assisted command discovery at all. Tries `cargo llvm-cov --lcov` first
+   * for real per-line coverage; falls back to plain `cargo test` (pass/fail
+   * only) if cargo-llvm-cov isn't installed — the same graceful degrade as
+   * Python's coverage.py-missing fallback. NOTE: this could not be
+   * empirically verified against a real Rust toolchain in this session (no
+   * rustc/cargo were available in this dev environment) — the LCOV parsing
+   * itself follows the standard, well-documented tracefile format, but the
+   * exact `cargo llvm-cov` invocation and its path conventions should be
+   * checked against a real crate before relying on this in production.
+   */
+  private async runRustTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '').replace(/\\/g, '/');
+    const nodeId = String(message?.nodeId || '');
+    const targetPath = String(message?.targetPath || '').replace(/\\/g, '/');
+    const targetStartLine = Number(message?.targetStartLine || 0);
+    const absFile = path.join(folder.uri.fsPath, file);
+    const crateRoot = findCargoRootDir(absFile) || folder.uri.fsPath;
+    const env = { ...process.env };
+    const testFilterArgs = nodeId ? [nodeId] : [];
+    const lcovPath = path.join(os.tmpdir(), `codemd-llvmcov-${crypto.randomBytes(6).toString('hex')}.lcov`);
+    let output = '';
+    let usedCoverage = true;
+    try {
+      let run = await execCommandAsync(
+        'cargo',
+        ['llvm-cov', '--lcov', '--output-path', lcovPath, '--', ...testFilterArgs],
+        crateRoot,
+        env,
+        150000,
+      );
+      if (run.spawnError || /no such subcommand|error: no such command/i.test(run.stderr)) {
+        // cargo-llvm-cov isn't installed — fall back to a plain, uninstrumented
+        // test run, same graceful degrade as Python's coverage.py-missing path.
+        usedCoverage = false;
+        run = await execCommandAsync('cargo', ['test', ...testFilterArgs], crateRoot, env, 150000);
+      }
+      output = `${run.stdout}\n${run.stderr}`.trim();
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "cargo": ${run.spawnError}. Is the Rust toolchain installed and on PATH?` });
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 150s.', output: output.slice(-4000) });
+        return;
+      }
+      const combined = output.toLowerCase();
+      const couldNotRun = combined.includes('error: could not compile')
+        || combined.includes('error[e0')
+        || combined.includes('no tests to run')
+        || combined.includes('manifest path') && combined.includes('does not exist');
+      if (couldNotRun) {
+        this.postTestRunResult({ requestId, ok: false, error: 'cargo could not build/collect this test — see output.', output: output.slice(-4000) });
+        return;
+      }
+      const passed = run.status === 0;
+      if (!usedCoverage || !targetPath || !targetStartLine || !fs.existsSync(lcovPath)) {
+        this.postTestRunResult({
+          requestId, ok: true, passed, coverageConfirmed: false,
+          reason: !usedCoverage
+            ? 'cargo-llvm-cov is not installed in this environment (cargo install cargo-llvm-cov).'
+            : (!fs.existsSync(lcovPath) ? 'No coverage report was produced.' : 'No target line range available to check.'),
+          output: output.slice(-4000),
+        });
+        return;
+      }
+      const lcovText = fs.readFileSync(lcovPath, 'utf8');
+      const rangeEnd = estimateBraceBlockEndLine(absFile, targetStartLine) || targetStartLine;
+      const { executedInRange, trackedInRange } = parseLcovForRange(lcovText, targetPath, targetStartLine, rangeEnd);
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed,
+        coverageConfirmed: trackedInRange > 0,
+        executed: executedInRange > 0,
+        executedInRange,
+        trackedInRange,
+        reason: trackedInRange === 0 ? 'Coverage report had no data for this line range.' : undefined,
+        output: output.slice(-4000),
+      });
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) });
+    } finally {
+      fs.promises.unlink(lcovPath).catch(() => {});
+    }
+  }
+
+  /**
+   * For languages CODEMD can't confidently construct a test-run command for
+   * itself (JS/TS, Java, etc.) — split into two phases so Claude is only
+   * ever trusted for the one thing that genuinely needs project-specific
+   * judgment, never for the result itself:
+   *   1. Ask Claude (read-only — Read/Grep/Glob, no Bash) to find the exact
+   *      command, by inspecting package.json/Makefile/build files.
+   *   2. Run that command ourselves via execShellLineAsync and read its real
+   *      exit code — the same trust model as the direct Python/Go runners,
+   *      not Claude's own self-report of whether "it passed".
+   * For JS/TS specifically, step 2 wraps the command with `c8` (works
+   * against Jest/Vitest/mocha/`node --test` alike, no per-framework
+   * special-casing needed) to get real Istanbul coverage data, upgrading
+   * this from a permanently-separate "reported by Claude" tier into the
+   * same coverageConfirmed tier Python/Go already use — command discovery
+   * still came from Claude, which the UI notes, but pass/fail and coverage
+   * are both measured directly, not asserted by an LLM reading its own output.
+   */
+  private async runTestViaClaudeForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const nodeId = String(message?.nodeId || '');
+    const targetPath = String(message?.targetPath || '');
+    const targetStartLine = Number(message?.targetStartLine || 0);
+    const testDescription = nodeId ? `the test "${nodeId}" in "${file}"` : `the test file "${file}"`;
+    const discoveryPrompt = [
+      `Determine the exact single command needed to run ${testDescription} using this project's own test tooling`,
+      '(check package.json scripts, a Makefile, or other build files as needed to find the right test runner and invocation',
+      'syntax, and how to run just this one test if the tooling supports it). Do not run any commands yourself — only inspect',
+      'files. Respond only in the given JSON schema.',
+    ].join(' ');
+    const discoverySchema = JSON.stringify({
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'A single shell command line that runs the test, exactly as you would type it in a terminal.' },
+        cwd: { type: 'string', description: 'Repo-relative directory to run the command from; empty string for the repo root.' },
+        notes: { type: 'string', description: 'One sentence: why this command/tooling was chosen.' },
+      },
+      required: ['command', 'cwd', 'notes'],
+    });
+    // Reuse the same resolution already relied on for "Open Claude Code
+    // /mcp" — a bare 'claude' spawn misses the VS Code extension's own
+    // bundled native-binary/claude.exe, which `where.exe claude` (and a
+    // plain PATH-based spawn) won't find unless the standalone CLI is also
+    // separately installed.
+    const claudeCommand = await resolveCommand('claude');
+    if (!claudeCommand) {
+      this.postTestRunResult({ requestId, ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' });
+      return;
+    }
+    let command = '';
+    let cwdRel = '';
+    let discoveryCostUsd: number | undefined;
+    try {
+      const discover = await execCommandAsync(
+        claudeCommand,
+        [
+          '-p', discoveryPrompt,
+          '--max-turns', '6',
+          '--allowedTools', 'Read,Grep,Glob',
+          '--output-format', 'json',
+          '--json-schema', discoverySchema,
+        ],
+        folder.uri.fsPath,
+        { ...process.env },
+        90000,
+      );
+      const discoveryOutput = `${discover.stdout}\n${discover.stderr}`.trim().slice(-4000);
+      if (discover.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "claude": ${discover.spawnError}. Is Claude Code CLI installed and on PATH?` });
+        return;
+      }
+      if (discover.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Claude did not finish finding a test command within 90s.', output: discoveryOutput });
+        return;
+      }
+      if (discover.status !== 0) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Claude Code CLI exited with an error — see output. It may not be logged in (run `claude` and sign in, then try again).', output: discoveryOutput });
+        return;
+      }
+      let envelope: any;
+      try {
+        envelope = JSON.parse(discover.stdout);
+      } catch {
+        this.postTestRunResult({ requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', output: discoveryOutput });
+        return;
+      }
+      const structured = envelope?.structured_output;
+      command = typeof structured?.command === 'string' ? structured.command.trim() : '';
+      cwdRel = typeof structured?.cwd === 'string' ? structured.cwd.trim() : '';
+      discoveryCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
+      if (!command) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Claude could not determine a test command for this project.', output: discoveryOutput });
+        return;
+      }
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) });
+      return;
+    }
+
+    // Phase 2 — deterministic: we run the discovered command ourselves and
+    // read its real exit code, exactly like the direct Python/Go runners.
+    const runCwd = path.join(folder.uri.fsPath, cwdRel || '');
+    const env = { ...process.env };
+    const isJsTs = JS_TS_TEST_EXTS.some((ext) => file.toLowerCase().endsWith(ext));
+    const reportDir = path.join(os.tmpdir(), `codemd-c8-${crypto.randomBytes(6).toString('hex')}`);
+    let usedCoverageWrap = isJsTs;
+    const buildCommand = (wrapped: boolean) => (wrapped
+      ? `npx --yes c8 --reporter=json --report-dir="${reportDir}" -- ${command}`
+      : command);
+    const claudeNote = ` (command found by Claude: \`${command}\`)`
+      + (typeof discoveryCostUsd === 'number' ? ` · $${discoveryCostUsd.toFixed(4)}` : '');
+    try {
+      let run = await execShellLineAsync(buildCommand(usedCoverageWrap), runCwd, env, 120000);
+      if (usedCoverageWrap && (run.spawnError || looksLikeToolingFailure(run.stderr))) {
+        // c8/npx itself couldn't run — fall back to the plain discovered
+        // command, same graceful degrade as coverage.py missing for Python.
+        usedCoverageWrap = false;
+        run = await execShellLineAsync(buildCommand(false), runCwd, env, 120000);
+      }
+      const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch the command Claude found: ${run.spawnError}`, output: rawOutput + claudeNote });
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 120s.', output: rawOutput + claudeNote });
+        return;
+      }
+      const passed = run.status === 0;
+      if (!usedCoverageWrap || !targetPath || !targetStartLine) {
+        this.postTestRunResult({
+          requestId, ok: true, passed, viaClaude: true, coverageConfirmed: false,
+          reason: (!isJsTs ? 'No coverage tool wired up for this file type yet.' : 'No target line range available to check.'),
+          output: rawOutput + claudeNote,
+        });
+        return;
+      }
+      const coverageJsonPath = path.join(reportDir, 'coverage-final.json');
+      if (!fs.existsSync(coverageJsonPath)) {
+        this.postTestRunResult({
+          requestId, ok: true, passed, viaClaude: true, coverageConfirmed: false,
+          reason: 'No coverage report was produced.', output: rawOutput + claudeNote,
+        });
+        return;
+      }
+      const absTargetPath = path.join(folder.uri.fsPath, targetPath);
+      const rangeEnd = estimateBraceBlockEndLine(absTargetPath, targetStartLine) || targetStartLine;
+      const { executedInRange, trackedInRange } = parseIstanbulCoverageForRange(coverageJsonPath, absTargetPath, targetStartLine, rangeEnd);
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed,
+        viaClaude: true,
+        coverageConfirmed: trackedInRange > 0,
+        executed: executedInRange > 0,
+        executedInRange,
+        trackedInRange,
+        reason: trackedInRange === 0 ? 'Coverage report had no data for this line range.' : undefined,
+        output: rawOutput + claudeNote,
+      });
+      fs.promises.rm(reportDir, { recursive: true, force: true }).catch(() => {});
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
+  /**
+   * The "🔧 Fix with Claude" button — deliberately the only path in this
+   * whole test-run feature that's allowed to Edit files, and deliberately
+   * never triggered except by that explicit click (never after a run
+   * automatically, never as a fallback). Claude reruns the failing test
+   * itself to see the real failure, decides whether the bug is in the test's
+   * own assumptions or in the code under test, fixes whichever it is, and
+   * reruns again to verify before reporting back — mirroring the same
+   * fail → diagnose → fix → rerun loop a person would do by hand.
+   */
+  private async fixTestFailureForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const nodeId = String(message?.nodeId || '');
+    const targetPath = String(message?.targetPath || '');
+    const targetStartLine = Number(message?.targetStartLine || 0);
+    const targetSymbol = String(message?.targetSymbol || '');
+    const testDescription = nodeId ? `the test "${nodeId}" in "${file}"` : `the test file "${file}"`;
+    const targetDescription = targetSymbol && targetPath
+      ? `"${targetSymbol}" in "${targetPath}"${targetStartLine ? ` near line ${targetStartLine}` : ''}`
+      : 'the function this test is checking';
+    const prompt = [
+      `${testDescription} is currently failing (or could not even run). Determine the correct command to run it yourself`,
+      '(check package.json, a Makefile, or other build files if needed) and run it once to see the real failure — do not trust',
+      'any prior description of the failure, see it yourself first.',
+      `Then decide whether the bug is in the test itself (wrong assumptions about ${targetDescription}, wrong setup/mocking,`,
+      'stale expectations) or in the code under test, and make the smallest correct fix to whichever one is actually wrong.',
+      'Do not fix unrelated code, do not refactor, do not add features. After fixing, rerun the same test yourself to verify',
+      'it now passes before reporting back. If you cannot make it pass, say so honestly rather than reporting success.',
+      'Respond only in the given JSON schema.',
+    ].join(' ');
+    const schema = JSON.stringify({
+      type: 'object',
+      properties: {
+        filesChanged: { type: 'array', items: { type: 'string' }, description: 'Repo-relative paths of every file you edited, empty if none.' },
+        passedAfterFix: { type: ['boolean', 'null'], description: 'Whether your own rerun after fixing passed; null if you could not rerun to check.' },
+        summary: { type: 'string', description: 'One or two sentences: what was actually wrong and what you changed (or why you could not fix it).' },
+      },
+      required: ['filesChanged', 'passedAfterFix', 'summary'],
+    });
+    const claudeCommand = await resolveCommand('claude');
+    if (!claudeCommand) {
+      this.post({ type: 'fixTestResult', requestId, ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' });
+      return;
+    }
+    const FIX_TIMEOUT_MS = 240000;
+    let output = '';
+    try {
+      const run = await execCommandAsync(
+        claudeCommand,
+        [
+          '-p', prompt,
+          '--max-turns', '24',
+          '--allowedTools', 'Read,Grep,Glob,Edit,Bash(python*),Bash(pytest*),Bash(go test*),Bash(npm *),Bash(npx *),Bash(yarn *),Bash(pnpm *),Bash(node *),Bash(mvn *),Bash(gradle *),Bash(cargo test*)',
+          '--output-format', 'json',
+          '--json-schema', schema,
+        ],
+        folder.uri.fsPath,
+        { ...process.env },
+        FIX_TIMEOUT_MS,
+      );
+      output = `${run.stdout}\n${run.stderr}`.trim();
+      const rawOutput = output.slice(-4000);
+      if (run.spawnError) {
+        this.post({ type: 'fixTestResult', requestId, ok: false, error: `Couldn't launch "claude": ${run.spawnError}`, output: rawOutput });
+        return;
+      }
+      if (run.timedOut) {
+        this.post({ type: 'fixTestResult', requestId, ok: false, error: `Claude did not finish within ${FIX_TIMEOUT_MS / 1000}s.`, output: rawOutput });
+        return;
+      }
+      if (run.status !== 0) {
+        this.post({ type: 'fixTestResult', requestId, ok: false, error: 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', output: rawOutput });
+        return;
+      }
+      let envelope: any;
+      try {
+        envelope = JSON.parse(run.stdout);
+      } catch {
+        this.post({ type: 'fixTestResult', requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', output: rawOutput });
+        return;
+      }
+      const structured = envelope?.structured_output;
+      if (!structured || typeof structured.summary !== 'string') {
+        this.post({ type: 'fixTestResult', requestId, ok: false, error: 'Claude Code CLI did not return the expected structured result.', output: rawOutput });
+        return;
+      }
+      const filesChanged = Array.isArray(structured.filesChanged) ? structured.filesChanged.map((f: any) => String(f)) : [];
+      outputChannel?.appendLine(`\n--- Fix with Claude (${testDescription}) ---\n${rawOutput}`);
+      this.post({
+        type: 'fixTestResult',
+        requestId,
+        ok: true,
+        filesChanged,
+        passedAfterFix: typeof structured.passedAfterFix === 'boolean' ? structured.passedAfterFix : null,
+        summary: structured.summary,
+        costUsd: typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined,
+        output: rawOutput,
+      });
+    } catch (err: any) {
+      this.post({ type: 'fixTestResult', requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) });
     }
   }
 
@@ -4891,7 +6348,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     onlyFiles?: string[],
     refs?: { base: string; target?: string },
     onProgress?: (message: string) => void,
-    options?: { maxImpactSymbols?: number },
+    options?: { maxImpactSymbols?: number; emitRegressionTestsDir?: string; regressionTestSymbol?: string },
   ): Promise<{ report: any; base: string }> {
     const backendDir = await resolveBackendDir(this.context, true);
     const scriptPath = path.join(this.context.extensionUri.fsPath, 'scripts', 'deletion-report.py');
@@ -4903,6 +6360,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
     if (options?.maxImpactSymbols && options.maxImpactSymbols > 0) {
       args.push('--max-impact-symbols', String(options.maxImpactSymbols));
+    }
+    if (options?.emitRegressionTestsDir) {
+      args.push('--emit-regression-tests', options.emitRegressionTestsDir);
+      if (options.regressionTestSymbol) {
+        args.push('--regression-test-symbol', options.regressionTestSymbol);
+      }
     }
     for (const file of onlyFiles || []) {
       args.push('--only', file);
@@ -5390,7 +6853,8 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
 
       const results = this.buildChangeResults(report, folder, { changeTimeOverride: commitTime, diffRefs });
-      const header = `Commit ${hash}${subject ? ` — "${subject}"` : ''}:`;
+      const commitTitle = `Commit ${hash}${subject ? ` — "${subject}"` : ''}`;
+      const header = `${commitTitle}:`;
       const answer = results.length
         ? `${header}\n${buildChangesAnswer(report)}`
         : `${header} no impact detected in supported source files.`;
@@ -5415,7 +6879,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         if (highestImpact.file) {
           void this.viewDiff(highestImpact.file, diffRefs);
         }
-        void this.runResultGraph(highestImpact);
+        void this.runResultGraph(highestImpact, commitTitle);
       } else {
         // No result has a graphSymbol (e.g. a commit that only touches
         // docs/config/unsupported-language files) — pickHighestImpactGraphable
@@ -5584,6 +7048,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
   body.graph-expanded #chatPane { display: none; }
   #graphToolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
   #graphToolbar button { padding: 3px 8px; font-size: 11px; opacity: 0.92; }
+  #graphTitleBar { display: none; position: absolute; top: 34px; left: 8px; right: 8px; z-index: 5; padding: 3px 8px; font-size: 11px; font-weight: 600; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.95; }
+  #graphTitleBar.is-visible { display: block; }
   #mcpUsageCard { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; column-gap: 12px; margin: 8px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
   #mcpUsageContent { min-width: 0; }
   #mcpUsageHeadline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -5618,6 +7084,9 @@ function getHtml(host: string, port: number, cspSource: string): string {
   body.has-results #mcpUsageSubtitle,
   body.has-results #mcpSetupStatus,
   body.has-results #mcpUsageByClient { display: none; }
+  /* Product Feature List is temporarily disabled -- see postFeatureCatalog()
+     call sites below, left uncalled rather than removed. The display:none
+     override is appended last so it always wins over the rules that follow. */
   #featureListCard { margin: 8px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
   #featureListCard.is-empty #featureListDetails { display: none; }
   #featureListHeadline { display: flex; align-items: center; gap: 8px; }
@@ -5627,6 +7096,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   #featureListCard.is-collapsed #featureListDetails { display: none; }
   #featureListCard.is-collapsed:not(.is-empty) #featureListNote { display: none; }
   body.has-results #featureListCard { margin: 6px 8px; padding: 6px 10px; }
+  #featureListCard { display: none !important; }
   .featureRow { border-top: 1px solid var(--vscode-panel-border); padding: 4px 0; }
   .featureRow:first-child { border-top: none; }
   .featureRowHead { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -5636,6 +7106,17 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .featureEvidenceItem { padding: 1px 0; opacity: 0.9; }
   .featureEvidenceLink { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .featureEvidenceLink:hover { color: var(--vscode-textLink-activeForeground); }
+  #criticalFunctionsCard { margin: 6px 8px; padding: 6px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  #criticalFunctionsHeadline { display: flex; align-items: center; gap: 8px; }
+  #criticalFunctionsLabel { font-size: 13px; font-weight: 600; }
+  #criticalFunctionsDetails { margin: 6px 0 0; max-height: 220px; overflow-y: auto; scrollbar-gutter: stable; font-size: 11px; }
+  #criticalFunctionsCard.is-collapsed #criticalFunctionsDetails { display: none; }
+  .criticalFnRow { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; border-top: 1px solid var(--vscode-panel-border); cursor: pointer; }
+  .criticalFnRow:first-child { border-top: none; }
+  .criticalFnRow:hover { background: var(--vscode-list-hoverBackground); }
+  .criticalFnCount { flex: 0 0 auto; font-weight: 700; opacity: 0.85; min-width: 3.2em; }
+  .criticalFnName { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
+  .criticalFnFile { flex: 0 0 auto; opacity: 0.6; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
   .msg .query { font-weight: 600; margin-bottom: 4px; }
@@ -5645,6 +7126,33 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .changeSymbolButton { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .changeSymbolButton:hover { color: var(--vscode-textLink-activeForeground); }
   .msg .error { color: var(--vscode-errorForeground); font-size: 12px; }
+  .testMatchList { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; font-size: 11px; }
+  .testMatchGroup { display: flex; flex-direction: column; gap: 2px; }
+  .testNoMatchNote { opacity: 0.85; font-style: italic; }
+  .regressionTestNote { margin-top: 4px; font-size: 11px; opacity: 0.9; }
+  .callPathTestNote { margin-top: 4px; font-size: 11px; opacity: 0.9; }
+  .callPathTestClaudeNotes { margin-top: 2px; padding-left: 10px; opacity: 0.75; font-style: italic; }
+  .testMatchFile { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; opacity: 0.82; word-break: break-all; }
+  .testMatchFile:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
+  .testRunRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 10px; }
+  .testMatchName { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; opacity: 0.85; font-family: var(--vscode-editor-font-family, monospace); }
+  .testMatchName:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
+  .testRunBtn { padding: 3px 11px; font-size: 11.5px; font-weight: 600; line-height: 1.5; border: none; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
+  .testRunBtn:hover { background: var(--vscode-button-hoverBackground); }
+  .testRunBtn:disabled { opacity: 0.6; cursor: default; }
+  .testRunBtnClaude { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .testRunBtnClaude:hover { filter: brightness(1.12); }
+  .testFixBtn { padding: 3px 11px; font-size: 11.5px; font-weight: 600; line-height: 1.5; border: none; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
+  .testFixBtn:hover { background: var(--vscode-button-hoverBackground); }
+  .testFixBtn:disabled { opacity: 0.6; cursor: default; }
+  .testFixNote { flex-basis: 100%; margin-top: 3px; font-size: 11px; opacity: 0.9; }
+  .testRunResultLine { font-size: 11px; }
+  .testRunConfirmedGood { color: var(--vscode-terminal-ansiGreen, #3fb950); }
+  .testRunConfirmedBad { color: var(--vscode-errorForeground); }
+  .testRunBestEffort { color: var(--vscode-editorWarning-foreground); }
+  .testRunUnknown { opacity: 0.75; }
+  .testRunOutputToggle { padding: 1px 6px; font-size: 10px; opacity: 0.85; }
+  .testRunOutput { width: 100%; max-height: 180px; overflow: auto; margin: 2px 0 0; padding: 6px 8px; font-size: 10.5px; white-space: pre-wrap; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border); border-radius: 3px; }
   .resultToolbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0 0 8px; font-size: 11px; opacity: 0.9; }
   .resultToolbar label { opacity: 0.8; }
   .resultToolbar select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 2px 6px; font-size: 11px; }
@@ -5686,6 +7194,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .actionChip { border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 1px 5px; opacity: 0.88; }
   .actionChipClickable { cursor: pointer; }
   .actionChipClickable:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  /* The entry points into the create-test/run-test feature — deliberately
+     styled as real buttons, not low-key chips, since this is the whole
+     point of the panel and was easy to miss next to plain status chips. */
+  .actionChipPrimary { border: none; border-radius: 3px; padding: 3px 10px; font-weight: 600; opacity: 1; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .actionChipPrimary:hover { opacity: 1; background: var(--vscode-button-hoverBackground); }
   .evidenceFileLink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
   .evidenceFileLink:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
   .detailsToggle { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 0 4px; font-size: 10px; line-height: 16px; cursor: pointer; }
@@ -5711,6 +7224,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <button id="openGraphBtn" title="Open the graph in a full editor tab">Full Screen</button>
       <button id="expandGraphBtn" title="Make the graph fill this side window">Expand</button>
     </div>
+    <div id="graphTitleBar" title="Which commit this graph is showing"></div>
     <div id="emptyState">
       <p id="emptyStateText">Analyzing this workspace in the background — the callgraph will appear here automatically.</p>
       <button id="emptyStateRetryBtn" title="Try generating the callgraph again">Retry</button>
@@ -5762,6 +7276,13 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <div id="featureListNote">Click Regenerate above to detect this codebase's product features.</div>
       <div id="featureListDetails"></div>
     </div>
+    <div id="criticalFunctionsCard" class="is-collapsed" title="Functions ranked by how many other functions call them in this codebase — the ones most likely to break something else if changed, regardless of whether they're part of any current diff.">
+      <div id="criticalFunctionsHeadline">
+        <button id="criticalFunctionsToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show functions ranked by real caller count">+</button>
+        <span id="criticalFunctionsLabel">Critical Functions</span>
+      </div>
+      <div id="criticalFunctionsDetails"></div>
+    </div>
     <form id="searchForm">
       <input id="queryInput" type="text" placeholder="Search this codebase…" autocomplete="off" aria-autocomplete="list" aria-controls="querySuggestionPanel" />
       <div id="querySuggestionPanel" role="listbox"></div>
@@ -5787,6 +7308,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
     });
   });
   const graphFrame = document.getElementById('graphFrame');
+  const graphTitleBar = document.getElementById('graphTitleBar');
   const graphPane = document.getElementById('graphPane');
   const chatPane = document.getElementById('chatPane');
   const paneResizeHandle = document.getElementById('paneResizeHandle');
@@ -5816,6 +7338,10 @@ function getHtml(host: string, port: number, cspSource: string): string {
   const featureListLabel = document.getElementById('featureListLabel');
   const featureListNote = document.getElementById('featureListNote');
   const featureListDetails = document.getElementById('featureListDetails');
+  const criticalFunctionsCard = document.getElementById('criticalFunctionsCard');
+  const criticalFunctionsToggleBtn = document.getElementById('criticalFunctionsToggleBtn');
+  const criticalFunctionsDetails = document.getElementById('criticalFunctionsDetails');
+  let criticalFunctionsLoaded = false;
   const messages = document.getElementById('messages');
   const generateBtn = document.getElementById('generateBtn');
   const checkChangesBtn = document.getElementById('checkChangesBtn');
@@ -6190,6 +7716,21 @@ function getHtml(host: string, port: number, cspSource: string): string {
     featureListToggleBtn.textContent = collapsed ? '+' : '-';
     featureListToggleBtn.title = collapsed ? 'Show detected features' : 'Hide detected features';
     featureListToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  });
+
+  criticalFunctionsToggleBtn.addEventListener('click', () => {
+    const collapsed = criticalFunctionsCard.classList.toggle('is-collapsed');
+    criticalFunctionsToggleBtn.textContent = collapsed ? '+' : '-';
+    criticalFunctionsToggleBtn.title = collapsed ? 'Show functions ranked by real caller count' : 'Hide this report';
+    criticalFunctionsToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    // Lazy: only asked for on first expand, not computed on every panel
+    // load — this is explicitly an opt-in report, not something that should
+    // run in the background the user never asked for.
+    if (!collapsed && !criticalFunctionsLoaded) {
+      criticalFunctionsLoaded = true;
+      criticalFunctionsDetails.textContent = 'Analyzing…';
+      vscode.postMessage({ type: 'getCriticalFunctions' });
+    }
   });
 
   removeMcpBtn.addEventListener('click', () => {
@@ -6750,8 +8291,256 @@ function getHtml(host: string, port: number, cspSource: string): string {
     return sortedChangeResults(results || [], mode)[0] || null;
   }
 
+  // Both "Generate regression test" and "Ask Claude for a Call Path Test"
+  // can legitimately take over a minute (the Claude path spawns a real CLI
+  // subprocess with up to 16 tool-call turns) — without this, the chip just
+  // says "Asking Claude…" the whole time with zero change, which is
+  // indistinguishable from a hang. Ticking the elapsed seconds is cheap
+  // proof-of-life; the caller clears the interval once a result arrives.
+  function startPendingTicker(chip, baseLabel) {
+    const startedAt = Date.now();
+    chip.textContent = baseLabel + '… 0s';
+    return setInterval(() => {
+      chip.textContent = baseLabel + '… ' + Math.round((Date.now() - startedAt) / 1000) + 's';
+    }, 1000);
+  }
+
   const testGapChipsByRequestId = new Map();
   let testGapRequestSeq = 0;
+  const testRunRowsByRequestId = new Map();
+  let testRunRequestSeq = 0;
+  const fixTestRowsByRequestId = new Map();
+  let fixTestRequestSeq = 0;
+  const regressionTestChipsByRequestId = new Map();
+  let regressionTestRequestSeq = 0;
+  const callPathTestChipsByRequestId = new Map();
+  let callPathTestRequestSeq = 0;
+  // Survives a change-list re-render (e.g. the periodic "uncommitted edits
+  // changed" auto-refresh, which replaces every card's DOM from scratch) so
+  // a test generated a minute ago doesn't just vanish — the card immediately
+  // re-shows the "test written, run it" note instead of resetting to "Check
+  // tests". Keyed by the same symbol string used for graphable below.
+  const generatedTestsBySymbol = new Map();
+
+  // One row per runnable target (a named test if we found one, otherwise the
+  // whole file) — built for both cases so "Run" behaves identically either
+  // way; only the pytest node id passed back to the extension differs.
+  const DIRECT_RUN_EXTS = ['.py', '.go', '.rs'];
+
+  function createTestRunRow(file, nodeId, label, openLine, targetInfo) {
+    const row = document.createElement('div');
+    row.className = 'testRunRow';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'testMatchName';
+    nameEl.textContent = label;
+    nameEl.title = 'Open ' + file + (openLine ? ':' + openLine : '');
+    nameEl.addEventListener('click', (event) => {
+      event.stopPropagation();
+      vscode.postMessage({ type: 'openFile', file, line: openLine || '' });
+    });
+    row.appendChild(nameEl);
+
+    const lowerFile = file.toLowerCase();
+    const isDirect = DIRECT_RUN_EXTS.some((ext) => lowerFile.endsWith(ext));
+
+    const runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.className = 'testRunBtn';
+    if (isDirect) {
+      runBtn.textContent = '▶ Run';
+      runBtn.title = 'Run this test directly in your own environment. Pass/fail is a real result; whether it actually exercised the changed lines is confirmed via coverage when available, otherwise marked best effort.';
+    } else {
+      runBtn.classList.add('testRunBtnClaude');
+      runBtn.textContent = '🤖 Ask Claude to run';
+      runBtn.title = 'CODEMD doesn\\'t know this language\\'s test command by convention, so Claude finds it (read-only, no fixing or editing) — then CODEMD runs it directly and reads the real exit code, same as a direct run. JS/TS also gets real coverage via c8; other languages get a real pass/fail without coverage confirmation yet.';
+    }
+
+    const resultLine = document.createElement('span');
+    resultLine.className = 'testRunResultLine';
+
+    const outputToggle = document.createElement('button');
+    outputToggle.type = 'button';
+    outputToggle.className = 'testRunOutputToggle';
+    outputToggle.textContent = 'View output';
+    outputToggle.style.display = 'none';
+
+    const outputPre = document.createElement('pre');
+    outputPre.className = 'testRunOutput';
+    outputPre.style.display = 'none';
+
+    outputToggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const showing = outputPre.style.display !== 'none';
+      outputPre.style.display = showing ? 'none' : 'block';
+      outputToggle.textContent = showing ? 'View output' : 'Hide output';
+    });
+
+    // Only ever shown after a genuine failure (or a couldn't-run error) is
+    // reported below — never fires on its own. One explicit click asks
+    // Claude to diagnose and fix whichever is actually wrong (the test's own
+    // assumptions, or the code it's testing), then verify by rerunning
+    // itself; it never runs as a side effect of anything else.
+    const fixBtn = document.createElement('button');
+    fixBtn.type = 'button';
+    fixBtn.className = 'testFixBtn';
+    fixBtn.textContent = '🔧 Fix with Claude';
+    fixBtn.title = 'Ask Claude to look at this failure and fix whichever is wrong — the test itself or the code it tests — then re-run to verify. Only happens when you click this.';
+    fixBtn.style.display = 'none';
+
+    const fixNote = document.createElement('div');
+    fixNote.className = 'testFixNote';
+    fixNote.style.display = 'none';
+
+    fixBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (fixBtn.dataset.pending === '1') { return; }
+      fixBtn.dataset.pending = '1';
+      fixBtn.textContent = 'Fixing…';
+      fixNote.textContent = '';
+      fixNote.style.display = 'none';
+      const fixRequestId = 'fixtest_' + (fixTestRequestSeq++) + '_' + Date.now();
+      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote });
+      vscode.postMessage({
+        type: 'fixTestFailure',
+        requestId: fixRequestId,
+        file,
+        nodeId: nodeId || '',
+        targetPath: (targetInfo && targetInfo.path) || '',
+        targetStartLine: (targetInfo && targetInfo.startLine) || 0,
+        targetSymbol: (targetInfo && targetInfo.symbol) || '',
+      });
+    });
+
+    runBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (runBtn.dataset.pending === '1') { return; }
+      runBtn.dataset.pending = '1';
+      runBtn.textContent = isDirect ? 'Running…' : 'Asking Claude…';
+      resultLine.textContent = '';
+      resultLine.className = 'testRunResultLine';
+      outputToggle.style.display = 'none';
+      outputPre.style.display = 'none';
+      outputPre.textContent = '';
+      fixBtn.style.display = 'none';
+      fixBtn.dataset.pending = '0';
+      fixBtn.textContent = '🔧 Fix with Claude';
+      fixNote.style.display = 'none';
+      fixNote.textContent = '';
+      const runRequestId = 'testrun_' + (testRunRequestSeq++) + '_' + Date.now();
+      testRunRowsByRequestId.set(runRequestId, { runBtn, resultLine, outputToggle, outputPre, fixBtn, fixNote, isDirect });
+      vscode.postMessage({
+        type: isDirect ? 'runTestFile' : 'runTestViaClaude',
+        requestId: runRequestId,
+        file,
+        nodeId: nodeId || '',
+        targetPath: (targetInfo && targetInfo.path) || '',
+        targetStartLine: (targetInfo && targetInfo.startLine) || 0,
+        targetSymbol: (targetInfo && targetInfo.symbol) || '',
+      });
+    });
+
+    row.appendChild(runBtn);
+    row.appendChild(resultLine);
+    row.appendChild(outputToggle);
+    row.appendChild(fixBtn);
+    row.appendChild(outputPre);
+    row.appendChild(fixNote);
+    return row;
+  }
+
+  // Shared by the live regressionTestResult/callPathTestResult handlers and
+  // by the "restore after a card re-render" path below, so both produce the
+  // exact same note (including the Run row) instead of two implementations
+  // drifting apart.
+  function buildGeneratedTestNote(opts) {
+    const note = document.createElement('div');
+    note.className = opts.source === 'claude' ? 'callPathTestNote' : 'regressionTestNote';
+    const appendOutputToggle = (target) => {
+      if (!opts.output) { return; }
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'testRunOutputToggle';
+      toggle.textContent = 'View Claude output';
+      const pre = document.createElement('pre');
+      pre.className = 'testRunOutput';
+      pre.style.display = 'none';
+      pre.textContent = opts.output;
+      toggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const showing = pre.style.display !== 'none';
+        pre.style.display = showing ? 'none' : 'block';
+        toggle.textContent = showing ? 'View Claude output' : 'Hide Claude output';
+      });
+      target.appendChild(toggle);
+      target.appendChild(pre);
+    };
+    const targetInfo = { path: opts.targetPath, startLine: opts.targetStartLine, symbol: opts.targetSymbol };
+
+    if (opts.source === 'claude') {
+      if (!opts.ok || !opts.path) {
+        note.textContent = '⚠ ' + (opts.error || 'Could not generate a test.');
+        appendOutputToggle(note);
+        return note;
+      }
+      const statsParts = [];
+      if (typeof opts.generationMs === 'number') { statsParts.push('wrote in ' + (opts.generationMs / 1000).toFixed(1) + 's'); }
+      if (typeof opts.generationCostUsd === 'number') { statsParts.push('$' + opts.generationCostUsd.toFixed(4)); }
+      const stats = statsParts.length ? ' (' + statsParts.join(' · ') + ')' : '';
+      note.textContent = '✓ Test written' + stats + ' — nothing has been run yet:';
+      if (opts.claudeNotes) {
+        const notesEl = document.createElement('div');
+        notesEl.className = 'callPathTestClaudeNotes';
+        notesEl.textContent = opts.claudeNotes;
+        note.appendChild(notesEl);
+      }
+      note.appendChild(createTestRunRow(opts.path, '', 'Run this test', '', targetInfo));
+      appendOutputToggle(note);
+      return note;
+    }
+
+    if (!opts.ok) {
+      note.textContent = '⚠ Couldn\\'t generate — ' + (opts.error || 'unknown error');
+    } else if (!opts.generated) {
+      note.textContent = 'No test generated — ' + (opts.reason || 'no safely-replayable call sites found.');
+    } else {
+      note.textContent = '✓ Generated ' + opts.replayedCallCount + ' replay test(s)'
+        + (opts.skippedCount ? ' (' + opts.skippedCount + ' caller(s) skipped — non-literal arguments)' : '') + ':';
+      note.appendChild(createTestRunRow(opts.path, '', opts.path, '', targetInfo));
+    }
+    return note;
+  }
+
+  // Revealed only after the mechanical generator reports it couldn't help —
+  // see the sequential-reveal comment where "Generate regression test" is
+  // built. genActions may already hold a leftover regressionTestNote from
+  // the failed attempt; this is appended after it, not in place of it, so
+  // the "why this appeared" message stays visible.
+  function appendClaudeFallbackChip(genActions, gapResult, symbol) {
+    if (genActions.querySelector('.actionChipClaudeFallback')) { return; }
+    const claudeChip = document.createElement('span');
+    claudeChip.className = 'actionChip actionChipClickable actionChipPrimary actionChipClaudeFallback';
+    claudeChip.textContent = 'Ask Claude for a Call Path Test';
+    claudeChip.title = 'The mechanical generator\\'s real callers all pass a variable or computed '
+      + 'value, not a literal, so it couldn\\'t replay one. This spawns the local Claude Code CLI to '
+      + 'read the function and a real caller and write a test by hand. Usually 30-90s, can take up to '
+      + '3 minutes for a large file with many callers; the chip shows elapsed seconds while it runs, '
+      + 'and it is always safe to click again if it times out.';
+    claudeChip.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (claudeChip.dataset.pending === '1') { return; }
+      claudeChip.dataset.pending = '1';
+      const tickInterval = startPendingTicker(claudeChip, 'Asking Claude');
+      const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('callPathTestNote')
+        ? genActions.nextElementSibling
+        : null;
+      if (existingNote) { existingNote.remove(); }
+      const requestId = 'callpath_' + (callPathTestRequestSeq++) + '_' + Date.now();
+      callPathTestChipsByRequestId.set(requestId, { chip: claudeChip, actionsEl: genActions, tickInterval, result: gapResult, symbol });
+      vscode.postMessage({ type: 'generateCallPathTest', result: gapResult, requestId });
+    });
+    genActions.appendChild(claudeChip);
+  }
 
   function appendResultItem(parent, r) {
     const item = document.createElement('div');
@@ -6838,7 +8627,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
         vscode.postMessage({ type: 'analyzeCommit', hash: r.commitHash });
       });
     }
-    const graphable = r.graphSymbol || r.fullName || r.symbol || r.name || (
+    const symbolic = r.graphSymbol || r.fullName || r.symbol || r.name || '';
+    const graphable = symbolic || (
       r.impactFiles && r.impactFiles.length ? r.impactFiles[0] : ''
     );
     if (!r.fileList && (r.file || graphable)) {
@@ -6866,22 +8656,40 @@ function getHtml(host: string, port: number, cspSource: string): string {
       });
       actions.appendChild(searchChip);
 
-      const testsChip = document.createElement('span');
-      testsChip.className = 'actionChip actionChipClickable';
-      testsChip.textContent = 'Check tests';
-      testsChip.title = 'Look for tests covering ' + graphable + ' (does not run anything)';
-      testsChip.addEventListener('click', (event) => {
-        event.stopPropagation();
-        if (testsChip.dataset.pending === '1') { return; }
-        testsChip.dataset.pending = '1';
-        testsChip.textContent = 'Checking tests…';
-        const requestId = 'testgap_' + (testGapRequestSeq++) + '_' + Date.now();
-        testGapChipsByRequestId.set(requestId, testsChip);
-        vscode.postMessage({ type: 'findTestsForResult', result: r, requestId });
-      });
-      actions.appendChild(testsChip);
+      if (symbolic) {
+        const testsChip = document.createElement('span');
+        testsChip.className = 'actionChip actionChipClickable actionChipPrimary';
+        testsChip.textContent = 'Check tests';
+        testsChip.title = 'Look for tests covering ' + symbolic + ' (does not run anything)';
+        testsChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (testsChip.dataset.pending === '1') { return; }
+          testsChip.dataset.pending = '1';
+          testsChip.textContent = 'Checking tests…';
+          const requestId = 'testgap_' + (testGapRequestSeq++) + '_' + Date.now();
+          const card = r && r.changeCard;
+          const impactedFunctions = (card && Array.isArray(card.impactedFunctions)) ? card.impactedFunctions : [];
+          testGapChipsByRequestId.set(requestId, {
+            chip: testsChip,
+            isNewFunction: !!card && card.kind === 'added',
+            impactedFunctions,
+            result: r,
+          });
+          vscode.postMessage({ type: 'findTestsForResult', result: r, requestId });
+        });
+        actions.appendChild(testsChip);
+      }
 
       item.appendChild(actions);
+
+      // A test generated in an earlier render (before this card's DOM got
+      // rebuilt, e.g. by the auto uncommitted-edits refresh) still exists on
+      // disk — show it immediately instead of making the user click "Check
+      // tests" again and re-discover it.
+      const savedTest = graphable ? generatedTestsBySymbol.get(graphable) : null;
+      if (savedTest) {
+        item.appendChild(buildGeneratedTestNote(savedTest));
+      }
     }
     parent.appendChild(item);
   }
@@ -7316,12 +9124,17 @@ function getHtml(host: string, port: number, cspSource: string): string {
 	      emptyStateText.classList.remove('emptyStateError');
 	      emptyStateRetryBtn.style.display = '';
 	      document.body.classList.remove('has-results');
+	      graphTitleBar.textContent = '';
+	      graphTitleBar.classList.remove('is-visible');
 	    } else if (msg.type === 'graph') {
 	      lastGraphUrl = String(msg.url || '');
 	      webviewLog('graph message received', { url: lastGraphUrl });
 	      graphFrame.src = msg.url;
 	      graphFrame.style.display = 'block';
 	      emptyState.style.display = 'none';
+	      const graphTitle = String(msg.title || '').trim();
+	      graphTitleBar.textContent = graphTitle;
+	      graphTitleBar.classList.toggle('is-visible', !!graphTitle);
 	      if (graphLoadTimer) {
 	        clearTimeout(graphLoadTimer);
 	      }
@@ -7349,23 +9162,285 @@ function getHtml(host: string, port: number, cspSource: string): string {
     } else if (msg.type === 'searchResult') {
       renderSearchResult(msg);
     } else if (msg.type === 'testGapResult') {
-      const chip = testGapChipsByRequestId.get(msg.requestId);
+      const entry = testGapChipsByRequestId.get(msg.requestId);
       testGapChipsByRequestId.delete(msg.requestId);
-      if (!chip) { return; }
+      if (!entry) { return; }
+      const { chip, isNewFunction, impactedFunctions, result: gapResult } = entry;
       chip.dataset.pending = '0';
+      const actionsRow = chip.closest('.actionRow');
+      let matchList = actionsRow && actionsRow.nextElementSibling && actionsRow.nextElementSibling.classList.contains('testMatchList')
+        ? actionsRow.nextElementSibling
+        : null;
       if (!msg.ok) {
         chip.textContent = 'Check tests';
         chip.title = msg.error || 'Test lookup failed.';
+        if (matchList) { matchList.remove(); }
         return;
       }
       const count = Number(msg.matchCount || 0);
-      if (count > 0) {
+      const matches = Array.isArray(msg.matches) ? msg.matches : [];
+      const targetInfo = msg.target || null;
+      if (count > 0 && matches.length && actionsRow) {
         chip.textContent = '✓ ' + count + (count === 1 ? ' test found' : ' tests found');
-        chip.title = 'Likely covered by: ' + (msg.matches || []).join(', ');
+        chip.title = 'Open a file or run a test below.';
+        if (!matchList) {
+          matchList = document.createElement('div');
+          matchList.className = 'testMatchList';
+          actionsRow.insertAdjacentElement('afterend', matchList);
+        }
+        matchList.innerHTML = '';
+        matches.forEach((match) => {
+          const file = typeof match === 'string' ? match : String(match.file || '');
+          const testNames = (match && Array.isArray(match.testNames)) ? match.testNames : [];
+          const group = document.createElement('div');
+          group.className = 'testMatchGroup';
+
+          const fileEl = document.createElement('span');
+          fileEl.className = 'testMatchFile';
+          fileEl.textContent = file;
+          fileEl.title = 'Open ' + file;
+          fileEl.addEventListener('click', (event) => {
+            event.stopPropagation();
+            vscode.postMessage({ type: 'openFile', file, line: '' });
+          });
+          group.appendChild(fileEl);
+
+          if (testNames.length) {
+            testNames.forEach((t) => {
+              group.appendChild(createTestRunRow(file, t.nodeId, t.name, t.line, targetInfo));
+            });
+          } else {
+            group.appendChild(createTestRunRow(file, '', 'Run this file', '', targetInfo));
+          }
+          matchList.appendChild(group);
+        });
       } else {
-        chip.textContent = '⚠ No tests found';
-        chip.title = 'No test file appears to reference ' + msg.query + '. This is a heuristic, not proof — verify before assuming it is untested.';
+        // No trailing "— add one?": this chip is a status readout, not a
+        // button — clicking it only re-runs the same lookup. The actual
+        // "add one" actions are the generator chip(s) below.
+        chip.textContent = isNewFunction ? '⚠ No tests — new function' : '⚠ No tests found';
+        chip.title = 'This is a heuristic, not proof — verify by hand before assuming it is untested.';
+        let note = isNewFunction
+          ? 'This is a new function with no test coverage yet — consider adding one before you commit.'
+          : 'No test file appears to reference ' + msg.query + ' — consider adding one before you commit.';
+        if (impactedFunctions.length) {
+          const sample = impactedFunctions.slice(0, 3).join(', ');
+          note += ' It has ' + impactedFunctions.length + ' confirmed caller(s) (e.g. ' + sample
+            + ') — a test that exercises one of those call paths would catch more than testing this function alone.';
+        }
+        if (actionsRow) {
+          if (!matchList) {
+            matchList = document.createElement('div');
+            matchList.className = 'testMatchList';
+            actionsRow.insertAdjacentElement('afterend', matchList);
+          }
+          matchList.innerHTML = '';
+          const noteEl = document.createElement('div');
+          noteEl.className = 'testNoMatchNote';
+          noteEl.textContent = note;
+          matchList.appendChild(noteEl);
+
+          // Python only, matching the two generators' own gating
+          // (deletion-report.py's literal-replay path and the Claude call-path
+          // path both currently only understand Python). Only the mechanical
+          // chip is shown up front: it's free, instant, and requires no AI
+          // call. The Claude fallback is revealed only once the mechanical
+          // one actually reports it can't help (its real callers all pass a
+          // variable/computed value instead of a literal) — that failure
+          // message is itself the explanation for why the fallback just
+          // appeared, instead of dumping both options on the user at once.
+          if (gapResult && String(gapResult.file || '').toLowerCase().endsWith('.py')) {
+            const symbol = String(gapResult.fullName || gapResult.graphSymbol || gapResult.symbol || gapResult.name || msg.query || '');
+            const genActions = document.createElement('div');
+            genActions.className = 'actionRow';
+            genActions.style.marginTop = '4px';
+
+            const mechChip = document.createElement('span');
+            mechChip.className = 'actionChip actionChipClickable actionChipPrimary';
+            mechChip.textContent = 'Generate regression test';
+            mechChip.title = 'No AI call: deterministically replays a confirmed caller\\'s arguments '
+              + 'when they are literal values. Free and fast, but only works if at least one real '
+              + 'call site passes literals instead of variables. If it can\\'t, a fallback that asks '
+              + 'Claude to write one by hand will appear here.';
+            mechChip.addEventListener('click', (event) => {
+              event.stopPropagation();
+              if (mechChip.dataset.pending === '1') { return; }
+              mechChip.dataset.pending = '1';
+              const tickInterval = startPendingTicker(mechChip, 'Generating');
+              const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('regressionTestNote')
+                ? genActions.nextElementSibling
+                : null;
+              if (existingNote) { existingNote.remove(); }
+              const requestId = 'regtest_' + (regressionTestRequestSeq++) + '_' + Date.now();
+              regressionTestChipsByRequestId.set(requestId, { chip: mechChip, actionsEl: genActions, tickInterval, result: gapResult, symbol });
+              vscode.postMessage({ type: 'generateRegressionTest', result: gapResult, requestId });
+            });
+            genActions.appendChild(mechChip);
+            genActions.dataset.symbol = symbol;
+            matchList.appendChild(genActions);
+          }
+        }
       }
+    } else if (msg.type === 'testRunResult') {
+      const row = testRunRowsByRequestId.get(msg.requestId);
+      testRunRowsByRequestId.delete(msg.requestId);
+      if (!row) { return; }
+      const { runBtn, resultLine, outputToggle, outputPre, fixBtn } = row;
+      runBtn.dataset.pending = '0';
+      runBtn.textContent = '↻ Run again';
+      if (msg.output) {
+        outputPre.textContent = msg.output;
+        outputToggle.style.display = '';
+      }
+      if (!msg.ok) {
+        resultLine.textContent = '⚠ Couldn\\'t run — ' + (msg.error || 'unknown error');
+        resultLine.className = 'testRunResultLine testRunUnknown';
+        // An environment/config problem (e.g. pytest's own usage-error exit
+        // code) means the test never even started — there's no bug in the
+        // test or the code under test for "Fix with Claude" to find, so
+        // don't offer it here (it would just waste a Claude turn misdiagnosing
+        // a missing plugin/bad pytest.ini as a code issue).
+        if (fixBtn) { fixBtn.style.display = msg.environmentIssue ? 'none' : ''; }
+        return;
+      }
+      const passWord = msg.passed ? 'Passed' : 'Failed';
+      const passIcon = msg.passed ? '✓' : '✗';
+      if (fixBtn) { fixBtn.style.display = msg.passed ? 'none' : ''; }
+      // "viaClaude" used to mean a whole separate, lower-trust tier (Claude's
+      // own self-report of pass/fail). It no longer does: the command's
+      // origin is now the only thing Claude contributes — we run it and read
+      // the real exit code ourselves, same as Python/Go — so it's just a
+      // trailing note on whichever real tier below actually applies.
+      const claudeNote = msg.viaClaude ? ' · command found by Claude' : '';
+      if (msg.coverageConfirmed) {
+        if (msg.executed) {
+          resultLine.textContent = passIcon + ' ' + passWord + ' — confirmed: this function ran during the test'
+            + (msg.trackedInRange ? ' (' + msg.executedInRange + '/' + msg.trackedInRange + ' lines hit)' : '') + claudeNote;
+          resultLine.className = 'testRunResultLine testRunConfirmedGood';
+        } else {
+          resultLine.textContent = passIcon + ' ' + passWord + ' — confirmed: this test did NOT execute this function\\'s code' + claudeNote;
+          resultLine.className = 'testRunResultLine testRunConfirmedBad';
+        }
+      } else {
+        resultLine.textContent = passIcon + ' ' + passWord + ' (best effort — execution not confirmed'
+          + (msg.reason ? ': ' + msg.reason : '') + ')' + claudeNote;
+        resultLine.className = 'testRunResultLine testRunBestEffort';
+      }
+    } else if (msg.type === 'fixTestResult') {
+      const entry = fixTestRowsByRequestId.get(msg.requestId);
+      fixTestRowsByRequestId.delete(msg.requestId);
+      if (!entry) { return; }
+      const { fixBtn, fixNote } = entry;
+      fixBtn.dataset.pending = '0';
+      if (!msg.ok) {
+        fixBtn.textContent = '🔧 Fix with Claude';
+        fixNote.textContent = '⚠ Could not fix — ' + (msg.error || 'unknown error');
+        fixNote.style.display = '';
+        return;
+      }
+      const filesChanged = Array.isArray(msg.filesChanged) ? msg.filesChanged.filter(Boolean) : [];
+      const verdict = msg.passedAfterFix === true ? 'now passes' : msg.passedAfterFix === false ? 'still failing' : 'not re-verified';
+      if (filesChanged.length) {
+        // One attempt made and applied — hide the button; if "Run again"
+        // still fails, testRunResult will bring it back for another try.
+        fixBtn.style.display = 'none';
+        fixNote.textContent = 'Changed ' + filesChanged.join(', ') + ' — ' + verdict + '. ' + (msg.summary || '') + ' Click "Run again" to confirm.';
+      } else {
+        fixBtn.textContent = '🔧 Fix with Claude';
+        fixNote.textContent = msg.summary || 'Claude looked at this but did not make a change.';
+      }
+      fixNote.style.display = '';
+    } else if (msg.type === 'regressionTestResult') {
+      const entry = regressionTestChipsByRequestId.get(msg.requestId);
+      regressionTestChipsByRequestId.delete(msg.requestId);
+      if (!entry) { return; }
+      const { chip, actionsEl, tickInterval, result: gapResult, symbol } = entry;
+      if (tickInterval) { clearInterval(tickInterval); }
+      chip.dataset.pending = '0';
+      chip.textContent = 'Generate regression test';
+      const opts = {
+        source: 'mechanical',
+        ok: msg.ok,
+        generated: msg.generated,
+        error: msg.error,
+        reason: msg.reason,
+        path: msg.path,
+        replayedCallCount: msg.replayedCallCount,
+        skippedCount: msg.skippedCount,
+        targetPath: msg.targetPath,
+        targetStartLine: msg.targetStartLine,
+        targetSymbol: msg.targetSymbol,
+      };
+      actionsEl.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+      if (msg.ok && msg.generated && msg.path && symbol) {
+        generatedTestsBySymbol.set(symbol, opts);
+      } else if (symbol) {
+        // Mechanical couldn't help — this is exactly the case the Claude
+        // fallback exists for, so reveal it now rather than up front.
+        appendClaudeFallbackChip(actionsEl, gapResult, symbol);
+      }
+    } else if (msg.type === 'callPathTestResult') {
+      const entry = callPathTestChipsByRequestId.get(msg.requestId);
+      callPathTestChipsByRequestId.delete(msg.requestId);
+      if (!entry) { return; }
+      const { chip, actionsEl, tickInterval, symbol } = entry;
+      if (tickInterval) { clearInterval(tickInterval); }
+      chip.dataset.pending = '0';
+      chip.textContent = 'Ask Claude for a Call Path Test';
+      const opts = {
+        source: 'claude',
+        ok: msg.ok,
+        error: msg.error,
+        path: msg.path,
+        targetPath: msg.targetPath,
+        targetStartLine: msg.targetStartLine,
+        targetSymbol: msg.targetSymbol,
+        claudeNotes: msg.claudeNotes,
+        generationMs: msg.generationMs,
+        generationCostUsd: msg.generationCostUsd,
+        output: msg.output,
+      };
+      actionsEl.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+      if (msg.ok && msg.path && symbol) {
+        generatedTestsBySymbol.set(symbol, opts);
+      }
+    } else if (msg.type === 'criticalFunctionsResult') {
+      criticalFunctionsDetails.textContent = '';
+      if (!msg.ok) {
+        criticalFunctionsDetails.textContent = '⚠ ' + (msg.error || 'Could not compute this report.');
+        return;
+      }
+      const items = Array.isArray(msg.items) ? msg.items : [];
+      if (!items.length) {
+        criticalFunctionsDetails.textContent = 'No caller data found yet — click Regenerate above first.';
+        return;
+      }
+      items.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'criticalFnRow';
+        row.title = item.file ? 'Open ' + item.file : 'File location unknown';
+
+        const count = document.createElement('span');
+        count.className = 'criticalFnCount';
+        count.textContent = item.fanIn + (item.fanIn === 1 ? ' caller' : ' callers');
+        row.appendChild(count);
+
+        const name = document.createElement('span');
+        name.className = 'criticalFnName';
+        name.textContent = item.symbol;
+        row.appendChild(name);
+
+        if (item.file) {
+          const file = document.createElement('span');
+          file.className = 'criticalFnFile';
+          file.textContent = item.file;
+          row.appendChild(file);
+          row.addEventListener('click', () => {
+            vscode.postMessage({ type: 'openFile', file: item.file, line: '' });
+          });
+        }
+        criticalFunctionsDetails.appendChild(row);
+      });
     }
   });
 

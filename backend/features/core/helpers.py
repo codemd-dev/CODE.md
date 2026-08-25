@@ -215,7 +215,7 @@ _UI_FEATURE_SEED_GENERIC_DOC_WORDS = {
 }
 
 
-def _is_plausible_ui_feature_seed(candidate: str) -> bool:
+def _is_plausible_ui_feature_seed(candidate: str, ends_with_colon: bool = False) -> bool:
     if not (3 <= len(candidate) <= 60):
         return False
     if not _UI_FEATURE_SEED_WORD_RE.search(candidate):
@@ -233,6 +233,12 @@ def _is_plausible_ui_feature_seed(candidate: str) -> bool:
         or _UI_FEATURE_SEED_DOTTED_PATH_RE.match(stripped)
     ):
         return False
+    # A fragment that is entirely one parenthetical aside ("(machine-readable
+    # structural tokens)") is the tail end of someone else's sentence, not a
+    # label -- unlike "Learn more (beta)", a real label always has real words
+    # *before* the paren, not just inside it.
+    if stripped.startswith("(") and stripped.endswith(")"):
+        return False
     word_count = len(candidate.split())
     # A single no-space token containing "/" is a MIME type, path, or
     # namespace fragment ("application/json", "callgraph/") -- a real
@@ -242,8 +248,10 @@ def _is_plausible_ui_feature_seed(candidate: str) -> bool:
         return False
     if word_count > 7:
         return False
-    # Long, period-terminated lines are prose sentences, not button/menu labels.
-    if word_count > 4 and candidate.rstrip().endswith((".", "!", "?")):
+    # Long, period- or colon-terminated lines are prose sentences/headings
+    # ("A CODE.md file contains two parts:") introducing a list or
+    # explanation, not button/menu labels.
+    if word_count > 4 and (candidate.rstrip().endswith((".", "!", "?")) or ends_with_colon):
         return False
     if word_count == 1 and stripped.lower() in _UI_FEATURE_SEED_GENERIC_DOC_WORDS:
         return False
@@ -296,8 +304,14 @@ def extract_ui_feature_seeds(repo_text: dict) -> list[str]:
             for candidate in extract_lines(item):
                 if added >= budget or added_for_item >= per_item_budget:
                     break
-                candidate = re.sub(r"\s+", " ", str(candidate or "")).strip(" -:*#\t")
-                if not _is_plausible_ui_feature_seed(candidate):
+                candidate = re.sub(r"\s+", " ", str(candidate or "")).strip(" -*#\t")
+                # A colon lead-in ("A CODE.md file contains two parts:") introduces
+                # a list or explanation -- it's a heading/prose sentence, not a
+                # standalone UI label, even though the trailing ":" itself is
+                # stripped below like the other bullet/heading punctuation.
+                ends_with_colon = candidate.rstrip().endswith(":")
+                candidate = candidate.strip(" :")
+                if not _is_plausible_ui_feature_seed(candidate, ends_with_colon=ends_with_colon):
                     continue
                 key = candidate.lower()
                 if key in seen:

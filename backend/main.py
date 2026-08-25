@@ -227,24 +227,6 @@ class PathRegistry(Enum):
         """Ensure the parent directory exists."""
         self.value.parent.mkdir(parents=True, exist_ok=True)
         return self.value
-    
-# ============================================================
-#   TRACE LOGGING
-# ============================================================
-
-TRACE_LOG_PATH = "trace_output.log"
-trace_log = open(TRACE_LOG_PATH, "a", encoding="utf-8")
-
-def trace_lines(frame, event, arg):
-    if event == "line":
-        filename = frame.f_globals.get("__file__", "")
-        lineno = frame.f_lineno
-        trace_log.write(f"{filename}:{lineno}\n")
-        trace_log.flush()
-    return trace_lines
-
-# sys.settrace(trace_lines)
-sys.settrace(None)
 
 # ============================================================
 #   PATHS (Pathlib only — clean + correct)
@@ -8917,11 +8899,13 @@ def build_scim_artifacts(
             max_record_code_chars=int(os.getenv("SCIM_MAX_RECORD_CODE_CHARS", "2000")),
             progress_callback=progress,
         )
-        progress("Deriving product feature summaries from the search model.", current_file="")
-        feature_data = feature_catalog_payload(output_dir, None, examples=5, repo_context=repo_context)
-        architecture_dir = architecture_dir_for_output(output_repo_dir)
-        feature_path = architecture_dir / "feature_catalog.json"
-        feature_path.write_text(json.dumps(feature_data, indent=2), encoding="utf-8")
+        # Product Feature List generation (feature_catalog_payload +
+        # apply_llm_feature_naming) is temporarily disabled -- LLM naming
+        # requires OPENAI_API_KEY, which local extension installs have no
+        # way to configure, so every run silently fell back to heuristic
+        # labels with no UI indication. Left uncalled rather than removed;
+        # downstream code already null-checks feature_catalog.json's
+        # existence, so leaving it unwritten is safe.
         progress("Skipping disabled static quality signal generation.", current_file="")
         quality_signal_path = ensure_static_quality_signals(output_repo_dir)
         progress("Writing generated evidence as architecture artifacts.", current_file="")
@@ -26484,6 +26468,39 @@ def add_feature_reference_urls(summaries: list[dict], artifact_root):
                     reference["source_url"] = output_url(candidate)
                     break
     return summaries
+
+
+def apply_llm_feature_naming(feature_data: dict) -> None:
+    """Rename/describe a feature_catalog_payload() result's candidates via the LLM.
+
+    This is what makes feature names domain-agnostic: the heuristic labeler in
+    scim.py has no per-domain vocabulary, so its labels are a token-frequency
+    placeholder. Every analysis run replaces them with real per-repo names
+    when an LLM call succeeds, and leaves the placeholder in place (tagged
+    "heuristic_fallback") when it doesn't -- e.g. no OPENAI_API_KEY.
+    """
+    features = feature_data.get("features")
+    if not isinstance(features, list) or not features:
+        return
+    llm_rows = generate_feature_descriptions(
+        features,
+        product_name=feature_data.get("product_name", ""),
+        product_type=feature_data.get("product_type", ""),
+        ui_feature_seeds=feature_data.get("ui_feature_seeds"),
+    )
+    if not llm_rows:
+        feature_data["naming"] = "heuristic_fallback"
+        return
+    for index, row in enumerate(llm_rows):
+        if index >= len(features):
+            break
+        target = features[index]
+        if row.get("feature"):
+            target["feature"] = row["feature"]
+        if row.get("description"):
+            target["description"] = row["description"]
+        target.setdefault("feature_extraction", {})["name_source"] = "llm_evidence_summary"
+    feature_data["naming"] = "llm"
 
 
 def generate_feature_descriptions(features: list[dict], product_name: str = "", product_type: str = "", user_guidance: str = "", return_prompt: bool = False, ui_feature_seeds: list[str] | None = None):

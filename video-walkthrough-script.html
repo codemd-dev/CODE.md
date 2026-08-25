@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CODEMD Demo Video — Recording Script</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1c1c1c;
+    --ink-soft: #55524a;
+    --accent: #a4472e;
+    --accent-soft: #f2e4dc;
+    --border: #e6e1d6;
+    --say-bg: #fff8ec;
+    --say-border: #e8c98f;
+    --code-bg: #f1efe8;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 40px 24px 100px; }
+  header.hero {
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.hero h1 { font-size: 28px; margin: 0 0 6px; }
+  header.hero .sub { color: var(--ink-soft); font-size: 15px; }
+  .badge {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+  }
+  .prep {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 32px;
+  }
+  .prep h2 { margin-top: 0; font-size: 17px; }
+  .prep ul { margin: 8px 0 0; padding-left: 20px; }
+  .prep li { margin-bottom: 6px; }
+  nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 40px;
+  }
+  nav.toc h2 { margin-top: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
+  nav.toc ol { margin: 0; padding-left: 20px; }
+  nav.toc li { margin-bottom: 4px; }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+  nav.toc .imp { color: var(--ink-soft); font-size: 12px; }
+  section.step {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px 20px;
+    margin-bottom: 22px;
+    scroll-margin-top: 20px;
+  }
+  section.step .step-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  section.step h2 { margin: 0; font-size: 19px; }
+  section.step .meta { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+  section.step .meta .time { font-weight: 700; color: var(--accent); }
+  h3.label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--ink-soft);
+    margin: 16px 0 6px;
+  }
+  section.step ul.action { margin: 0; padding-left: 20px; }
+  section.step ul.action li { margin-bottom: 4px; }
+  kbd, code.ui {
+    font-family: var(--mono);
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12.5px;
+  }
+  blockquote.say {
+    background: var(--say-bg);
+    border: 1px solid var(--say-border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    margin: 0;
+    padding: 12px 16px;
+    font-size: 15.5px;
+    color: #3a2f1e;
+  }
+  blockquote.say p { margin: 0 0 8px; }
+  blockquote.say p:last-child { margin-bottom: 0; }
+  .note {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-top: 10px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+  }
+  .skip { border-style: dashed; opacity: .88; }
+  .skip .step-head h2::after {
+    content: "optional — cut if short on time";
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ink-soft);
+    margin-left: 10px;
+  }
+  footer {
+    text-align: center;
+    color: var(--ink-soft);
+    font-size: 12.5px;
+    margin-top: 40px;
+  }
+  @media print {
+    body { background: #fff; }
+    section.step { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="badge">Recording script</div>
+    <h1>CODEMD Demo Video — Step by Step</h1>
+    <div class="sub">
+      Read the <strong>SAY</strong> lines aloud while doing the <strong>ACTION</strong> above them.
+      Ordered most → least important, so cut from the bottom if you run short on time.
+      Target run time: ~5–7 min narrated, or record silent and voice it over after.
+    </div>
+  </header>
+
+  <div class="prep">
+    <h2>Before you hit record</h2>
+    <ul>
+      <li><strong>Pick a real demo repo</strong>, not a toy hello-world — you need actual functions with multiple callers so the callgraph and blast radius have something to show. A repo with 200+ files works well.</li>
+      <li><strong>Pre-stage one "breaking" edit</strong> in that repo before recording: rename a function, change a parameter, or delete something that's still called elsewhere — but don't save it yet. You'll save it live in Step 3.</li>
+      <li><strong>Run Generate CODEMD once beforehand</strong> off-camera so the initial callgraph build (which can take a minute or two on a big repo) doesn't sit dead in the video. You'll re-trigger a quick regenerate live instead.</li>
+      <li>Close unrelated panels, notifications, and any open diff/merge editors so the VS Code window is clean.</li>
+      <li>Bump the VS Code editor/UI zoom one notch (<code class="ui">Ctrl</code>+<code class="ui">=</code>) so text is legible once the video is compressed.</li>
+      <li><strong>Recording tool:</strong> open the Snipping Tool (Windows 11) → New → switch the mode toggle to the video/record camera icon → drag the capture region around the VS Code window → red Start button. Stop from the Snipping Tool flyout or <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>-style toolbar it shows while recording.</li>
+      <li>Leave a beat of silence (~1s) after each click before you start talking — makes it much easier to trim between steps in editing.</li>
+    </ul>
+  </div>
+
+  <nav class="toc">
+    <h2>Order (most → least important)</h2>
+    <ol>
+      <li><a href="#step1">Marketplace page — the hook</a> <span class="imp">why someone should install this</span></li>
+      <li><a href="#step2">Install &amp; first look</a> <span class="imp">Activity Bar → panel → auto-analyze</span></li>
+      <li><a href="#step3">Check Uncommitted Edits</a> <span class="imp">the core "aha" moment</span></li>
+      <li><a href="#step4">Blast Radius Report</a> <span class="imp">risk, ranked</span></li>
+      <li><a href="#step5">Check Latest Commits</a> <span class="imp">same check, after the fact</span></li>
+      <li><a href="#step6">Search the codebase</a> <span class="imp">find anything, fast</span></li>
+      <li><a href="#step7">Explore the graph</a> <span class="imp">Expand / Full Screen, click a node</span></li>
+      <li><a href="#step8">Product Feature List</a> <span class="imp">what this repo actually does</span></li>
+      <li><a href="#step9">Hook it up to your AI agent (MCP)</a> <span class="imp">opt-in, for power users</span></li>
+      <li><a href="#step10">Housekeeping &amp; close</a> <span class="imp">Regenerate, Clean up, CTA</span></li>
+    </ol>
+  </nav>
+
+  <section class="step" id="step1">
+    <div class="step-head">
+      <h2>1 · Marketplace page — the hook</h2>
+      <span class="meta"><span class="time">~25s</span> · browser</span>
+    </div>
+    <h3 class="label">On screen</h3>
+    <ul class="action">
+      <li>Open a browser tab to the CODEMD listing on the VS Code Marketplace.</li>
+      <li>Scroll slowly past the headline and the impact-graph screenshot — don't read the page, just let it be visible.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"If you're using Claude, Cursor, Codex, or Copilot to write code, this is CODEMD. It checks your uncommitted changes against your codebase's callgraph and tells you what's about to break — before you commit. Let's install it and see it in action."</p>
+    </blockquote>
+  </section>
+
+  <section class="step" id="step2">
+    <div class="step-head">
+      <h2>2 · Install &amp; first look</h2>
+      <span class="meta"><span class="time">~30s</span> · VS Code</span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click <strong>Install</strong> on the Marketplace page (or switch to an already-installed window to save time).</li>
+      <li>Click the <strong>CODEMD icon</strong> in the Activity Bar (left-hand rail).</li>
+      <li>Let the panel open — point out the status line: <em>"Analyzing this workspace in the background…"</em></li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"After installing, click the CODEMD icon here in the Activity Bar. On first open it automatically starts building a local callgraph of the workspace — no config, nothing sent anywhere. Once it's done, the graph shows up right here in the panel."</p>
+    </blockquote>
+    <div class="note">If the graph is already built from your off-camera run, say "and here it is" instead and cut to the finished graph.</div>
+  </section>
+
+  <section class="step" id="step3">
+    <div class="step-head">
+      <h2>3 · Check Uncommitted Edits</h2>
+      <span class="meta"><span class="time">~50s</span> · the core feature</span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Switch to the editor tab with your pre-staged breaking edit and press <kbd>Ctrl</kbd>+<kbd>S</kbd> to save it on camera.</li>
+      <li>Click <code class="ui">Check Uncommitted Edits</code> in the CODEMD panel.</li>
+      <li>Let the change report render — hover/scroll to the risk pill (Critical/High/Medium) and the caller list on the edited symbol.</li>
+      <li>Click one of the listed callers to jump straight to that call site in the editor.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"Say Claude just changed this function's signature — or an AI agent renamed it — while I was looking away. I hit Check Uncommitted Edits, and CODEMD shows exactly what changed, every place that still calls it, and how risky the edit is. I can click straight through to any caller instead of grepping for it myself."</p>
+    </blockquote>
+    <div class="note">This is the single most important beat in the whole video — give it the most screen time and don't rush the click-through to a caller.</div>
+  </section>
+
+  <section class="step" id="step4">
+    <div class="step-head">
+      <h2>4 · Blast Radius Report</h2>
+      <span class="meta"><span class="time">~25s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click <code class="ui">Blast Radius Report</code>.</li>
+      <li>Scroll the ranked list of affected functions/files.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"Blast Radius Report narrows that down further — it only surfaces changed functions whose callers are numerous enough to actually be risky, ranked so you know what to check first instead of reading every diff line by line."</p>
+    </blockquote>
+  </section>
+
+  <section class="step" id="step5">
+    <div class="step-head">
+      <h2>5 · Check Latest Commits</h2>
+      <span class="meta"><span class="time">~20s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click <code class="ui">Check Latest Commits</code>.</li>
+      <li>Point at one recent commit and its impact summary.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"Same analysis, but for changes that are already committed — useful for reviewing a PR, or checking what an agent merged while you weren't watching."</p>
+    </blockquote>
+  </section>
+
+  <section class="step" id="step6">
+    <div class="step-head">
+      <h2>6 · Search the codebase</h2>
+      <span class="meta"><span class="time">~35s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click into the <code class="ui">Search this codebase…</code> box at the bottom of the panel.</li>
+      <li>Type a natural-language query, e.g. <em>"What calls &lt;function name&gt;?"</em> or <em>"Where is this feature implemented?"</em> — let the suggestion dropdown show briefly.</li>
+      <li>Press <strong>Search</strong> and show a result, then click one to jump to it.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"You don't need to know exact function names. Ask in plain language — 'what calls this,' 'where is this feature implemented,' 'trace this request from UI to database' — and CODEMD answers from the actual callgraph, not a guess."</p>
+    </blockquote>
+  </section>
+
+  <section class="step" id="step7">
+    <div class="step-head">
+      <h2>7 · Explore the graph</h2>
+      <span class="meta"><span class="time">~25s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click <code class="ui">Expand</code> (or <code class="ui">Full Screen</code>) on the graph pane.</li>
+      <li>Click one interesting node and let it highlight its connections.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"And the whole thing is a navigable graph — expand it, click any function, file, or route, and see exactly how it connects to the rest of the codebase."</p>
+    </blockquote>
+  </section>
+
+  <section class="step" id="step8">
+    <div class="step-head">
+      <h2>8 · Product Feature List</h2>
+      <span class="meta"><span class="time">~20s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click the <code class="ui">+</code> next to <strong>Product Feature List</strong> to expand it.</li>
+      <li>Scroll a couple of detected features.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"CODEMD also infers the actual product feature list straight from your code and docs — a quick way to see what a repo does without reading the README."</p>
+    </blockquote>
+  </section>
+
+  <section class="step skip" id="step9">
+    <div class="step-head">
+      <h2>9 · Hook it up to your AI agent (MCP)</h2>
+      <span class="meta"><span class="time">~30s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Click the <code class="ui">+</code> to expand the MCP usage card.</li>
+      <li>Click <code class="ui">Add CODEMD MCP Server</code>.</li>
+      <li>(Optional, only if time allows) Click <code class="ui">Open Claude Code /mcp</code> or <code class="ui">Open Codex /mcp</code> to show it connected.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"This is opt-in, but it's the part built specifically for agents — Add CODEMD MCP Server exposes this same local index to Claude Code or Codex directly, so your agent checks what it's about to break instead of re-scanning the whole repo or just guessing."</p>
+    </blockquote>
+  </section>
+
+  <section class="step skip" id="step10">
+    <div class="step-head">
+      <h2>10 · Housekeeping &amp; close</h2>
+      <span class="meta"><span class="time">~20s</span></span>
+    </div>
+    <h3 class="label">Action</h3>
+    <ul class="action">
+      <li>Point at <code class="ui">Regenerate</code> — mention it re-runs analysis after big changes.</li>
+      <li>(Skip on camera, just mention) <code class="ui">Clean up .codemd</code> and <code class="ui">Stop Local Server</code> exist for resetting/uninstalling cleanly.</li>
+      <li>Cut back to the Marketplace page or codemd.dev for the outro card.</li>
+    </ul>
+    <h3 class="label">Say</h3>
+    <blockquote class="say">
+      <p>"That's CODEMD — install it from the VS Code Marketplace, or find the details at codemd.dev. It's a pre-release preview, so if something looks off, file an issue — I'm reading every one."</p>
+    </blockquote>
+  </section>
+
+  <footer>CODEMD demo script · update this file as the panel UI changes · not shipped with the extension</footer>
+
+</div>
+</body>
+</html>

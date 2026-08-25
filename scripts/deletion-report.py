@@ -169,6 +169,14 @@ def should_skip_report_path(rel_path):
         return True
     if "__pycache__" in parts or "node_modules" in parts or ".codemd" in parts:
         return True
+    # Third-party/dependency trees, not hand-edited source. Without this, a
+    # committed or historical virtualenv (or a node vendor dir) gets diffed
+    # like project code — e.g. a routine `pip install` upgrade inside a
+    # tracked .venv shows up as "your" functions being deleted/added, with a
+    # library symbol like fastapi.routing.APIRoute.__init__ reported as a
+    # removed function. Mirrors DEFAULT_EXCLUDES in extension.ts.
+    if {".venv", "venv", "site-packages", "vendor"} & set(parts):
+        return True
     if parts[0] in {"out", "dist", "build"}:
         return True
     if parts[0] == "output" or parts[0].startswith(("output_", "output-", "output%")):
@@ -422,6 +430,172 @@ def check_call_sites(core_helpers, repo_root, symbol, new_signature, direct_call
     return issues
 
 
+def _module_alias_names(tree, target_module):
+    """Local names in `tree` that refer to `target_module` as a module object
+    (`import target_module` / `import target_module as x`) — used to accept
+    `alias.func(...)` call sites without accepting `some_unrelated_obj.func(...)`
+    just because it happens to share the same attribute name."""
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == target_module:
+                    aliases.add(alias.asname or alias.name.split(".")[0])
+    return aliases
+
+
+def _from_import_alias(tree, target_module, tail):
+    """Local name bound to the target FUNCTION itself via `from target_module
+    import tail as alias` — distinct from _module_alias_names, which tracks
+    the module object, not the function. The common unaliased case (`from
+    target_module import tail`) already matches directly on `tail`, so this
+    only needs to cover the renamed case; returns None when there is none."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == target_module:
+            for alias in node.names:
+                if alias.name == tail and alias.asname:
+                    return alias.asname
+    return None
+
+
+def collect_literal_replay_calls(core_helpers, repo_root, symbol, target_module, direct_callers, node_files, deleted_set):
+    """Finds real call sites of `symbol` whose EVERY argument is a literal
+    constant (number/string/bool/None, or a simple list/tuple/dict of the
+    same) — the only call sites whose exact arguments can be safely lifted
+    into a standalone generated test, since anything else (a local variable,
+    an attribute lookup, a computed expression) references state that
+    doesn't exist outside the caller's own scope. Deliberately narrower than
+    "every call site": a call passing `user.id` or `config.timeout` is
+    skipped, not guessed at with a placeholder, because a placeholder value
+    would test an invocation shape nobody actually uses rather than a real
+    one. Returns (replayable_calls, skipped_count) so callers can report
+    honest partial coverage instead of implying every caller was checked.
+
+    Matching a bare call by its last identifier alone (`tail(...)`) is safe —
+    `symbol` is already confirmed to be a module-level function before this
+    runs, so a bare name resolving to anything else would be a separate
+    module-level binding shadowing it, which is rare and would itself be a
+    bug worth surfacing, not silently working around. An *attribute* call
+    (`obj.tail(...)`) is a different risk: `obj` could be some unrelated
+    instance that happens to have a same-named method, which would generate a
+    test invoking the right function with arguments captured from the wrong
+    call entirely. Attribute calls are only accepted when `obj` resolves to
+    an actual import alias of `symbol`'s own module in that file."""
+    tail = symbol.rsplit(".", 1)[-1]
+    replayable = []
+    skipped = 0
+    for caller in direct_callers:
+        if caller in deleted_set:
+            continue
+        caller_file = node_files.get(caller)
+        if not caller_file or not caller_file.endswith(".py"):
+            continue
+        abs_path = os.path.join(repo_root, caller_file)
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                caller_source = f.read()
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(caller_source)
+        except SyntaxError:
+            continue
+        module_name = core_helpers._python_module_name_for(caller_file)
+        node = core_helpers._find_function_node(tree, module_name, caller)
+        if node is None:
+            continue
+        module_aliases = _module_alias_names(tree, target_module)
+        from_import_alias = _from_import_alias(tree, target_module, tail)
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            if isinstance(func, ast.Name):
+                # Covers both the common `from module import tail` case
+                # (func.id == tail directly) and a renamed `... import tail
+                # as alias` (func.id == the resolved alias).
+                matched = func.id == tail or (from_import_alias is not None and func.id == from_import_alias)
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in module_aliases:
+                matched = func.attr == tail
+            else:
+                matched = False
+            if not matched:
+                continue
+            if any(isinstance(a, ast.Starred) for a in child.args) or any(kw.arg is None for kw in child.keywords):
+                skipped += 1
+                continue
+            try:
+                positional = [ast.literal_eval(a) for a in child.args]
+                keywords = {kw.arg: ast.literal_eval(kw.value) for kw in child.keywords}
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+            replayable.append({
+                "caller": caller,
+                "file": caller_file,
+                "line": getattr(child, "lineno", None),
+                "positional": positional,
+                "keywords": keywords,
+            })
+    return replayable, skipped
+
+
+def is_module_level_function(repo_root, file_path, tail):
+    """True only for a bare module-level `def tail(...)` — a method needs a
+    real instance to call, which a literal-argument replay has no way to
+    construct, so methods are out of scope for this generator rather than
+    silently producing a test that can never run."""
+    try:
+        with open(os.path.join(repo_root, file_path), "r", encoding="utf-8", errors="ignore") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError):
+        return False
+    return any(
+        isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == tail
+        for n in ast.iter_child_nodes(tree)
+    )
+
+
+def generate_replay_test_source(core_helpers, symbol, target_file, replayable_calls, base, target):
+    """Renders a pytest file that replays each real, literal-argument call
+    site found by collect_literal_replay_calls. Each test only asserts the
+    call doesn't raise — it has no way to know whether the ORIGINAL behavior
+    was correct, only whether this exact real invocation still runs. That's
+    a deliberately narrow claim; the docstring says so explicitly so nobody
+    mistakes a green run for a correctness guarantee."""
+    tail = symbol.rsplit(".", 1)[-1]
+    module_name = core_helpers._python_module_name_for(target_file)
+    lines = [
+        '"""Auto-generated by CODEMD (call-site replay).',
+        "",
+        f"Replays real call sites of {symbol!r} found in the diff {base}..{target or 'working tree'}.",
+        "Each test only asserts the call still runs without raising, using the exact",
+        "literal arguments a real caller passed — it says nothing about whether the",
+        "original behavior was correct, only whether this specific real invocation",
+        "still works. A red test here means this change broke a real caller;",
+        "a green test is not proof of correctness. Review before trusting, and",
+        "delete this file once its assertions are folded into your real test suite",
+        "or it no longer reflects real call sites.",
+        '"""',
+        f"from {module_name} import {tail}",
+        "",
+        "",
+    ]
+    for index, call in enumerate(replayable_calls, start=1):
+        caller_slug = re.sub(r"[^A-Za-z0-9_]", "_", call["caller"])[:60]
+        arg_parts = [repr(v) for v in call["positional"]]
+        arg_parts += [f"{k}={v!r}" for k, v in call["keywords"].items()]
+        call_expr = f"{tail}({', '.join(arg_parts)})"
+        lines.append(f"def test_replay_{index:02d}_{caller_slug}():")
+        lines.append(f"    # From {call['file']}:{call['line']} (calling {call['caller']})")
+        lines.append(f"    result = {call_expr}  # noqa: F841 — kept for a human/agent to add a real assertion")
+        lines.append("    # TODO: this only proves the call doesn't raise. Confirm `result` is still")
+        lines.append("    # correct, then replace this comment with a real assertion.")
+        lines.append("")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def public_signature_diff(sig_diff):
     """Strips `new_signature` — internal plumbing check_call_sites needs,
     not something the report's consumers should have to parse — before a
@@ -555,6 +729,19 @@ def main():
         "--max-impact-symbols", type=int, default=0,
         help="Limit expensive impact-radius expansion for modified symbols. 0 means no limit.",
     )
+    parser.add_argument(
+        "--emit-regression-tests", default=None,
+        help="Directory (repo-root-relative) to write generated call-site-replay pytest files into, "
+             "one per modified module-level function that has at least one real caller passing only "
+             "literal arguments. Off by default — this is a heavier, opt-in step, not part of the "
+             "regular changes/commits check.",
+    )
+    parser.add_argument(
+        "--regression-test-symbol", default=None,
+        help="With --emit-regression-tests, only generate a test for this one fully-qualified symbol "
+             "instead of every modified function in the diff — used when a user explicitly asks for a "
+             "test for one specific change rather than the whole batch.",
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, args.backend_dir)
@@ -679,15 +866,41 @@ def main():
                 node_files.get(n) or deleted_symbols.get(n, {}).get("file", "") for n in radius["impacted"]
             } - {""})
             sig_diff = signature_diff_symbols.get(symbol)
+            direct_callers = [n for n, lvl in radius.get("levels", {}).items() if int(lvl) == 1]
             call_site_issues = []
             # Only worth the extra file reads/parses when the signature
             # itself changed — a body-only edit can't desync a caller's
             # argument list.
             if sig_diff and sig_diff.get("changed"):
-                direct_callers = [n for n, lvl in radius.get("levels", {}).items() if int(lvl) == 1]
                 call_site_issues = check_call_sites(
                     core_helpers, repo_root, symbol, sig_diff["new_signature"], direct_callers, node_files, deleted_set,
                 )
+            regression_test = None
+            symbol_filter_ok = not args.regression_test_symbol or args.regression_test_symbol == symbol
+            if args.emit_regression_tests and symbol_filter_ok and file_path.endswith(".py") and is_module_level_function(repo_root, file_path, symbol.rsplit(".", 1)[-1]):
+                target_module = core_helpers._python_module_name_for(file_path)
+                replayable, skipped = collect_literal_replay_calls(
+                    core_helpers, repo_root, symbol, target_module, direct_callers, node_files, deleted_set,
+                )
+                if replayable:
+                    out_dir = os.path.join(repo_root, args.emit_regression_tests)
+                    os.makedirs(out_dir, exist_ok=True)
+                    # Qualified by the full symbol (module + name), not just the
+                    # tail — two modified functions with the same short name in
+                    # different files would otherwise collide and overwrite
+                    # each other's generated file.
+                    out_name = f"test_replay_{re.sub(r'[^A-Za-z0-9_]', '_', symbol)}.py"
+                    out_path = os.path.join(out_dir, out_name)
+                    source = generate_replay_test_source(core_helpers, symbol, file_path, replayable, args.base, args.target)
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(source)
+                    regression_test = {
+                        "path": os.path.relpath(out_path, repo_root).replace("\\", "/"),
+                        "replayed_call_count": len(replayable),
+                        "skipped_non_literal_count": skipped,
+                    }
+                elif skipped:
+                    regression_test = {"path": None, "replayed_call_count": 0, "skipped_non_literal_count": skipped}
             report["modified"].append({
                 "symbol": symbol,
                 "file": file_path,
@@ -701,6 +914,7 @@ def main():
                 "cosmetic_only": cosmetic_only_symbols.get(symbol),
                 "signature_diff": public_signature_diff(sig_diff),
                 "call_site_issues": call_site_issues,
+                "regression_test": regression_test,
             })
         for symbol, meta in modified_items[len(impact_items):]:
             report["modified"].append({

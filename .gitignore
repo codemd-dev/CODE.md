@@ -25,3 +25,7 @@ output-*/
 output*/
 
 node_modules/
+
+# Local Python virtualenv for running the backend's own pytest suite.
+.venv/
+venv/

@@ -676,36 +676,6 @@ def product_name_from_context(repo_context: dict | None) -> tuple[str, str]:
     return "", ""
 
 
-GAME_FEATURE_NAME_ALIASES = {
-    "bloodfootball": "Blood Football",
-    "bomberman": "Bomberman",
-    "breakoutclone": "Breakout",
-    "catchcoins": "Catch Coins",
-    "flappybird": "Flappy Bird",
-    "flipcardbymemory": "Flip Card By Memory",
-    "gemgem": "Gem Gem",
-    "gobang": "Gobang",
-    "magictower": "Magic Tower",
-    "minesweeper": "Minesweeper",
-    "pacman": "Pac-Man",
-    "pikachu": "Pikachu",
-    "puzzlepieces": "Puzzle Pieces",
-    "ski": "Ski",
-    "tankwar": "Tank War",
-    "towerdefense": "Tower Defense",
-    "twozerofoureight": "2048",
-    "voicecontrolpikachu": "Voice Control Pikachu",
-    "whacamole": "Whac-A-Mole",
-}
-
-
-def humanize_repo_feature_key(key: str, product_type: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "", str(key).lower())
-    if product_type == "game project" and normalized in GAME_FEATURE_NAME_ALIASES:
-        return GAME_FEATURE_NAME_ALIASES[normalized]
-    return humanize_feature_token(key)
-
-
 def record_path_terms(record: dict) -> list[str]:
     path = str(record.get("path", ""))
     symbol = str(record.get("symbol", ""))
@@ -716,610 +686,6 @@ def record_path_only_terms(record: dict) -> list[str]:
     return tokenize_feature_text(str(record.get("path", "")))
 
 
-FEATURE_CATALOG = [
-    (
-        "Save/load and persistence",
-        {
-            "save",
-            "load",
-            "restore",
-            "store",
-            "bundle",
-            "backup",
-            "slot",
-            "state",
-            "serialize",
-            "persist",
-        },
-    ),
-    (
-        "Level transitions and dungeon flow",
-        {
-            "level",
-            "dungeon",
-            "interlevel",
-            "transition",
-            "switch",
-            "descend",
-            "ascend",
-            "return",
-            "resurrect",
-            "reset",
-            "depth",
-        },
-    ),
-    (
-        "Dungeon generation and rooms",
-        {
-            "rooms",
-            "room",
-            "painter",
-            "paint",
-            "terrain",
-            "tile",
-            "tiles",
-            "map",
-            "maze",
-            "builder",
-            "entrance",
-            "exit",
-            "secret",
-        },
-    ),
-    (
-        "Combat, damage, and targeting",
-        {
-            "attack",
-            "damage",
-            "defense",
-            "weapon",
-            "armor",
-            "hit",
-            "target",
-            "zap",
-            "shoot",
-            "throw",
-            "kill",
-            "death",
-            "roll",
-            "proc",
-        },
-    ),
-    (
-        "Hero, classes, talents, and abilities",
-        {
-            "hero",
-            "talent",
-            "ability",
-            "warrior",
-            "mage",
-            "rogue",
-            "huntress",
-            "duelist",
-            "cleric",
-            "spell",
-            "subclass",
-        },
-    ),
-    (
-        "Enemies, mobs, NPCs, and AI",
-        {
-            "mob",
-            "mobs",
-            "npc",
-            "enemy",
-            "boss",
-            "ally",
-            "ai",
-            "act",
-            "aggro",
-            "flee",
-            "wander",
-            "notice",
-            "beckon",
-        },
-    ),
-    (
-        "Items, inventory, equipment, and loot",
-        {
-            "item",
-            "items",
-            "inventory",
-            "bag",
-            "belongings",
-            "equip",
-            "collect",
-            "loot",
-            "heap",
-            "gold",
-            "potion",
-            "scroll",
-            "wand",
-            "ring",
-            "artifact",
-            "food",
-            "key",
-        },
-    ),
-    (
-        "Buffs, status effects, and conditions",
-        {
-            "buff",
-            "buffs",
-            "status",
-            "effect",
-            "effects",
-            "blindness",
-            "invisibility",
-            "haste",
-            "terror",
-            "bleeding",
-            "poison",
-            "burning",
-            "paralysis",
-            "cooldown",
-        },
-    ),
-    (
-        "UI, windows, menus, and scenes",
-        {
-            "ui",
-            "window",
-            "windows",
-            "wnd",
-            "scene",
-            "scenes",
-            "button",
-            "toolbar",
-            "layout",
-            "menu",
-            "pane",
-            "tab",
-            "select",
-            "click",
-            "text",
-        },
-    ),
-    (
-        "Rendering, sprites, effects, and audio",
-        {
-            "sprite",
-            "sprites",
-            "render",
-            "visual",
-            "image",
-            "texture",
-            "camera",
-            "particle",
-            "emitter",
-            "animation",
-            "fx",
-            "sound",
-            "music",
-        },
-    ),
-    (
-        "Quests, badges, journal, and progression",
-        {
-            "quest",
-            "quests",
-            "badge",
-            "badges",
-            "journal",
-            "record",
-            "ranking",
-            "rankings",
-            "statistics",
-            "unlock",
-            "progress",
-            "catalog",
-            "document",
-        },
-    ),
-    (
-        "Traps, blobs, plants, and environment",
-        {
-            "trap",
-            "traps",
-            "blob",
-            "blobs",
-            "plant",
-            "plants",
-            "water",
-            "fire",
-            "gas",
-            "grass",
-            "chasm",
-            "door",
-            "wall",
-        },
-    ),
-    (
-        "Settings, input, platform, and system",
-        {
-            "settings",
-            "input",
-            "key",
-            "keyboard",
-            "controller",
-            "pointer",
-            "android",
-            "desktop",
-            "ios",
-            "platform",
-            "display",
-            "update",
-            "support",
-        },
-    ),
-]
-
-UI_COMPONENT_FEATURE_CATALOG = [
-    ("Progress display and value updates", {"progress", "bar", "value", "percent", "max", "min", "update", "increment"}),
-    ("Widget rendering and drawing", {"draw", "paint", "render", "canvas", "view", "drawable", "bitmap", "graphics"}),
-    ("Styling, colors, and appearance", {"color", "style", "theme", "paint", "background", "foreground", "tint"}),
-    ("Sizing, layout, and measurement", {"layout", "measure", "width", "height", "size", "bounds", "padding"}),
-    ("Animation and transitions", {"animate", "animation", "animator", "duration", "interpolator", "transition"}),
-    ("Configuration and attributes", {"config", "attribute", "attrs", "setting", "option", "init", "constructor"}),
-    ("Demo/sample application", {"demo", "sample", "example", "main", "activity", "show"}),
-    ("Platform integration", {"android", "context", "resource", "xml", "view", "activity"}),
-]
-
-CARD_GAME_FEATURE_CATALOG = [
-    ("Cards, deck, and shuffling", {"card", "cards", "deck", "shuffle", "suit", "rank"}),
-    ("Hands and scoring", {"hand", "score", "value", "rank", "pair", "flush", "straight"}),
-    ("Players and dealer flow", {"player", "dealer", "turn", "bet", "winner"}),
-    ("Game state and rounds", {"game", "round", "state", "start", "reset", "deal"}),
-    ("UI and input", {"button", "click", "view", "screen", "input", "select"}),
-]
-
-GENERIC_GAME_FEATURE_CATALOG = [
-    ("Game loop and scene flow", {"game", "level", "scene", "start", "run", "restart", "pause", "over"}),
-    ("Player, enemy, and object behavior", {"player", "enemy", "hero", "sprite", "tank", "bird", "ball", "snake", "block"}),
-    ("Input and controls", {"key", "keyboard", "mouse", "click", "event", "control", "button", "input"}),
-    ("Rendering, animation, and visual effects", {"draw", "render", "display", "screen", "image", "sprite", "animation", "surface"}),
-    ("Collision, physics, and movement", {"collide", "collision", "move", "speed", "position", "rect", "hit", "bounce"}),
-    ("Scoring, state, and rules", {"score", "state", "win", "lose", "rule", "match", "timer", "life"}),
-    ("Maps, levels, and boards", {"map", "level", "board", "grid", "maze", "mine", "tower", "tile"}),
-    ("AI and automated opponents", {"ai", "search", "strategy", "bot", "enemy", "path", "choose"}),
-    ("Audio, assets, and resources", {"sound", "music", "audio", "asset", "resource", "font", "image"}),
-]
-
-CODE_ANALYSIS_FEATURE_CATALOG = [
-    ("Repository ingestion and metadata", {"repo", "github", "metadata", "branch", "zip", "download", "cache", "extract"}),
-    ("Parser and AST extraction", {"parse", "parser", "ast", "tree", "sitter", "javalang", "joern", "python", "java", "syntax"}),
-    ("Graph construction and visualization", {"graph", "node", "edge", "callee", "caller", "cytoscape", "dependency", "callgraph"}),
-    ("Search and embedding model", {"search", "query", "embedding", "vector", "sqlite", "dataset", "scim", "token", "model"}),
-    ("Feature catalog and static evidence", {"feature", "catalog", "evidence", "match", "keyword", "subfeature", "metric", "summary"}),
-    ("Dashboard and generated reports", {"dashboard", "render", "html", "asset", "panel", "table", "status", "display"}),
-    ("API service and configuration", {"api", "route", "request", "response", "fastapi", "token", "config", "environment"}),
-]
-
-LIBRARY_FEATURE_CATALOG = [
-    ("Core APIs and public surface", {"api", "public", "builder", "factory", "create", "open", "close"}),
-    ("Data structures and models", {"model", "node", "value", "entry", "map", "list", "set"}),
-    ("I/O, buffers, and streams", {"buffer", "stream", "source", "sink", "read", "write", "byte"}),
-    ("Concurrency and async flow", {"async", "flow", "future", "thread", "executor", "dispatch", "emit"}),
-    ("Parsing, encoding, and serialization", {"parse", "encode", "decode", "json", "serialize", "format"}),
-    ("Validation and error handling", {"check", "validate", "error", "exception", "fail", "assert"}),
-    ("Tests, samples, and compatibility", {"test", "sample", "example", "compat", "mock"}),
-]
-
-JAVA_UTILITY_FEATURE_CATALOG = [
-    ("String utilities and text handling", {"string", "charsequence", "blank", "empty", "split", "join", "substring", "replace", "case"}),
-    ("Array, object, and validation helpers", {"array", "object", "validate", "default", "null", "clone", "contains", "index"}),
-    ("Reflection utilities", {"reflect", "reflection", "method", "field", "constructor", "invoke", "accessible"}),
-    ("Date, time, and formatting utilities", {"date", "time", "duration", "calendar", "format", "parse", "truncate", "round"}),
-    ("Random, numeric, and boolean utilities", {"random", "number", "numeric", "boolean", "range", "compare"}),
-    ("Builder and system helper utilities", {"builder", "system", "class", "enum", "exception", "arch", "event"}),
-]
-
-DEFAULT_FEATURE_CATALOG = [
-    ("Core application logic", {"app", "main", "core", "manager", "service", "controller"}),
-    ("Data model and state", {"model", "state", "data", "record", "entity", "value"}),
-    ("UI and interaction", {"ui", "view", "screen", "button", "click", "input", "layout"}),
-    ("Persistence and configuration", {"save", "load", "store", "restore", "config", "settings"}),
-    ("Rendering and presentation", {"render", "draw", "paint", "display", "image", "text"}),
-    ("System integration", {"platform", "system", "file", "network", "update", "support"}),
-]
-
-
-SUBFEATURE_CATALOG = {
-    "Items, inventory, equipment, and loot": [
-        ("Scrolls", {"scroll", "scrolls"}),
-        ("Potions", {"potion", "potions"}),
-        ("Wands", {"wand", "wands"}),
-        ("Weapons", {"weapon", "weapons", "melee", "missile"}),
-        ("Armor", {"armor", "glyph", "glyphs"}),
-        ("Artifacts and rings", {"artifact", "artifacts", "ring", "rings"}),
-        ("Bags and inventory selection", {"bag", "bags", "inventory", "belongings", "quickslot"}),
-        ("Food and consumables", {"food", "meat", "pasty", "ration", "eat"}),
-        ("Loot, gold, heaps, and keys", {"loot", "gold", "heap", "heaps", "key", "keys", "drop", "collect"}),
-    ],
-    "UI, windows, menus, and scenes": [
-        ("Windows and dialogs", {"window", "windows", "wnd"}),
-        ("Scenes and screen flow", {"scene", "scenes", "startscene", "gamescene", "interlevelscene"}),
-        ("Buttons, toolbar, and menus", {"button", "buttons", "toolbar", "menu", "pane"}),
-        ("Tabs, lists, and layout", {"tab", "tabs", "list", "layout", "scrollpane"}),
-        ("Text input and labels", {"text", "label", "input", "title"}),
-        ("Selection and click handling", {"select", "selected", "click", "onclick", "hover"}),
-    ],
-    "Enemies, mobs, NPCs, and AI": [
-        ("Mob base behavior", {"mob", "mobs", "act", "notice", "enemy"}),
-        ("Bosses and special enemies", {"boss", "dm300", "tengu", "yog", "king", "goo"}),
-        ("NPCs and quests", {"npc", "npcs", "ghost", "shopkeeper", "blacksmith", "imp"}),
-        ("Allies, summons, and companions", {"ally", "allies", "summon", "summoning", "bee", "ghost"}),
-        ("AI states and movement", {"wander", "flee", "hunt", "beckon", "target", "enemy"}),
-        ("Mob loot and spawning", {"spawn", "spawner", "loot", "create", "rotation"}),
-    ],
-    "Combat, damage, and targeting": [
-        ("Damage rolls and defense", {"damage", "roll", "drroll", "defense", "armor"}),
-        ("Melee and ranged attacks", {"attack", "melee", "missile", "shoot", "throw"}),
-        ("Weapon abilities and procs", {"weapon", "proc", "ability", "duelist", "kill"}),
-        ("Targeting and ballistics", {"target", "targeting", "ballistica", "cell", "zap"}),
-        ("Death, kill, and fail states", {"death", "die", "kill", "fail", "gameover"}),
-    ],
-    "Hero, classes, talents, and abilities": [
-        ("Hero core stats and actions", {"hero", "str", "exp", "live", "busy", "act"}),
-        ("Talents and subclasses", {"talent", "talents", "subclass", "points"}),
-        ("Class abilities", {"ability", "abilities", "warrior", "rogue", "mage", "huntress", "duelist"}),
-        ("Cleric spells", {"cleric", "spell", "spells", "holy", "tome"}),
-        ("Hero selection and badges", {"heroselectscene", "select", "badge", "unlock"}),
-    ],
-    "Buffs, status effects, and conditions": [
-        ("Buff lifecycle", {"buff", "buffs", "affect", "detach", "attach"}),
-        ("Cooldowns and trackers", {"cooldown", "tracker", "iconfadepercent", "visualcooldown"}),
-        ("Negative status effects", {"poison", "bleeding", "burning", "blindness", "terror", "daze", "paralysis"}),
-        ("Positive status effects", {"haste", "bless", "invisibility", "shield", "healing", "adrenaline"}),
-        ("Persistence of buffs", {"store", "restore", "bundle"}),
-    ],
-    "Rendering, sprites, effects, and audio": [
-        ("Character and item sprites", {"sprite", "sprites", "charsprite", "itemsprite"}),
-        ("Particles and emitters", {"particle", "particles", "emitter", "emit"}),
-        ("Textures, images, and tilemaps", {"texture", "image", "tilemap", "bitmap", "visual"}),
-        ("Camera and coordinates", {"camera", "world", "center", "point"}),
-        ("Animation and visual effects", {"animation", "animate", "fx", "effect", "effects"}),
-        ("Music and sound", {"music", "sound", "audio"}),
-    ],
-    "Dungeon generation and rooms": [
-        ("Room painting", {"room", "rooms", "paint", "painter"}),
-        ("Secret rooms", {"secret", "hoard", "laboratory", "library", "runestone"}),
-        ("Standard, entrance, and exit rooms", {"standard", "entrance", "exit"}),
-        ("Terrain and tile visuals", {"terrain", "tile", "tiles", "tilemap", "wall", "door"}),
-        ("Level builders and maze generation", {"builder", "build", "maze", "generate"}),
-        ("Special rooms and traps placement", {"special", "quest", "trap", "traps"}),
-    ],
-    "Settings, input, platform, and system": [
-        ("Keyboard and key bindings", {"keyboard", "key", "keys", "binding", "bindings"}),
-        ("Controller and pointer input", {"controller", "pointer", "touch", "mouse"}),
-        ("Platform support", {"android", "desktop", "ios", "platform", "launcher"}),
-        ("Display and UI settings", {"display", "fullscreen", "scale", "brightness", "systemui"}),
-        ("Updates, errors, and compatibility", {"update", "updates", "exception", "compat", "support"}),
-    ],
-    "Save/load and persistence": [
-        ("Game save/load", {"save", "load", "savegame", "loadgame"}),
-        ("Level save/load", {"savelevel", "loadlevel", "level"}),
-        ("Bundle serialization", {"bundle", "store", "restore"}),
-        ("Backup and save slots", {"backup", "slot", "saveslot"}),
-        ("Settings persistence", {"settings", "gamesettings", "put", "get"}),
-    ],
-    "Level transitions and dungeon flow": [
-        ("Switching levels", {"switch", "switchlevel", "transition", "leveltransition"}),
-        ("Descending, ascending, and return flow", {"descend", "ascend", "return", "returnto"}),
-        ("Interlevel scene", {"interlevel", "interlevelscene"}),
-        ("Reset, resurrection, and restore flow", {"reset", "resurrect", "restore"}),
-        ("Depth and level creation", {"depth", "newlevel", "create", "loadlevel"}),
-    ],
-    "Traps, blobs, plants, and environment": [
-        ("Traps", {"trap", "traps", "activate", "trigger"}),
-        ("Blobs and gases", {"blob", "blobs", "gas", "toxic", "fire"}),
-        ("Plants and grass", {"plant", "plants", "grass", "seed"}),
-        ("Terrain hazards", {"chasm", "water", "wall", "door", "pit"}),
-        ("Environmental effects", {"burning", "freezing", "electricity", "storm"}),
-    ],
-    "Quests, badges, journal, and progression": [
-        ("Quests", {"quest", "quests", "blacksmith", "ghost", "wandmaker", "imp"}),
-        ("Badges and unlocks", {"badge", "badges", "unlock", "validate"}),
-        ("Journal and notes", {"journal", "notes", "record", "landmark"}),
-        ("Rankings and statistics", {"ranking", "rankings", "statistics", "score"}),
-        ("Catalog and documents", {"catalog", "document", "documents", "guide"}),
-    ],
-}
-
-UI_COMPONENT_SUBFEATURE_CATALOG = {
-    "Progress display and value updates": [
-        ("Current progress value", {"progress", "value", "percent"}),
-        ("Minimum and maximum bounds", {"min", "max", "range"}),
-        ("Progress updates", {"update", "set", "increment", "change"}),
-    ],
-    "Widget rendering and drawing": [
-        ("Canvas drawing", {"canvas", "draw", "paint"}),
-        ("Drawable/bitmap rendering", {"drawable", "bitmap", "image"}),
-        ("View invalidation", {"invalidate", "refresh", "redraw"}),
-    ],
-    "Styling, colors, and appearance": [
-        ("Colors", {"color", "colors", "tint"}),
-        ("Background and foreground", {"background", "foreground"}),
-        ("Styles and themes", {"style", "theme", "appearance"}),
-    ],
-    "Sizing, layout, and measurement": [
-        ("Measurement", {"measure", "measured", "width", "height"}),
-        ("Layout bounds", {"layout", "bounds", "rect"}),
-        ("Padding and spacing", {"padding", "margin", "spacing"}),
-    ],
-    "Animation and transitions": [
-        ("Progress animation", {"animate", "animation", "animator"}),
-        ("Timing", {"duration", "delay", "interpolator"}),
-    ],
-    "Configuration and attributes": [
-        ("XML/custom attributes", {"attrs", "attribute", "xml", "typedarray"}),
-        ("Initialization", {"init", "constructor", "create"}),
-        ("Runtime options", {"option", "setting", "config"}),
-    ],
-    "Demo/sample application": [
-        ("Sample screens", {"sample", "demo", "example"}),
-        ("Activity setup", {"activity", "oncreate", "main"}),
-    ],
-    "Platform integration": [
-        ("Android view integration", {"android", "view", "context"}),
-        ("Resources", {"resource", "resources", "xml"}),
-    ],
-}
-
-CARD_GAME_SUBFEATURE_CATALOG = {
-    "Cards, deck, and shuffling": [
-        ("Deck creation", {"deck", "create"}),
-        ("Shuffle/deal", {"shuffle", "deal"}),
-        ("Card model", {"card", "suit", "rank"}),
-    ],
-    "Hands and scoring": [
-        ("Hand evaluation", {"hand", "evaluate", "score"}),
-        ("Winning combinations", {"pair", "flush", "straight"}),
-    ],
-    "Players and dealer flow": [
-        ("Player actions", {"player", "hit", "stand", "bet"}),
-        ("Dealer actions", {"dealer", "turn"}),
-    ],
-}
-
-GENERIC_GAME_SUBFEATURE_CATALOG = {
-    "Game loop and scene flow": [
-        ("Game startup and main loop", {"start", "run", "main", "loop"}),
-        ("Level or scene transitions", {"level", "scene", "switch", "restart"}),
-        ("Pause/end states", {"pause", "over", "end", "quit"}),
-    ],
-    "Player, enemy, and object behavior": [
-        ("Player behavior", {"player", "hero"}),
-        ("Enemy behavior", {"enemy", "monster", "tank"}),
-        ("Sprite/object behavior", {"sprite", "object", "ball", "bird", "block"}),
-    ],
-    "Input and controls": [
-        ("Keyboard controls", {"key", "keyboard"}),
-        ("Mouse/click controls", {"mouse", "click", "button"}),
-        ("Input event handling", {"event", "control", "input"}),
-    ],
-    "Rendering, animation, and visual effects": [
-        ("Drawing and display", {"draw", "display", "screen", "surface"}),
-        ("Sprites and images", {"sprite", "image"}),
-        ("Animation/effects", {"animation", "effect", "render"}),
-    ],
-    "Collision, physics, and movement": [
-        ("Movement", {"move", "speed", "position"}),
-        ("Collision detection", {"collide", "collision", "hit"}),
-        ("Bounds/rect physics", {"rect", "bounce", "bound"}),
-    ],
-    "Scoring, state, and rules": [
-        ("Scoring", {"score", "points"}),
-        ("Game state", {"state", "timer", "life"}),
-        ("Win/lose rules", {"win", "lose", "rule", "match"}),
-    ],
-    "Maps, levels, and boards": [
-        ("Maps and boards", {"map", "board", "grid"}),
-        ("Levels and stages", {"level", "stage", "tower"}),
-        ("Tiles/mines/maze", {"tile", "mine", "maze"}),
-    ],
-    "AI and automated opponents": [
-        ("AI decision logic", {"ai", "strategy", "choose"}),
-        ("Search/path logic", {"search", "path"}),
-        ("Automated opponents", {"bot", "enemy"}),
-    ],
-    "Audio, assets, and resources": [
-        ("Sound and music", {"sound", "music", "audio"}),
-        ("Images and fonts", {"image", "font"}),
-        ("Asset/resource loading", {"asset", "resource"}),
-    ],
-}
-
-LIBRARY_SUBFEATURE_CATALOG = {
-    "Core APIs and public surface": [
-        ("Builders and factories", {"builder", "factory", "create"}),
-        ("Open/close lifecycle", {"open", "close", "start", "stop"}),
-    ],
-    "I/O, buffers, and streams": [
-        ("Reading", {"read", "source", "input"}),
-        ("Writing", {"write", "sink", "output"}),
-        ("Buffers", {"buffer", "byte"}),
-    ],
-    "Validation and error handling": [
-        ("Validation", {"check", "validate"}),
-        ("Exceptions", {"error", "exception", "fail"}),
-    ],
-}
-
-JAVA_UTILITY_SUBFEATURE_CATALOG = {
-    "String utilities and text handling": [
-        ("Blank and empty checks", {"blank", "empty", "notblank", "notempty"}),
-        ("Split, join, and substring helpers", {"split", "join", "substring", "left", "right", "mid"}),
-        ("Replacement and case helpers", {"replace", "case", "capitalize", "upper", "lower"}),
-    ],
-    "Array, object, and validation helpers": [
-        ("Array manipulation", {"array", "add", "remove", "clone", "contains"}),
-        ("Object defaults and null handling", {"object", "default", "null", "nonnull"}),
-        ("Argument validation", {"validate", "valid", "inclusive", "exclusive"}),
-    ],
-    "Reflection utilities": [
-        ("Method invocation helpers", {"method", "invoke", "invocation"}),
-        ("Field access helpers", {"field", "read", "write"}),
-        ("Constructor helpers", {"constructor", "instantiate", "newinstance"}),
-    ],
-    "Date, time, and formatting utilities": [
-        ("Date arithmetic", {"date", "add", "set"}),
-        ("Duration formatting", {"duration", "format", "period"}),
-        ("Calendar truncation and rounding", {"calendar", "truncate", "round", "ceiling"}),
-    ],
-    "Random, numeric, and boolean utilities": [
-        ("Random strings and values", {"random", "randomstring"}),
-        ("Number checks and conversion", {"number", "numeric", "digit"}),
-        ("Boolean helpers", {"boolean", "true", "false"}),
-    ],
-    "Builder and system helper utilities": [
-        ("Builder helpers", {"builder", "tostring", "equals", "hashcode"}),
-        ("System and platform helpers", {"system", "arch", "os", "java"}),
-        ("Class and enum helpers", {"class", "enum", "package"}),
-    ],
-}
-
-CODE_ANALYSIS_SUBFEATURE_CATALOG = {
-    "Repository ingestion and metadata": [
-        ("GitHub metadata", {"github", "metadata", "branch"}),
-        ("Archive download/cache", {"zip", "download", "cache", "extract"}),
-        ("Repository statistics", {"stats", "language", "extension", "comments"}),
-    ],
-    "Parser and AST extraction": [
-        ("Parser dispatcher", {"dispatch", "parser", "parsers", "language", "lang"}),
-        ("Python AST parser", {"python", "ast"}),
-        ("Java tree-sitter parser", {"java", "tree", "sitter"}),
-        ("javalang fallback parser", {"javalang", "fallback"}),
-        ("Optional Joern parser", {"joern", "optional"}),
-        ("Syntax recovery and parse errors", {"syntax", "parse", "error"}),
-    ],
-    "Graph construction and visualization": [
-        ("Function graph", {"callee", "caller", "callgraph"}),
-        ("File graph", {"file", "dependency", "edge", "node"}),
-        ("Cytoscape output", {"cytoscape", "html", "visualization"}),
-    ],
-    "Search and embedding model": [
-        ("Vector database", {"vector", "sqlite", "embedding"}),
-        ("SCIM dataset", {"scim", "dataset", "model"}),
-        ("Query handling", {"search", "query", "result"}),
-    ],
-    "Feature catalog and static evidence": [
-        ("Feature matching", {"feature", "catalog", "keyword", "match"}),
-        ("Evidence rows", {"evidence", "symbol", "line"}),
-        ("Summary metrics", {"summary", "metric", "count"}),
-    ],
-    "Dashboard and generated reports": [
-        ("Dashboard rendering", {"dashboard", "render", "panel"}),
-        ("Generated assets", {"asset", "html", "json"}),
-        ("Tables and status", {"table", "status", "display"}),
-    ],
-    "API service and configuration": [
-        ("FastAPI routes", {"fastapi", "route", "request", "response"}),
-        ("Tokens and environment", {"token", "environment", "config"}),
-    ],
-}
-
-DEFAULT_SUBFEATURE_CATALOG: dict[str, list[tuple[str, set[str]]]] = {}
 
 
 def line_number_at(text: str, offset: int) -> int:
@@ -2975,24 +2341,6 @@ def infer_product_name(records: list[dict], repo_id: str | None, repo_context: d
 # That way even if you don't have space the graph can grow slowly. Low Priority
 # Focus on fixing Search first and then maybe add this as a nice to have.
 
-def catalog_for_product_type(product_type: str) -> tuple[list[tuple[str, set[str]]], dict[str, list[tuple[str, set[str]]]]]:
-    if product_type == "code analysis tool":
-        return CODE_ANALYSIS_FEATURE_CATALOG, CODE_ANALYSIS_SUBFEATURE_CATALOG
-    if product_type == "Java utility library":
-        return JAVA_UTILITY_FEATURE_CATALOG, JAVA_UTILITY_SUBFEATURE_CATALOG
-    if product_type == "game / dungeon crawler":
-        return FEATURE_CATALOG, SUBFEATURE_CATALOG
-    if product_type == "game project":
-        return GENERIC_GAME_FEATURE_CATALOG, GENERIC_GAME_SUBFEATURE_CATALOG
-    if product_type == "UI component library":
-        return UI_COMPONENT_FEATURE_CATALOG, UI_COMPONENT_SUBFEATURE_CATALOG
-    if product_type == "card game":
-        return CARD_GAME_FEATURE_CATALOG, CARD_GAME_SUBFEATURE_CATALOG
-    if product_type == "software library":
-        return LIBRARY_FEATURE_CATALOG, LIBRARY_SUBFEATURE_CATALOG
-    return DEFAULT_FEATURE_CATALOG, DEFAULT_SUBFEATURE_CATALOG
-
-
 DERIVED_FEATURE_PATH_NOISE = {
     "charles",
     "pikachu",
@@ -3056,26 +2404,6 @@ DERIVED_FEATURE_BODY_NOISE = {
     "set",
     "get",
 }
-
-DOMAIN_ANCHOR_ALIASES = {
-    "games": "game",
-    "game": "game",
-    "parsers": "parser",
-    "parser": "parser",
-    "search": "search",
-    "dashboard": "dashboard",
-    "reports": "report",
-    "report": "report",
-    "auth": "auth",
-    "authentication": "authentication",
-    "payments": "payment",
-    "payment": "payment",
-    "api": "api",
-    "routes": "route",
-    "views": "view",
-    "pages": "page",
-}
-
 
 def derive_feature_catalog_from_repo(records: list[dict], product_type: str) -> tuple[list[tuple[str, set[str]]], dict[str, list[tuple[str, set[str]]]], str]:
     """Derive feature names from the built SCIM index records.
@@ -3771,10 +3099,6 @@ _PRODUCT_TOKEN_TECH_SUFFIXES = ("api", "sdk", "cli", "ui")
 def expand_product_tokens(tokens: set[str]) -> set[str]:
     expanded = set(tokens)
     for token in list(tokens):
-        if token == "butterknife" or "butterknife" in token:
-            expanded.update({"butterknife", "butter", "knife"})
-        if token == "codeval" or "codeval" in token:
-            expanded.update({"codeval", "code", "val"})
         for suffix in _PRODUCT_TOKEN_TECH_SUFFIXES:
             if token.endswith(suffix) and len(token) - len(suffix) >= 3:
                 expanded.add(suffix)
@@ -3995,7 +3319,7 @@ def downstream_callgraph_records(anchor: dict, by_symbol: dict[str, dict], max_d
     return rows
 
 
-def record_feature_group_key(record: dict, product_tokens: set[str], product_type: str) -> str:
+def record_feature_group_key(record: dict, product_tokens: set[str]) -> str:
     """Choose the feature cluster key from file/class/route evidence first."""
 
     anchor_type = feature_anchor_type(record)
@@ -4008,16 +3332,6 @@ def record_feature_group_key(record: dict, product_tokens: set[str], product_typ
     class_terms = evidence_feature_tokens(class_name, product_tokens)
     file_terms = evidence_feature_tokens(file_stem, product_tokens)
     method_terms = evidence_feature_tokens(method_name, product_tokens)
-
-    if product_type == "game project":
-        lower_parts = [part.lower() for part in path_parts]
-        for marker in ("games", "game"):
-            if marker in lower_parts:
-                index = lower_parts.index(marker)
-                for part in lower_parts[index + 1 :]:
-                    terms = evidence_feature_tokens(part, product_tokens)
-                    if terms:
-                        return " ".join(terms[:3])
 
     if anchor_type == "api_route" and method_terms:
         return " ".join(method_terms[:3])
@@ -4039,103 +3353,16 @@ def record_feature_group_key(record: dict, product_tokens: set[str], product_typ
     return ""
 
 
-def feature_label_from_evidence(key: str, records: list[dict], product_type: str, product_tokens: set[str] | None = None) -> str:
+def feature_label_from_evidence(key: str, records: list[dict], product_tokens: set[str] | None = None) -> str:
     product_tokens = product_tokens or set()
     key_terms = evidence_feature_tokens(key, product_tokens)
     record_terms: Counter[str] = Counter()
-    method_terms: Counter[str] = Counter()
     anchors = {feature_anchor_type(record) for record in records}
     for record in records:
         record_terms.update(record_identity_tokens(record, product_tokens))
-        method_terms.update(evidence_feature_tokens(str(record.get("method_name", "")), product_tokens))
 
-    term_set = set(key_terms)
-    supporting_terms = set(record_terms)
-    joined_key = "".join(key_terms)
-    method_set = set(method_terms)
-
-    if product_type == "game project":
-        game_name = humanize_repo_feature_key(joined_key, product_type)
-        if game_name and game_name != humanize_feature_token(joined_key):
-            return game_name
-
-    if "dialog" in term_set:
-        base = [term for term in key_terms if term != "dialog"] or [term for term, _ in method_terms.most_common(2)]
-        return f"{humanize_feature_token(' '.join(base[:2]))} dialog".strip().capitalize()
-    if "window" in term_set or "appwindow" in joined_key:
-        return "Application window"
-    if "panel" in term_set:
-        base = [term for term in key_terms if term != "panel"] or ["game"]
-        return f"{humanize_feature_token(' '.join(base[:2]))} panel".strip()
-    if "table" in term_set:
-        base = [term for term in key_terms if term != "table"] or ["game"]
-        return f"{humanize_feature_token(' '.join(base[:2]))} table".strip()
-    if "deck" in term_set:
-        return "Deck management"
-    if "dealer" in term_set:
-        return "Dealer behavior"
-    if "hand" in term_set:
-        return "Hand management"
-    if "player" in term_set:
-        if {"save", "open", "load"} & set(method_terms):
-            return "Player save and load"
-        return "Player management"
-    if "card" in term_set or "cards" in term_set or {"face", "suit", "ace"} & term_set:
-        return "Card model"
-    if "binding" in term_set and ("compiler" in term_set or "compiler" in supporting_terms):
-        return "Binding code generation"
-    if "view" in term_set and "binding" in term_set:
-        return "View binding"
-    if "bind" in term_set and "view" in term_set:
-        return "View binding annotations"
-    if "unbinder" in term_set or "unbind" in term_set:
-        return "Unbinding lifecycle"
-    if "processor" in term_set:
-        return "Annotation processor"
-    if ("click" in term_set or "click" in supporting_terms) and "long" in term_set:
-        return "Long-click event binding"
-    if "click" in term_set:
-        return "Click event binding"
-    if "touch" in term_set:
-        return "Touch event binding"
-    if "selected" in term_set or "select" in term_set:
-        return "Item selection binding"
-    if "collections" in term_set and "view" in term_set:
-        return "View collection helpers"
-    if "manifest" in term_set:
-        return "Android manifest configuration"
-    if ({"bind", "try", "invoke", "validate"} & method_set) and ({"butter", "knife", "butterknife"} & supporting_terms):
-        return "Runtime binding API"
-    if "javalang" in term_set:
-        return "Java parser"
-    if {"tree", "sitter"} <= term_set:
-        return "Tree-sitter Java parser"
-    if "python" in term_set and ({"call", "visitor", "ast", "chunk"} & term_set):
-        return "Python code parser"
-    if "joern" in term_set:
-        return "Joern parser"
-    if {"parser", "parse", "ast"} & term_set:
-        if len(key_terms) > 1:
-            return f"{humanize_feature_token(' '.join(key_terms[:3]))} parser"
-        return "Parser support"
-    if "embedding" in term_set or {"tfidf", "projector"} & term_set:
-        return "Embedding model"
-    if "analyzer" in term_set:
-        return "Code analyzer"
-    if "visitor" in term_set and "call" in supporting_terms:
-        return "Code graph visitor"
-    if "search" in term_set or "query" in term_set:
-        return "Search"
-    if "dashboard" in term_set or anchors & {"html_ui", "frontend_ui_component", "ui_logic", "android_ui_xml"}:
+    if anchors & {"html_ui", "frontend_ui_component", "ui_logic", "android_ui_xml"}:
         return humanize_feature_token(" ".join(key_terms[:2])) or "User interface"
-    if "supabase" in term_set:
-        return "Supabase integration"
-    if "cytoscape" in term_set:
-        return "Cytoscape graph"
-    if "autotrack" in term_set:
-        return "Autotrack instrumentation"
-    if "google" in term_set and "analytics" in term_set:
-        return "Google Analytics"
     if "api_route" in anchors:
         return f"{humanize_feature_token(' '.join(key_terms[:2]))} API".strip()
 
@@ -4331,7 +3558,7 @@ def evidence_feature_candidates(
         hypothesis_evidence[key].extend(hypothesis.get("text_evidence") or [])
 
     for record in records:
-        key = record_feature_group_key(record, product_tokens, product_type)
+        key = record_feature_group_key(record, product_tokens)
         if key:
             grouped[key].append(record)
             if feature_anchor_type(record) in {"api_route", "html_ui", "frontend_ui_component", "android_ui_xml", "ui_logic"}:
@@ -4355,7 +3582,7 @@ def evidence_feature_candidates(
         if source in {"ui_feature_seed", "human_facing_text"} and hypothesis_labels.get(key):
             label = hypothesis_labels[key]
         else:
-            label = feature_label_from_evidence(key, group_records, product_type, product_tokens)
+            label = feature_label_from_evidence(key, group_records, product_tokens)
         if not label or label.lower() in {"unnamed feature", "source", "project"}:
             continue
         by_label[label].extend(group_records)
@@ -4707,7 +3934,8 @@ def feature_catalog_payload(dataset_dir: Path, repo_id: str | None = None, examp
     if evidence_features:
         return {
             "source": "evidence_feature_candidates",
-            "note": "Evidence-backed feature candidates built from README/docs/text, UI/API anchors, functions, paths, and extracted graph metadata. Names are deterministic input for later summary generation; they are not LLM guesses. Reachability is based on the extracted graph and UI/API hints, not runtime proof.",
+            "note": "Evidence-backed feature candidates built from README/docs/text, UI/API anchors, functions, paths, and extracted graph metadata. Names and descriptions are generated per-repo by an LLM reading each cluster's evidence when available; otherwise a deterministic fallback label is used. Reachability is based on the extracted graph and UI/API hints, not runtime proof.",
+            "naming": "heuristic_fallback",
             "product_name": product_name,
             "product_name_source": product_name_source,
             "product_type": product_type,
@@ -4783,6 +4011,7 @@ def feature_catalog_payload(dataset_dir: Path, repo_id: str | None = None, examp
     return {
         "source": catalog_source,
         "note": "Evidence-only feature clusters. Path and identifier clusters are preferred as input for later summary generation; static keyword catalogs are used only as fallback. Status means matching implementation evidence was found. Reachability is based on the extracted graph and UI/API entrypoint hints; it is not a runtime proof.",
+        "naming": "heuristic_fallback",
         "product_name": product_name,
         "product_name_source": product_name_source,
         "product_type": product_type,
