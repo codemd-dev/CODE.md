@@ -25,6 +25,7 @@ It helps AI agents:
 - Follow real code flow
 - Find entry points and important files
 - Use parser-generated callgraphs and filegraphs
+- Find, run, generate, and fix the tests that cover a change, via the callgraph — with a real pass/fail, not a self-report
 - Reduce hallucinations
 - Avoid repeated repo exploration
 - Save developer time and token cost
@@ -43,6 +44,7 @@ It gives AI coding assistants a parser-generated understanding of the codebase, 
 - API routes
 - Modules and responsibilities
 - Callgraph summary
+- Callgraph-linked test coverage, execution, generation, and repair
 - Filegraph summary
 - UI flows
 - TODOs and known gaps

@@ -194,6 +194,37 @@ Instead of parsing thousands of lines of code, the model gets a pre-computed flo
 
 ---
 
+## Callgraph Test Generation
+
+The callgraph is also a test map: every function node can be resolved to the tests that actually exercise it — not just tests whose name happens to match.
+
+* Functions with a discovered test: `<count>`
+* Functions with no discovered test: `<count>`
+* Tests confirmed via coverage (not just "ran"): `<count>`
+
+Function → test mapping:
+
+| Function     | Test file     | Test name     | Coverage-confirmed |
+| ------------ | ------------- | ------------- | ------------------ |
+| `<function>` | `<test_file>` | `<test_name>` | `<true/false>`      |
+
+Execution model:
+
+* Tests run for real, in the repository's own environment — pass/fail is the test runner's actual exit code, never an LLM's self-report.
+* "Coverage-confirmed" means the changed lines were provably hit during that run, not just that the test process exited 0.
+* Environment/dependency failures (missing interpreter, missing plugin, bad config) are reported as environment issues, distinct from a real test failure — a missing package is not a code bug.
+
+Generation and repair — always an explicit action, never automatic:
+
+* A function with no discovered test can get one generated from a real caller: mechanically, by replaying a confirmed caller's literal arguments, or, when no literal call site exists, by asking an LLM to write one.
+* A genuine test failure (not an environment issue) can be handed to an LLM to diagnose and fix, then re-verified by running the test again for a real pass/fail.
+
+### Why this helps LLMs
+
+Without a callgraph, an agent has to guess which test file covers a function by name-matching, which misses tests that exercise it indirectly through a caller. With the callgraph, "what tests cover this?", "did my change break anything?", and "is there a test for this at all?" become direct graph lookups plus a real test run, not a guess — and a failure is a hard fact the LLM can act on instead of a self-reported claim it has to trust.
+
+---
+
 ## Filegraph Summary
 
 Core files:
@@ -277,6 +308,7 @@ It helps by:
 * Helping agents follow real callgraphs and file dependencies
 * Making UI, API, and backend flows easier to trace
 * Saving developer time by avoiding repeated repo exploration
+* Finding, running, generating, and fixing the tests that cover a change — with a real pass/fail, not a self-report
 
 In simple terms:
 
