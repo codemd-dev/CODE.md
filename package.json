@@ -1,8 +1,8 @@
 {
   "name": "codemd-graphs",
   "displayName": "CODEMD",
-  "description": "AI writes your code fast. CODEMD proves each change is safe — traces the callgraph, catches the untested function, generates and runs a real test before you commit.",
-  "version": "0.0.99",
+  "description": "AI writes your code fast. CODEMD proves each change is safe — traces the callgraph, generates and runs the missing test, and fixes real failures before you commit.",
+  "version": "0.0.101",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",

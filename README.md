@@ -4,6 +4,8 @@
 
 Claude, Cursor, Codex, and Copilot write code fast — but they routinely skip the test, or write one that never actually exercises the line they changed. CODEMD closes that loop inside VS Code: it traces your uncommitted change through the repo's callgraph, checks whether anything actually tests the function you touched, writes a real test grounded in how that function is genuinely called when one's missing, and runs it for a genuine pass/fail — automatically, before you commit.
 
+**The loop:** agent changes code → CODEMD maps the impact via the callgraph → finds the tests that already cover it → generates the ones that don't exist → runs only what's required (not the whole suite, not nothing) → surfaces real failures → helps fix the code. Pass/fail is always a real test-runner result — never an LLM's self-report.
+
 ```
 $ git commit -m "add checkout retry flow"
 CODEMD — tracing impact of 3 changed files...

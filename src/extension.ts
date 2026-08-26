@@ -2389,6 +2389,114 @@ async function resolvePythonCallSites(
   return sites;
 }
 
+interface PythonCallerSite extends PythonCallSite {
+  caller: string;
+}
+
+/**
+ * All real callers of a symbol, discovered from scratch from the current
+ * callgraph's ordered_calls — unlike resolvePythonCallSites above, which
+ * only verifies a pre-known candidate list. Needed for a function that has
+ * no pre-change impact data yet (e.g. one newly added in the current diff):
+ * its real callers, if any, only exist in the just-regenerated callgraph.
+ */
+async function findPythonCallersOf(
+  folder: vscode.WorkspaceFolder,
+  calleeSymbol: string,
+  limit = 8,
+): Promise<PythonCallerSite[]> {
+  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
+  let data: any;
+  try {
+    data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
+  const calleeCompact = compactSymbolName(calleeSymbol);
+  const seen = new Set<string>();
+  const sites: PythonCallerSite[] = [];
+  for (const call of orderedCalls) {
+    const callee = String(call?.callee || '');
+    if (callee !== calleeSymbol && compactSymbolName(callee) !== calleeCompact) { continue; }
+    const caller = String(call?.caller || '');
+    const callerCompact = compactSymbolName(caller);
+    if (!caller || callerCompact === calleeCompact || seen.has(callerCompact)) { continue; }
+    const file = String(call?.file || '');
+    const line = Number(call?.line || 0);
+    if (!file || !line) { continue; }
+    seen.add(callerCompact);
+    sites.push({ caller, file, line, callText: String(call?.call_text || '') });
+    if (sites.length >= limit) { break; }
+  }
+  return sites;
+}
+
+interface SameCommitCallChain {
+  callerResult: NormalizedSearchResult;
+  calleeResult: NormalizedSearchResult;
+  file: string;
+  line: number;
+  callText: string;
+  // True when the caller's and callee's top-level module differ — a change
+  // that introduces or touches a cross-module edge is disproportionately
+  // risky (it's a public-contract change, not an internal detail), so this
+  // is surfaced distinctly from a same-module chain.
+  crossesModuleBoundary: boolean;
+}
+
+/**
+ * Every direct call edge where BOTH ends are functions that changed in the
+ * same diff — this is what makes a call-path/integration test valuable
+ * instead of two disconnected unit tests: the commit didn't just touch two
+ * functions, it touched two functions on the same live call chain. One pass
+ * over ordered_calls, not O(pairs), so this stays cheap even for a diff
+ * touching dozens of functions.
+ */
+async function findSameCommitCallChains(
+  folder: vscode.WorkspaceFolder,
+  results: NormalizedSearchResult[],
+): Promise<SameCommitCallChain[]> {
+  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
+  let data: any;
+  try {
+    data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
+  const bySymbol = new Map<string, NormalizedSearchResult>();
+  for (const r of results) {
+    if (r.graphSymbol) {
+      bySymbol.set(compactSymbolName(r.graphSymbol), r);
+    }
+  }
+  const chains: SameCommitCallChain[] = [];
+  const seenPairs = new Set<string>();
+  for (const call of orderedCalls) {
+    const callerCompact = compactSymbolName(String(call?.caller || ''));
+    const calleeCompact = compactSymbolName(String(call?.callee || ''));
+    if (!callerCompact || !calleeCompact || callerCompact === calleeCompact) { continue; }
+    const callerResult = bySymbol.get(callerCompact);
+    const calleeResult = bySymbol.get(calleeCompact);
+    if (!callerResult || !calleeResult) { continue; }
+    const pairKey = [callerCompact, calleeCompact].sort().join('|');
+    if (seenPairs.has(pairKey)) { continue; }
+    const file = String(call?.file || '');
+    const line = Number(call?.line || 0);
+    if (!file || !line) { continue; }
+    seenPairs.add(pairKey);
+    const callerModule = callerResult.file ? pythonModuleNameFor(callerResult.file).split('.')[0] : '';
+    const calleeModule = calleeResult.file ? pythonModuleNameFor(calleeResult.file).split('.')[0] : '';
+    const crossesModuleBoundary = Boolean(callerModule && calleeModule && callerModule !== calleeModule);
+    chains.push({ callerResult, calleeResult, file, line, callText: String(call?.call_text || ''), crossesModuleBoundary });
+  }
+  // Cross-module boundary edges are the higher-value finding (a public
+  // contract change, not an internal detail), so they lead the list.
+  chains.sort((a, b) => Number(b.crossesModuleBoundary) - Number(a.crossesModuleBoundary));
+  return chains;
+}
+
 /**
  * Best-effort "how far does this Python def/class block extend" — used only
  * to bound the coverage line-range check for the "Run" button, so it needs a
@@ -2996,6 +3104,11 @@ interface ChangeCard {
   // the webview instead of shown as a top-level row.
   signatureChanged?: boolean;
   breaking?: boolean;
+  // Statically-proven broken call sites (check_call_sites in
+  // deletion-report.py) — carried through so the webview can offer a
+  // "Generate contract test" action per at-risk caller, not just display
+  // them as text in Evidence.
+  callSiteIssues?: CallSiteIssue[];
 }
 
 interface AnswerFunctionLink {
@@ -3517,6 +3630,7 @@ function buildModifiedChangeCard(change: any): ChangeCard {
     cosmeticOnly: isCosmeticOnlyChange(change),
     breaking: callSiteIssues.length > 0,
     signatureChanged: sigDiff.changed,
+    callSiteIssues,
   };
 }
 
@@ -3761,6 +3875,46 @@ function buildChangesAnswer(report: any): string {
     lines.push('Callgraph unavailable; impact scoring is limited.');
   }
   return lines.join('\n');
+}
+
+/**
+ * Callgraph-driven test plan for the current diff: prioritizes call-path
+ * opportunities (two changed functions directly connected on the same call
+ * chain — the highest-value case, since a unit test on either alone misses
+ * interaction bugs) ahead of plain new-function/modified-function gaps.
+ * Purely a summary line; the actual generate buttons live next to each
+ * item (the call chains section, and the "added" card actions).
+ */
+function buildTestPlanSummaryLine(results: NormalizedSearchResult[], callChains: SameCommitCallChain[]): string {
+  const newFunctionCount = results.filter((r) => r.changeCard?.kind === 'added').length;
+  const modifiedCount = results.filter((r) => r.changeCard?.kind === 'modified').length;
+  const parts: string[] = [];
+  if (callChains.length) {
+    parts.push(`${callChains.length} call-path opportunit${callChains.length === 1 ? 'y' : 'ies'} (functions changed together on the same call chain)`);
+  }
+  if (newFunctionCount) {
+    parts.push(`${newFunctionCount} new function(s) with no test yet`);
+  }
+  if (modifiedCount) {
+    parts.push(`${modifiedCount} modified function(s) worth a generated test`);
+  }
+  return parts.length ? `Test plan: ${parts.join('; ')}.` : '';
+}
+
+function serializeCallChains(chains: SameCommitCallChain[]): any[] {
+  return chains.map((c) => ({
+    callerSymbol: c.callerResult.graphSymbol,
+    callerFile: c.callerResult.file,
+    callerLine: c.callerResult.line,
+    calleeSymbol: c.calleeResult.graphSymbol,
+    calleeFile: c.calleeResult.file,
+    callerLabel: c.callerResult.symbol || c.callerResult.name,
+    calleeLabel: c.calleeResult.symbol || c.calleeResult.name,
+    file: c.file,
+    line: c.line,
+    callText: c.callText,
+    crossesModuleBoundary: c.crossesModuleBoundary,
+  }));
 }
 
 function buildChangesAnswerLinks(report: any, diffRefs?: { base: string; target: string }): AnswerFunctionLink[] {
@@ -4540,10 +4694,20 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.generateRegressionTestForResult(message.result || {}, String(message.requestId || ''));
     } else if (message.type === 'generateCallPathTest') {
       this.generateCallPathTestForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateNewFunctionTest') {
+      this.generateNewFunctionTestForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateChainTest') {
+      this.generateCallChainTestForResult(message.chain || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateContractTest') {
+      this.generateContractTestForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'generateBroadCoverageTest') {
+      this.generateBroadCoverageTestForResult(message.result || {}, String(message.requestId || ''));
     } else if (message.type === 'getCriticalFunctions') {
       this.postCriticalFunctions();
     } else if (message.type === 'runTestFile') {
       this.runTestFileForResult(message);
+    } else if (message.type === 'installTestDependency') {
+      this.installTestDependencyAndRetry(message);
     } else if (message.type === 'runTestViaClaude') {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
@@ -5125,12 +5289,39 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'criticalFunctionsResult', ok: false, error: 'No callgraph found yet — click Regenerate first.' });
       return;
     }
-    const items = index.nodes
+    const items = this.rankCriticalFunctions(index).slice(0, 25);
+    this.post({ type: 'criticalFunctionsResult', ok: true, items });
+  }
+
+  private rankCriticalFunctions(index: LocalCallgraphIndex): { symbol: string; fanIn: number; file: string }[] {
+    return index.nodes
       .map((symbol) => ({ symbol, fanIn: index.fanIn.get(symbol) || 0, file: index.fileByNode.get(symbol) || '' }))
       .filter((item) => item.fanIn > 0)
-      .sort((a, b) => b.fanIn - a.fanIn)
-      .slice(0, 25);
-    this.post({ type: 'criticalFunctionsResult', ok: true, items });
+      .sort((a, b) => b.fanIn - a.fanIn);
+  }
+
+  /** Top fan-in node from the local callgraph index, shaped as a graphable result — used as a fallback focus when there's no diff to show (e.g. no uncommitted changes). */
+  private getMostCriticalFunctionResult(): NormalizedSearchResult | null {
+    const index = this.getLocalSearchIndex();
+    if (!index) {
+      return null;
+    }
+    const [top] = this.rankCriticalFunctions(index);
+    if (!top) {
+      return null;
+    }
+    const tail = top.symbol.split('.').pop() || top.symbol;
+    return {
+      label: index.nodeLabels[top.symbol] || top.symbol,
+      file: top.file,
+      line: '',
+      snippet: '',
+      graphSymbol: top.symbol,
+      fullName: top.symbol,
+      symbol: tail,
+      name: tail,
+      impactScore: top.fanIn,
+    };
   }
 
   private runLocalSearchFallback(trimmed: string, fallbackReason = ''): void {
@@ -5632,6 +5823,355 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Shared Claude-invocation core for the write-only test generators below
+   * (new-function and call-chain tests) — same CLI flags, schema, and
+   * timeout as generateCallPathTestForResult above, factored out so a third
+   * and fourth generator don't reimplement the same subprocess/parsing
+   * boilerplate. Deliberately not used by generateCallPathTestForResult
+   * itself, to avoid touching that already-tuned, already-shipped path.
+   */
+  private async runClaudeTestGeneration(
+    folder: vscode.WorkspaceFolder,
+    prompt: string,
+  ): Promise<
+    | { ok: true; testSource: string; notes: string; generationMs: number; generationCostUsd?: number; output: string }
+    | { ok: false; error: string; generationMs?: number; output?: string }
+  > {
+    const claudeCommand = await resolveCommand('claude');
+    if (!claudeCommand) {
+      return { ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' };
+    }
+    const schema = JSON.stringify({
+      type: 'object',
+      properties: {
+        testSource: { type: 'string', description: 'Complete, self-contained pytest file source, including imports.' },
+        notes: { type: 'string', description: 'One or two sentences on what the test exercises and why.' },
+      },
+      required: ['testSource', 'notes'],
+    });
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 180000;
+    try {
+      const run = await execCommandAsync(
+        claudeCommand,
+        ['-p', prompt, '--max-turns', '16', '--allowedTools', 'Read,Grep,Glob', '--output-format', 'json', '--json-schema', schema],
+        folder.uri.fsPath,
+        { ...process.env },
+        TIMEOUT_MS,
+      );
+      const generationMs = Date.now() - startedAt;
+      const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
+      if (run.spawnError) {
+        return { ok: false, error: `Couldn't launch Claude Code CLI: ${run.spawnError}`, generationMs, output: rawOutput };
+      }
+      if (run.timedOut) {
+        return { ok: false, error: `Claude did not finish within ${TIMEOUT_MS / 1000}s — safe to just try again.`, generationMs, output: rawOutput };
+      }
+      if (run.status !== 0) {
+        return { ok: false, error: 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput };
+      }
+      let envelope: any;
+      try {
+        envelope = JSON.parse(run.stdout);
+      } catch {
+        return { ok: false, error: 'Could not parse a response from Claude Code CLI.', generationMs, output: rawOutput };
+      }
+      const structured = envelope?.structured_output;
+      const testSource = typeof structured?.testSource === 'string' ? structured.testSource : '';
+      if (!testSource.trim()) {
+        return { ok: false, error: 'Claude did not return any test source.', generationMs, output: rawOutput };
+      }
+      const generationCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
+      return { ok: true, testSource, notes: String(structured?.notes || ''), generationMs, generationCostUsd, output: rawOutput };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  private async writeGeneratedTest(folder: vscode.WorkspaceFolder, namePrefix: string, testSource: string): Promise<string> {
+    const outDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests');
+    await fs.promises.mkdir(outDir, { recursive: true });
+    const safeName = namePrefix.replace(/[^A-Za-z0-9_]/g, '_');
+    const outPath = path.join(outDir, `test_${safeName}.py`);
+    await fs.promises.writeFile(outPath, testSource, 'utf8');
+    return path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
+  }
+
+  /**
+   * Test for a function newly added in the current diff — the mechanical
+   * and call-path generators above both need PRE-EXISTING impact/caller
+   * data from deletion-report.py, which a brand-new function doesn't have
+   * (buildChangeResults sets impactNodes: [] for 'added' entries). Its real
+   * callers, if any, only exist in the just-regenerated callgraph, so this
+   * discovers them directly via findPythonCallersOf instead.
+   */
+  private async generateNewFunctionTestForResult(result: any, requestId: string): Promise<void> {
+    const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
+    const file = String(result?.file || '');
+    const startLine = Number(result?.line || 0) || 0;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!symbol || !file || !folder) {
+      this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
+      return;
+    }
+    if (!file.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: 'Generating a test for a new function currently only supports Python.' });
+      return;
+    }
+    const tail = symbol.split('.').pop() || symbol;
+    const moduleName = pythonModuleNameFor(file);
+    const callers = await findPythonCallersOf(folder, symbol, 5);
+    const [primary, ...rest] = callers;
+    const callerLine = primary
+      ? `It is already called from "${primary.caller}" at ${primary.file}:${primary.line}`
+        + (primary.callText ? ` (as \`${primary.callText}(...)\`)` : '') + '.'
+        + (rest.length ? ` It has ${rest.length} more caller(s) in the current codebase.` : '')
+        + ` Read "${primary.caller}" at ${primary.file}:${primary.line} to see exactly how this new function is being wired in, then write a test grounded in that real usage.`
+      : 'This is a brand-new function with no confirmed callers yet in the current callgraph — write a direct test of the function using realistic inputs based on its own signature and body.';
+    const targetLocation = startLine ? ` at line ${startLine}` : '';
+    const prompt = [
+      `A new function "${symbol}" was just added in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`), as part of the current uncommitted change.`,
+      callerLine,
+      'Do not read or trace any other helper functions this one calls internally — reason about them only from their names and how',
+      'their results are used, not their own implementations. Do not grep or explore the rest of the codebase beyond the one caller mentioned above, if any.',
+      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises this function the way it is really',
+      'used — realistic constructed inputs, not placeholders — so the test would catch this new function regressing once it ships.',
+      'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
+      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
+      `${moduleName} exactly as shown above.`,
+    ].join(' ');
+    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    if (!gen.ok) {
+      this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
+      return;
+    }
+    const relPath = await this.writeGeneratedTest(folder, `newfunc_${tail}`, gen.testSource);
+    this.post({
+      type: 'newFunctionTestResult',
+      requestId,
+      ok: true,
+      path: relPath,
+      targetPath: file,
+      targetStartLine: startLine,
+      targetSymbol: symbol,
+      claudeNotes: gen.notes,
+      generationMs: gen.generationMs,
+      generationCostUsd: gen.generationCostUsd,
+      output: gen.output,
+    });
+  }
+
+  /**
+   * Integration/call-path test for two functions that BOTH changed in the
+   * current diff and are directly connected by a real call edge (see
+   * findSameCommitCallChains) — catches interaction bugs a unit test on
+   * either function alone would miss, because the commit didn't just touch
+   * two functions, it touched two functions on the same live call chain.
+   */
+  private async generateCallChainTestForResult(chain: any, requestId: string): Promise<void> {
+    const callerSymbol = String(chain?.callerSymbol || '').trim();
+    const calleeSymbol = String(chain?.calleeSymbol || '').trim();
+    const callerFile = String(chain?.callerFile || '');
+    const calleeFile = String(chain?.calleeFile || '');
+    const edgeFile = String(chain?.file || '');
+    const edgeLine = Number(chain?.line || 0) || 0;
+    const callText = String(chain?.callText || '');
+    const crossesModuleBoundary = Boolean(chain?.crossesModuleBoundary);
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!callerSymbol || !calleeSymbol || !callerFile || !calleeFile || !folder) {
+      this.post({ type: 'callChainTestResult', requestId, ok: false, error: 'Missing chain details to generate a test for.' });
+      return;
+    }
+    if (!callerFile.toLowerCase().endsWith('.py') || !calleeFile.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'callChainTestResult', requestId, ok: false, error: 'Call-path tests currently only support Python.' });
+      return;
+    }
+    const callerTail = callerSymbol.split('.').pop() || callerSymbol;
+    const calleeTail = calleeSymbol.split('.').pop() || calleeSymbol;
+    const callerModule = pythonModuleNameFor(callerFile);
+    const calleeModule = pythonModuleNameFor(calleeFile);
+    const prompt = [
+      `Two functions changed together in the current diff and are directly connected: "${callerSymbol}" (in "${callerFile}", importable as`,
+      `\`from ${callerModule} import ${callerTail}\`) calls "${calleeSymbol}" (in "${calleeFile}", importable as \`from ${calleeModule} import ${calleeTail}\`)`,
+      `at ${edgeFile}:${edgeLine}${callText ? ` (as \`${callText}(...)\`)` : ''}.`,
+      `Read "${callerTail}" at ${edgeFile}:${edgeLine} to see the exact call, and read "${calleeTail}" itself to understand what it does.`,
+      crossesModuleBoundary
+        ? `This call crosses a module boundary (${callerModule} → ${calleeModule}) — treat "${calleeTail}" as a public contract`
+          + ` "${callerTail}" depends on, not an internal implementation detail, and make the assertions reflect that.`
+        : '',
+      'Do not read or trace any other functions beyond these two. Do not grep or explore the rest of the codebase.',
+      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises the two together as a real call chain —',
+      `call "${callerTail}" the way it is really used, with realistic constructed inputs, and assert on an effect that only shows up`,
+      `after it calls "${calleeTail}" — so the test would catch a regression in either function, or a break in how they interact,`,
+      'not just a syntax error.',
+      'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
+      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${callerTail} from`,
+      `${callerModule} exactly as shown above.`,
+    ].join(' ');
+    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    if (!gen.ok) {
+      this.post({ type: 'callChainTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
+      return;
+    }
+    const relPath = await this.writeGeneratedTest(folder, `chain_${callerTail}_${calleeTail}`, gen.testSource);
+    this.post({
+      type: 'callChainTestResult',
+      requestId,
+      ok: true,
+      path: relPath,
+      targetPath: callerFile,
+      targetStartLine: Number(chain?.callerLine || 0) || 0,
+      targetSymbol: callerSymbol,
+      claudeNotes: gen.notes,
+      generationMs: gen.generationMs,
+      generationCostUsd: gen.generationCostUsd,
+      output: gen.output,
+    });
+  }
+
+  /**
+   * Contract test for a signature change with statically-proven broken call
+   * sites (change.call_site_issues from check_call_sites in
+   * deletion-report.py — a real caller's call expression was parsed and
+   * checked against the new signature, not guessed at). One test function
+   * per broken caller, each showing the CORRECTED call so it documents the
+   * exact contract that caller must be updated to follow.
+   */
+  private async generateContractTestForResult(result: any, requestId: string): Promise<void> {
+    const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
+    const file = String(result?.file || '');
+    const startLine = Number(result?.line || 0) || 0;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const issues: Array<{ caller: string; file: string; line?: number; reason: string }> =
+      Array.isArray(result?.changeCard?.callSiteIssues) ? result.changeCard.callSiteIssues : [];
+    if (!symbol || !file || !folder) {
+      this.post({ type: 'contractTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
+      return;
+    }
+    if (!file.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'contractTestResult', requestId, ok: false, error: 'Contract tests currently only support Python.' });
+      return;
+    }
+    if (!issues.length) {
+      this.post({ type: 'contractTestResult', requestId, ok: false, error: 'No broken call sites found for this function.' });
+      return;
+    }
+    const tail = symbol.split('.').pop() || symbol;
+    const moduleName = pythonModuleNameFor(file);
+    const newSignature = String(result?.changeCard?.signatureDetails?.newSignature || '');
+    const capped = issues.slice(0, 6);
+    const issueLines = capped
+      .map((issue, i) => `${i + 1}. "${issue.caller}" at ${issue.file}${issue.line ? ':' + issue.line : ''} — ${issue.reason}`)
+      .join(' ');
+    const targetLocation = startLine ? ` at line ${startLine}` : '';
+    const prompt = [
+      `The function "${symbol}" in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`) just had its signature changed.`,
+      newSignature ? `Its new signature: ${newSignature}.` : '',
+      `The following real caller(s) were statically proven incompatible with the new signature — each still passes arguments that matched the OLD signature: ${issueLines}`,
+      `Read ${capped.length > 1 ? 'each of these callers' : 'this caller'} (exact file:line given above) to see what they were trying to do, and read "${tail}" itself to understand its new contract.`,
+      'Do not read or trace any other functions. Do not grep or explore the rest of the codebase beyond the callers listed above.',
+      `Write ONE pytest test file (as plain text, not written to disk by you) with one test function per broken caller listed above (${capped.length} total),`,
+      'each showing the CORRECTED call — updated to match the new signature — and asserting the function behaves as that caller actually needs.',
+      'These tests document the exact contract each broken caller must be updated to follow — they are not testing the broken (old) call itself.',
+      'Do not modify any files. Do not run any commands. Do not fix the callers themselves — only write the test.',
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
+      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
+      `${moduleName} exactly as shown above.`,
+    ].join(' ');
+    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    if (!gen.ok) {
+      this.post({ type: 'contractTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
+      return;
+    }
+    const relPath = await this.writeGeneratedTest(folder, `contract_${tail}`, gen.testSource);
+    this.post({
+      type: 'contractTestResult',
+      requestId,
+      ok: true,
+      path: relPath,
+      targetPath: file,
+      targetStartLine: startLine,
+      targetSymbol: symbol,
+      claudeNotes: gen.notes,
+      generationMs: gen.generationMs,
+      generationCostUsd: gen.generationCostUsd,
+      output: gen.output,
+    });
+  }
+
+  /**
+   * Broader regression coverage for a high-fan-in changed function — the
+   * existing single call-path test only reads ONE real caller, which misses
+   * genuinely different calling patterns a function with many callers has in
+   * practice. Reuses the same confirmed-caller data (changeCard.impactedFunctions
+   * + resolvePythonCallSites), just asks Claude for one test per distinct
+   * pattern instead of one test total.
+   */
+  private async generateBroadCoverageTestForResult(result: any, requestId: string): Promise<void> {
+    const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
+    const file = String(result?.file || '');
+    const startLine = Number(result?.line || 0) || 0;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!symbol || !file || !folder) {
+      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
+      return;
+    }
+    if (!file.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'Broader coverage tests currently only support Python.' });
+      return;
+    }
+    const callers: string[] = Array.isArray(result?.changeCard?.impactedFunctions) ? result.changeCard.impactedFunctions.slice(0, 8) : [];
+    if (callers.length < 2) {
+      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'Fewer than 2 confirmed callers — a single Call Path Test already covers this well enough.' });
+      return;
+    }
+    const tail = symbol.split('.').pop() || symbol;
+    const moduleName = pythonModuleNameFor(file);
+    const callSites = await resolvePythonCallSites(folder, symbol, callers);
+    const described = callers.map((name) => {
+      const site = callSites.get(name);
+      return site ? `${name} (${site.file}:${site.line}${site.callText ? `, calls it as ${site.callText}(...)` : ''})` : name;
+    });
+    const targetLocation = startLine ? ` at line ${startLine}` : '';
+    const prompt = [
+      `The function "${symbol}" in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`) was changed and has ${callers.length} confirmed`,
+      "real callers in this codebase — a single test on one caller wouldn't cover how differently each of them actually uses it.",
+      `Its confirmed real callers: ${described.join(', ')}.`,
+      'Read as many of these as needed (exact file:line locations given above) to identify genuinely DIFFERENT calling patterns —',
+      'different argument shapes, edge cases, or usage contexts — not near-duplicates of each other.',
+      'Do not read or trace any other helper functions this one calls internally. Do not grep or explore the rest of the codebase beyond these callers.',
+      'Write ONE pytest test file (as plain text, not written to disk by you) with one test function per genuinely distinct calling pattern you found',
+      '(skip near-duplicate callers rather than writing redundant tests) — realistic constructed inputs for each, not placeholders, so together',
+      'they cover the real diversity of how this function is actually used, not just one path through it.',
+      'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the tests.',
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
+      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
+      `${moduleName} exactly as shown above.`,
+    ].join(' ');
+    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    if (!gen.ok) {
+      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
+      return;
+    }
+    const relPath = await this.writeGeneratedTest(folder, `broadcoverage_${tail}`, gen.testSource);
+    this.post({
+      type: 'broadCoverageTestResult',
+      requestId,
+      ok: true,
+      path: relPath,
+      targetPath: file,
+      targetStartLine: startLine,
+      targetSymbol: symbol,
+      claudeNotes: gen.notes,
+      generationMs: gen.generationMs,
+      generationCostUsd: gen.generationCostUsd,
+      output: gen.output,
+    });
+  }
+
   private async runFindTestsForResult(result: any, requestId: string): Promise<void> {
     const query = String(result?.graphSymbol || result?.fullName || result?.symbol || result?.name || '').trim();
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -5728,6 +6268,81 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * "Install & retry" for a missing pytest/plugin dependency. Only ever
+   * fires on an explicit user click on a button that already names the
+   * exact package and interpreter (see missingPackage/pythonPath on the
+   * failed testRunResult) — never automatically. Installs into that same
+   * interpreter (the one resolveWorkspaceTestPython picked for the failed
+   * run, not a different/system one), then re-runs the same test via the
+   * normal path so pass/fail is computed identically either way.
+   */
+  private async installTestDependencyAndRetry(message: any): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const pythonPath = String(message?.pythonPath || '');
+    const packageName = String(message?.package || '');
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !pythonPath || !packageName) {
+      this.postTestRunResult({ requestId, ok: false, error: 'Missing install target — nothing to install.' });
+      return;
+    }
+    this.post({ type: 'status', text: `Installing ${packageName} into ${pythonPath}…` });
+    const install = await execCommandAsync(pythonPath, ['-m', 'pip', 'install', packageName], folder.uri.fsPath, process.env);
+    if (install.spawnError) {
+      this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "${pythonPath}" to install ${packageName}: ${install.spawnError}` });
+      return;
+    }
+    const installOutput = `${install.stdout}\n${install.stderr}`.trim();
+    if (install.status !== 0) {
+      this.postTestRunResult({
+        requestId,
+        ok: false,
+        error: `Failed to install ${packageName} into ${pythonPath} (exit ${install.status}). See output.`,
+        output: installOutput.slice(-4000),
+      });
+      return;
+    }
+    this.post({ type: 'status', text: `Installed ${packageName} — re-running test…` });
+    const payload = await this.computePythonTestRunPayload(message, folder);
+    const priorOutput = typeof payload.output === 'string' ? payload.output : '';
+    this.postTestRunResult({
+      requestId,
+      ...payload,
+      output: `Installed ${packageName} into ${pythonPath}.\n\n${installOutput}\n\n${priorOutput}`.trim().slice(-4000),
+    });
+  }
+
+  /**
+   * pytest's exit code 4 covers many distinct usage/config errors. The
+   * common one in practice — a project's own pytest.ini/pyproject.toml
+   * declaring an option that only exists once a plugin is installed (e.g.
+   * "timeout" needs pytest-timeout, "asyncio_mode" needs pytest-asyncio) —
+   * is actionable: whichever interpreter resolveWorkspaceTestPython picked
+   * has pytest but not that plugin. Name it and the fix instead of leaving
+   * the user to dig the same info out of the raw "Show output" text.
+   */
+  private describePytestUsageError(pythonPath: string, output: string): { error: string; missingPackage?: string } {
+    const match = output.match(/Unknown config option:\s*(\S+)/i);
+    if (!match) {
+      return { error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.' };
+    }
+    const optionName = match[1];
+    // Only map option names we're actually confident about — an unmapped
+    // option still gets a real explanation, just no "Install & retry" button
+    // guessing at a package name that might not even exist on PyPI.
+    const optionToPackage: Record<string, string> = {
+      timeout: 'pytest-timeout',
+      asyncio_mode: 'pytest-asyncio',
+      django_settings_module: 'pytest-django',
+    };
+    const missingPackage = optionToPackage[optionName.toLowerCase()];
+    const base = `pytest rejected this project's own config — "${optionName}" isn't a recognized option in ${pythonPath}, usually because the plugin that registers it isn't installed there.`;
+    if (missingPackage) {
+      return { error: `${base} Install "${missingPackage}" and re-run.`, missingPackage };
+    }
+    return { error: `${base} Common examples: pytest-timeout for "timeout", pytest-asyncio for "asyncio_mode", pytest-django for "DJANGO_SETTINGS_MODULE".` };
+  }
+
+  /**
    * Core of the Python "Run" path, factored out so the Call Path Test flow
    * (generateCallPathTestForResult) can chain straight into it after writing
    * a new file — same exact logic the already-tested button uses, not a
@@ -5750,7 +6365,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     try {
       const covRun = await execCommandAsync(
         pythonPath,
-        ['-m', 'coverage', 'run', '--branch', `--data-file=${dataFile}`, '-m', 'pytest', target, '-q'],
+        // -v (not -q) so "View output" shows each test's actual name and
+        // PASSED/FAILED line instead of collapsing every test to a single
+        // dot — -q's failure tracebacks are just as verbose either way, but
+        // its pass-path output has nothing else in it to show.
+        ['-m', 'coverage', 'run', '--branch', `--data-file=${dataFile}`, '-m', 'pytest', target, '-v'],
         folder.uri.fsPath,
         env,
       );
@@ -5765,24 +6384,41 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const noCoverage = stderrLower.includes('no module named coverage') || stderrLower.includes('no module named \'coverage\'');
       const noPytest = stderrLower.includes('no module named pytest') || stderrLower.includes('no module named \'pytest\'');
       if (noPytest) {
-        return { ok: false, error: `pytest isn't installed in this Python environment (${pythonPath}).`, output: output.slice(-4000) };
+        return {
+          ok: false,
+          error: `pytest isn't installed in this Python environment (${pythonPath}).`,
+          environmentIssue: true,
+          missingPackage: 'pytest',
+          pythonPath,
+          output: output.slice(-4000),
+        };
       }
       if (noCoverage) {
         // Fall back to a plain pytest run (still a real pass/fail — just no
         // confirmed-execution data for the changed lines).
-        const plainRun = await execCommandAsync(pythonPath, ['-m', 'pytest', target, '-q'], folder.uri.fsPath, env);
+        const plainRun = await execCommandAsync(pythonPath, ['-m', 'pytest', target, '-v'], folder.uri.fsPath, env);
         output = `${plainRun.stdout}\n${plainRun.stderr}`.trim();
         if (plainRun.timedOut) {
           return { ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) };
         }
         if (plainRun.stderr.toLowerCase().includes('no module named pytest') || plainRun.stderr.toLowerCase().includes('no module named \'pytest\'')) {
-          return { ok: false, error: `Neither coverage.py nor pytest is installed in this Python environment (${pythonPath}).`, output: output.slice(-4000) };
-        }
-        if (plainRun.status === 4) {
           return {
             ok: false,
-            error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.',
+            error: `Neither coverage.py nor pytest is installed in this Python environment (${pythonPath}).`,
             environmentIssue: true,
+            missingPackage: 'pytest',
+            pythonPath,
+            output: output.slice(-4000),
+          };
+        }
+        if (plainRun.status === 4) {
+          const usageError = this.describePytestUsageError(pythonPath, output);
+          return {
+            ok: false,
+            error: usageError.error,
+            environmentIssue: true,
+            missingPackage: usageError.missingPackage,
+            pythonPath,
             output: output.slice(-4000),
           };
         }
@@ -5797,10 +6433,13 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         };
       }
       if (covRun.status === 4) {
+        const usageError = this.describePytestUsageError(pythonPath, output);
         return {
           ok: false,
-          error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.',
+          error: usageError.error,
           environmentIssue: true,
+          missingPackage: usageError.missingPackage,
+          pythonPath,
           output: output.slice(-4000),
         };
       }
@@ -5821,7 +6460,22 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         30000,
       );
       if (jsonRun.spawnError || jsonRun.status !== 0 || !fs.existsSync(jsonFile)) {
-        return { ok: true, passed, coverageConfirmed: false, reason: 'Could not read coverage data for this file.', output: output.slice(-4000) };
+        // Surface *why* coverage.py's own json export failed instead of
+        // discarding it — the common case is "No data to report" (this file
+        // was never imported/executed by the test, unrelated to pass/fail),
+        // but a path/permissions issue looks different and is worth seeing.
+        const jsonOutput = `${jsonRun.stdout}\n${jsonRun.stderr}`.trim();
+        const noDataToReport = jsonOutput.toLowerCase().includes('no data to report');
+        const reason = noDataToReport
+          ? 'This file was never imported/executed during the test run, so coverage.py recorded no data for it (this does not affect whether the test passed).'
+          : 'Could not read coverage data for this file — see output.';
+        return {
+          ok: true,
+          passed,
+          coverageConfirmed: false,
+          reason,
+          output: `${output}\n\n${jsonOutput}`.trim().slice(-4000),
+        };
       }
       const report = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
       const fileEntries = Object.entries(report?.files || {});
@@ -6703,7 +7357,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
 
       const results = this.buildChangeResults(report, folder);
-      const answer = buildChangesAnswer(report);
+      // Python-only (findSameCommitCallChains reads python_callgraph.json's
+      // ordered_calls) — a no-op elsewhere, so this never fails a non-Python repo.
+      const callChains = await findSameCommitCallChains(folder, results);
+      const testPlanLine = buildTestPlanSummaryLine(results, callChains);
+      const answer = testPlanLine ? `${testPlanLine}\n${buildChangesAnswer(report)}` : buildChangesAnswer(report);
       const answerLinks = buildChangesAnswerLinks(report);
 
       const resultMessage = {
@@ -6715,6 +7373,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         answerLinks,
         defaultSort: 'impact',
         results,
+        callChains: serializeCallChains(callChains),
       };
       this.rememberSearchResult(resultMessage);
       this.post(resultMessage);
@@ -6736,6 +7395,19 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         // Fire-and-forget: runResultGraph reports its own status/errors, and
         // must not block the changes list or hold changesBusy.
         void this.runResultGraph(highestImpact);
+      } else if (!results.length) {
+        // Nothing uncommitted to show — fall back to the most-referenced
+        // function in the codebase so the graph isn't left blank/stale.
+        const criticalFunction = this.getMostCriticalFunctionResult();
+        if (criticalFunction) {
+          this.post({
+            type: 'status',
+            text: `No uncommitted changes — showing the graph of the most critical function: ${criticalFunction.symbol || criticalFunction.name}`,
+          });
+          void this.runResultGraph(criticalFunction);
+        } else {
+          this.post({ type: 'status', text: 'No uncommitted changes.' });
+        }
       } else {
         this.post({ type: 'status', text: 'Ready.' });
       }
@@ -6853,10 +7525,15 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
 
       const results = this.buildChangeResults(report, folder, { changeTimeOverride: commitTime, diffRefs });
+      // Reads the CURRENT on-disk callgraph, not a snapshot at this historical
+      // commit — best-effort for anything renamed/deleted since, but exact for
+      // the common case of checking a recent commit against an unchanged callgraph.
+      const callChains = await findSameCommitCallChains(folder, results);
+      const testPlanLine = buildTestPlanSummaryLine(results, callChains);
       const commitTitle = `Commit ${hash}${subject ? ` — "${subject}"` : ''}`;
       const header = `${commitTitle}:`;
       const answer = results.length
-        ? `${header}\n${buildChangesAnswer(report)}`
+        ? `${header}\n${testPlanLine ? `${testPlanLine}\n` : ''}${buildChangesAnswer(report)}`
         : `${header} no impact detected in supported source files.`;
       const answerLinks = buildChangesAnswerLinks(report, diffRefs);
 
@@ -6869,6 +7546,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         answerLinks,
         defaultSort: 'impact',
         results,
+        callChains: serializeCallChains(callChains),
       };
       this.rememberSearchResult(resultMessage);
       this.post(resultMessage);
@@ -7119,6 +7797,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .criticalFnFile { flex: 0 0 auto; opacity: 0.6; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
+  /* Commit-detail results stack (replace:false — each "Check Latest Commits"
+     click adds another block instead of replacing the last one), so its
+     query/answer/function-cards need a visible boundary tying them together
+     as one commit's report, distinct from the next commit's block above/below. */
+  .msg-boxed { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px 10px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
   .msg .query { font-weight: 600; margin-bottom: 4px; }
   .msg .answer { white-space: pre-wrap; font-size: 12px; margin-bottom: 6px; }
   .answerFunctionLink { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
@@ -7145,15 +7828,26 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .testFixBtn { padding: 3px 11px; font-size: 11.5px; font-weight: 600; line-height: 1.5; border: none; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
   .testFixBtn:hover { background: var(--vscode-button-hoverBackground); }
   .testFixBtn:disabled { opacity: 0.6; cursor: default; }
+  .testInstallBtn { padding: 3px 11px; font-size: 11.5px; font-weight: 600; line-height: 1.5; border: none; border-radius: 3px; background: var(--vscode-button-secondaryBackground, var(--vscode-button-background)); color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground)); cursor: pointer; }
+  .testInstallBtn:hover { filter: brightness(1.12); }
   .testFixNote { flex-basis: 100%; margin-top: 3px; font-size: 11px; opacity: 0.9; }
   .testRunResultLine { font-size: 11px; }
   .testRunConfirmedGood { color: var(--vscode-terminal-ansiGreen, #3fb950); }
   .testRunConfirmedBad { color: var(--vscode-errorForeground); }
   .testRunBestEffort { color: var(--vscode-editorWarning-foreground); }
   .testRunUnknown { opacity: 0.75; }
+  .testRunAllBar { display: flex; align-items: center; gap: 8px; padding: 4px 0 6px; }
+  .testRunAllSummary { font-size: 11px; opacity: 0.8; }
+  .testRunAllSummaryGood { color: var(--vscode-terminal-ansiGreen, #3fb950); opacity: 1; }
+  .testRunAllSummaryBad { color: var(--vscode-errorForeground); opacity: 1; }
   .testRunOutputToggle { padding: 1px 6px; font-size: 10px; opacity: 0.85; }
   .testRunOutput { width: 100%; max-height: 180px; overflow: auto; margin: 2px 0 0; padding: 6px 8px; font-size: 10.5px; white-space: pre-wrap; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border); border-radius: 3px; }
   .resultToolbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0 0 8px; font-size: 11px; opacity: 0.9; }
+  .callChainsSection { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  .callChainsHeading { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .callChainRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 3px 0; }
+  .callChainLabel { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; opacity: 0.9; }
+  .callChainBoundaryBadge { font-size: 10px; opacity: 0.8; border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 0 4px; }
   .resultToolbar label { opacity: 0.8; }
   .resultToolbar select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 2px 6px; font-size: 11px; }
   .result { font-size: 12px; padding: 6px 8px; border-radius: 3px; margin-bottom: 5px; cursor: pointer; background: var(--vscode-list-hoverBackground); }
@@ -7172,6 +7866,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .changeTop { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
   .changeTitleRow { display: flex; align-items: center; gap: 6px; }
   .changeTitle { font-size: 11px; opacity: 0.75; }
+  .changeCommitBadge { flex: 0 0 auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; opacity: 0.7; border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 0 4px; }
   .changeSymbol { font-size: 12px; font-weight: 700; word-break: break-word; }
   .changeSymbolModule { display: block; font-size: 10px; font-weight: 400; opacity: 0.65; word-break: break-word; }
   .changeSymbolName { display: block; }
@@ -8097,6 +8792,17 @@ function getHtml(host: string, port: number, cspSource: string): string {
     title.className = 'changeTitle';
     title.textContent = card.title || 'Change';
     titleRow.appendChild(title);
+    // r.diffTarget is only set on cards produced from a specific commit's
+    // diff (see runCommitCheck) — everything else diffs against the live
+    // working tree, so this badge disambiguates which commit a card came
+    // from once its query header has scrolled out of view.
+    if (r && r.diffTarget) {
+      const commitBadge = document.createElement('span');
+      commitBadge.className = 'changeCommitBadge';
+      commitBadge.textContent = String(r.diffTarget).slice(0, 8);
+      commitBadge.title = 'From commit ' + r.diffTarget;
+      titleRow.appendChild(commitBadge);
+    }
     const symbol = document.createElement(r && (r.file || r.graphSymbol) ? 'button' : 'div');
     symbol.className = r && (r.file || r.graphSymbol) ? 'changeSymbol changeSymbolButton' : 'changeSymbol';
     renderSymbolLabel(symbol, card.symbol || item.dataset.label || '');
@@ -8315,6 +9021,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
   let regressionTestRequestSeq = 0;
   const callPathTestChipsByRequestId = new Map();
   let callPathTestRequestSeq = 0;
+  const newFunctionTestChipsByRequestId = new Map();
+  let newFunctionTestRequestSeq = 0;
+  const chainTestChipsByRequestId = new Map();
+  let chainTestRequestSeq = 0;
+  const contractTestChipsByRequestId = new Map();
+  let contractTestRequestSeq = 0;
+  const broadCoverageTestChipsByRequestId = new Map();
+  let broadCoverageTestRequestSeq = 0;
   // Survives a change-list re-render (e.g. the periodic "uncommitted edits
   // changed" auto-refresh, which replaces every card's DOM from scratch) so
   // a test generated a minute ago doesn't just vanish — the card immediately
@@ -8327,7 +9041,11 @@ function getHtml(host: string, port: number, cspSource: string): string {
   // way; only the pytest node id passed back to the extension differs.
   const DIRECT_RUN_EXTS = ['.py', '.go', '.rs'];
 
-  function createTestRunRow(file, nodeId, label, openLine, targetInfo) {
+  // onResult (optional) is called with the same msg a "Run" button's own
+  // rendering logic reacts to — lets a batch runner (see "Run all" below)
+  // tally pass/fail across many rows without duplicating the per-row
+  // pass/fail/coverage-confirmed rendering rules.
+  function createTestRunRow(file, nodeId, label, openLine, targetInfo, onResult) {
     const row = document.createElement('div');
     row.className = 'testRunRow';
 
@@ -8392,6 +9110,44 @@ function getHtml(host: string, port: number, cspSource: string): string {
     fixNote.className = 'testFixNote';
     fixNote.style.display = 'none';
 
+    // Only shown when a run fails with a named missing package (see
+    // missingPackage/pythonPath on testRunResult) — installs into the exact
+    // interpreter the failed run used, then re-runs the same test. Never
+    // fires automatically; the package/interpreter to install always come
+    // from the failure that just happened, not a guess.
+    const installBtn = document.createElement('button');
+    installBtn.type = 'button';
+    installBtn.className = 'testInstallBtn';
+    installBtn.style.display = 'none';
+
+    installBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (installBtn.dataset.pending === '1') { return; }
+      const packageName = installBtn.dataset.package || '';
+      const targetPython = installBtn.dataset.pythonPath || '';
+      if (!packageName || !targetPython) { return; }
+      installBtn.dataset.pending = '1';
+      installBtn.textContent = 'Installing ' + packageName + '…';
+      resultLine.textContent = '';
+      resultLine.className = 'testRunResultLine';
+      outputToggle.style.display = 'none';
+      outputPre.style.display = 'none';
+      outputPre.textContent = '';
+      const installRequestId = 'testinstall_' + (testRunRequestSeq++) + '_' + Date.now();
+      testRunRowsByRequestId.set(installRequestId, { runBtn, resultLine, outputToggle, outputPre, fixBtn, fixNote, installBtn, isDirect, onResult });
+      vscode.postMessage({
+        type: 'installTestDependency',
+        requestId: installRequestId,
+        package: packageName,
+        pythonPath: targetPython,
+        file,
+        nodeId: nodeId || '',
+        targetPath: (targetInfo && targetInfo.path) || '',
+        targetStartLine: (targetInfo && targetInfo.startLine) || 0,
+        targetSymbol: (targetInfo && targetInfo.symbol) || '',
+      });
+    });
+
     fixBtn.addEventListener('click', (event) => {
       event.stopPropagation();
       if (fixBtn.dataset.pending === '1') { return; }
@@ -8427,8 +9183,10 @@ function getHtml(host: string, port: number, cspSource: string): string {
       fixBtn.textContent = '🔧 Fix with Claude';
       fixNote.style.display = 'none';
       fixNote.textContent = '';
+      installBtn.style.display = 'none';
+      installBtn.dataset.pending = '0';
       const runRequestId = 'testrun_' + (testRunRequestSeq++) + '_' + Date.now();
-      testRunRowsByRequestId.set(runRequestId, { runBtn, resultLine, outputToggle, outputPre, fixBtn, fixNote, isDirect });
+      testRunRowsByRequestId.set(runRequestId, { runBtn, resultLine, outputToggle, outputPre, fixBtn, fixNote, installBtn, isDirect, onResult });
       vscode.postMessage({
         type: isDirect ? 'runTestFile' : 'runTestViaClaude',
         requestId: runRequestId,
@@ -8443,9 +9201,13 @@ function getHtml(host: string, port: number, cspSource: string): string {
     row.appendChild(runBtn);
     row.appendChild(resultLine);
     row.appendChild(outputToggle);
+    row.appendChild(installBtn);
     row.appendChild(fixBtn);
     row.appendChild(outputPre);
     row.appendChild(fixNote);
+    // Lets a batch runner ("Run all", below) trigger this row's run without
+    // duplicating the click handler's own pending/reset logic.
+    row.runTest = () => runBtn.click();
     return row;
   }
 
@@ -8509,6 +9271,39 @@ function getHtml(host: string, port: number, cspSource: string): string {
       note.appendChild(createTestRunRow(opts.path, '', opts.path, '', targetInfo));
     }
     return note;
+  }
+
+  // Shared by every "Claude write-only test generator" result handler
+  // (new-function, call-chain, contract, broader-coverage) — they all post
+  // the exact same payload shape and need the exact same chip-reset/note-
+  // insert/persist sequence, so this is the one place that logic lives
+  // instead of being copy-pasted per generator.
+  function resolveChipTestResult(chipsByRequestId, msg, resetText) {
+    const entry = chipsByRequestId.get(msg.requestId);
+    chipsByRequestId.delete(msg.requestId);
+    if (!entry) { return; }
+    const { chip, actionsEl, rowEl, tickInterval, symbolKey } = entry;
+    if (tickInterval) { clearInterval(tickInterval); }
+    chip.dataset.pending = '0';
+    chip.textContent = resetText;
+    const opts = {
+      source: 'claude',
+      ok: msg.ok,
+      error: msg.error,
+      path: msg.path,
+      targetPath: msg.targetPath,
+      targetStartLine: msg.targetStartLine,
+      targetSymbol: msg.targetSymbol,
+      claudeNotes: msg.claudeNotes,
+      generationMs: msg.generationMs,
+      generationCostUsd: msg.generationCostUsd,
+      output: msg.output,
+    };
+    const anchor = actionsEl || rowEl;
+    anchor.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+    if (msg.ok && msg.path && symbolKey) {
+      generatedTestsBySymbol.set(symbolKey, opts);
+    }
   }
 
   // Revealed only after the mechanical generator reports it couldn't help —
@@ -8680,16 +9475,97 @@ function getHtml(host: string, port: number, cspSource: string): string {
         actions.appendChild(testsChip);
       }
 
+      // New functions have no pre-existing impact/caller data (deletion-report.py
+      // sets impactNodes: [] for 'added' entries), so "Check tests" above would
+      // just report "nothing covers this" — this instead discovers any real
+      // caller directly from the just-regenerated callgraph and asks Claude to
+      // write a test grounded in it.
+      if (symbolic && r.changeCard && r.changeCard.kind === 'added') {
+        const newFuncChip = document.createElement('span');
+        newFuncChip.className = 'actionChip actionChipClickable actionChipPrimary';
+        newFuncChip.textContent = '🆕 Generate test for new function';
+        newFuncChip.title = 'Finds this new function\\'s real caller (if any) in the current callgraph and asks Claude to write a test grounded in that real usage.';
+        newFuncChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (newFuncChip.dataset.pending === '1') { return; }
+          newFuncChip.dataset.pending = '1';
+          const tickInterval = startPendingTicker(newFuncChip, 'Generating');
+          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
+            ? actions.nextElementSibling
+            : null;
+          if (existingNote) { existingNote.remove(); }
+          const requestId = 'newfunctest_' + (newFunctionTestRequestSeq++) + '_' + Date.now();
+          newFunctionTestChipsByRequestId.set(requestId, { chip: newFuncChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#newfunc' });
+          vscode.postMessage({ type: 'generateNewFunctionTest', result: r, requestId });
+        });
+        actions.appendChild(newFuncChip);
+      }
+
+      // A signature change with statically-proven broken call sites
+      // (card.callSiteIssues — a real caller parsed and checked against the
+      // new signature, not a guess) is worth its own contract test per
+      // broken caller, showing the corrected call each one must move to.
+      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && Array.isArray(r.changeCard.callSiteIssues) && r.changeCard.callSiteIssues.length) {
+        const contractChip = document.createElement('span');
+        contractChip.className = 'actionChip actionChipClickable actionChipPrimary';
+        contractChip.textContent = '⚠ Generate contract test(s)';
+        contractChip.title = 'Writes one test per statically-proven broken caller (' + r.changeCard.callSiteIssues.length + '), each showing the corrected call against the new signature.';
+        contractChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (contractChip.dataset.pending === '1') { return; }
+          contractChip.dataset.pending = '1';
+          const tickInterval = startPendingTicker(contractChip, 'Generating');
+          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
+            ? actions.nextElementSibling
+            : null;
+          if (existingNote) { existingNote.remove(); }
+          const requestId = 'contracttest_' + (contractTestRequestSeq++) + '_' + Date.now();
+          contractTestChipsByRequestId.set(requestId, { chip: contractChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#contract' });
+          vscode.postMessage({ type: 'generateContractTest', result: r, requestId });
+        });
+        actions.appendChild(contractChip);
+      }
+
+      // A function with several confirmed real callers (not just one) has
+      // genuinely different calling patterns worth covering together — the
+      // regular Call Path Test only ever reads one caller.
+      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && Array.isArray(r.changeCard.impactedFunctions) && r.changeCard.impactedFunctions.length >= 2) {
+        const broadChip = document.createElement('span');
+        broadChip.className = 'actionChip actionChipClickable';
+        broadChip.textContent = '📊 Generate broader coverage';
+        broadChip.title = 'Reads multiple of this function\\'s ' + r.changeCard.impactedFunctions.length + ' confirmed real callers and writes one test per genuinely distinct calling pattern found, not just one.';
+        broadChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (broadChip.dataset.pending === '1') { return; }
+          broadChip.dataset.pending = '1';
+          const tickInterval = startPendingTicker(broadChip, 'Generating');
+          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
+            ? actions.nextElementSibling
+            : null;
+          if (existingNote) { existingNote.remove(); }
+          const requestId = 'broadcoveragetest_' + (broadCoverageTestRequestSeq++) + '_' + Date.now();
+          broadCoverageTestChipsByRequestId.set(requestId, { chip: broadChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#broadcoverage' });
+          vscode.postMessage({ type: 'generateBroadCoverageTest', result: r, requestId });
+        });
+        actions.appendChild(broadChip);
+      }
+
       item.appendChild(actions);
 
       // A test generated in an earlier render (before this card's DOM got
       // rebuilt, e.g. by the auto uncommitted-edits refresh) still exists on
       // disk — show it immediately instead of making the user click "Check
-      // tests" again and re-discover it.
+      // tests" (or one of the generate-test chips) again and re-discover it.
       const savedTest = graphable ? generatedTestsBySymbol.get(graphable) : null;
       if (savedTest) {
         item.appendChild(buildGeneratedTestNote(savedTest));
       }
+      ['#newfunc', '#contract', '#broadcoverage'].forEach((suffix) => {
+        const saved = graphable ? generatedTestsBySymbol.get(graphable + suffix) : null;
+        if (saved) {
+          item.appendChild(buildGeneratedTestNote(saved));
+        }
+      });
     }
     parent.appendChild(item);
   }
@@ -8901,6 +9777,58 @@ function getHtml(host: string, port: number, cspSource: string): string {
     */
   }
 
+  // Two functions that BOTH changed in this diff and are directly connected
+  // by a real call edge (see findSameCommitCallChains on the extension host)
+  // — a unit test on either one alone would miss a break in how they
+  // interact, so this is surfaced as its own callout above the change list
+  // rather than buried inside either function's own card.
+  function renderCallChainsSection(parent, chains) {
+    const section = document.createElement('div');
+    section.className = 'callChainsSection';
+    const heading = document.createElement('div');
+    heading.className = 'callChainsHeading';
+    heading.textContent = '🔗 Call-Path Opportunities — functions changed together on the same call chain';
+    section.appendChild(heading);
+    chains.forEach((chain) => {
+      const row = document.createElement('div');
+      row.className = 'callChainRow';
+      const label = document.createElement('span');
+      label.className = 'callChainLabel';
+      label.textContent = (chain.callerLabel || chain.callerSymbol) + ' → ' + (chain.calleeLabel || chain.calleeSymbol);
+      label.title = (chain.callText ? 'Calls it as ' + chain.callText + '(...) ' : '') + 'at ' + chain.file + ':' + chain.line;
+      row.appendChild(label);
+
+      if (chain.crossesModuleBoundary) {
+        const boundaryBadge = document.createElement('span');
+        boundaryBadge.className = 'callChainBoundaryBadge';
+        boundaryBadge.textContent = '🧩 cross-module';
+        boundaryBadge.title = 'This call crosses a module boundary — a public-contract change, not an internal detail, so it is disproportionately worth a test.';
+        row.appendChild(boundaryBadge);
+      }
+
+      const chip = document.createElement('span');
+      chip.className = 'actionChip actionChipClickable actionChipPrimary';
+      chip.textContent = 'Generate Call-Path Test';
+      chip.title = 'Asks Claude to write one integration test exercising both functions together, using this real call edge — catches interaction bugs a unit test on either one alone would miss.';
+      chip.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (chip.dataset.pending === '1') { return; }
+        chip.dataset.pending = '1';
+        const tickInterval = startPendingTicker(chip, 'Generating');
+        const existingNote = row.nextElementSibling && row.nextElementSibling.classList.contains('callPathTestNote')
+          ? row.nextElementSibling
+          : null;
+        if (existingNote) { existingNote.remove(); }
+        const requestId = 'chaintest_' + (chainTestRequestSeq++) + '_' + Date.now();
+        chainTestChipsByRequestId.set(requestId, { chip, rowEl: row, tickInterval });
+        vscode.postMessage({ type: 'generateChainTest', chain, requestId });
+      });
+      row.appendChild(chip);
+      section.appendChild(row);
+    });
+    parent.appendChild(section);
+  }
+
   function renderSearchResult(msg) {
     if (msg.replace) {
       messages.textContent = '';
@@ -8909,6 +9837,12 @@ function getHtml(host: string, port: number, cspSource: string): string {
     document.body.classList.toggle('has-results', hasResults || messages.children.length > 0);
     const wrapper = document.createElement('div');
     wrapper.className = 'msg';
+    if (msg.kind === 'commitDetail') {
+      // Boxes the commit header together with its own ranked function list
+      // so it reads as one unit, even when other commit/report blocks are
+      // stacked above or below it.
+      wrapper.classList.add('msg-boxed');
+    }
     if (msg.query) {
       const q = document.createElement('div');
       q.className = 'query';
@@ -8926,6 +9860,9 @@ function getHtml(host: string, port: number, cspSource: string): string {
         a.className = 'answer';
         renderAnswerTextWithLinks(a, msg.answer, msg.answerLinks || []);
         wrapper.appendChild(a);
+      }
+      if (Array.isArray(msg.callChains) && msg.callChains.length) {
+        renderCallChainsSection(wrapper, msg.callChains);
       }
       const resultList = document.createElement('div');
       const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius' || msg.kind === 'commitDetail';
@@ -9189,6 +10126,68 @@ function getHtml(host: string, port: number, cspSource: string): string {
           actionsRow.insertAdjacentElement('afterend', matchList);
         }
         matchList.innerHTML = '';
+
+        // "Run all" tallies pass/fail across every discovered test in one
+        // summary instead of leaving the user to read N independent result
+        // lines — each row still runs through its own normal Run path
+        // (createTestRunRow's onResult callback), so the per-test
+        // pass/fail/coverage-confirmed logic isn't duplicated here.
+        const runners = [];
+        let batchState = null;
+        let runAllBtn = null;
+        let runAllSummary = null;
+        const updateBatchSummary = () => {
+          if (!batchState || !runAllSummary) { return; }
+          const parts = [];
+          if (batchState.passed) { parts.push(batchState.passed + ' passed'); }
+          if (batchState.failed) { parts.push(batchState.failed + ' failed'); }
+          if (batchState.errored) { parts.push(batchState.errored + ' errored'); }
+          const summaryText = parts.length ? parts.join(', ') : 'running…';
+          const complete = batchState.done >= batchState.total;
+          runAllSummary.textContent = complete ? summaryText : (batchState.done + '/' + batchState.total + ' — ' + summaryText);
+          runAllSummary.className = 'testRunAllSummary' + ((batchState.failed || batchState.errored) ? ' testRunAllSummaryBad' : complete ? ' testRunAllSummaryGood' : '');
+          if (complete && runAllBtn) {
+            runAllBtn.dataset.pending = '0';
+            runAllBtn.textContent = '▶ Run all ' + batchState.total + (batchState.total === 1 ? ' test' : ' tests');
+          }
+        };
+        const handleBatchResult = (msg) => {
+          if (!batchState) { return; }
+          batchState.done += 1;
+          if (!msg.ok) { batchState.errored += 1; } else if (msg.passed) { batchState.passed += 1; } else { batchState.failed += 1; }
+          updateBatchSummary();
+        };
+
+        let totalTests = 0;
+        matches.forEach((match) => {
+          const testNames = (match && Array.isArray(match.testNames)) ? match.testNames : [];
+          totalTests += testNames.length || 1;
+        });
+
+        if (totalTests > 1) {
+          const runAllBar = document.createElement('div');
+          runAllBar.className = 'testRunAllBar';
+          runAllBtn = document.createElement('button');
+          runAllBtn.type = 'button';
+          runAllBtn.className = 'testRunBtn';
+          runAllBtn.textContent = '▶ Run all ' + totalTests + ' tests';
+          runAllBtn.title = 'Runs every test below (each the same way its own Run button would) and tallies pass/fail here.';
+          runAllSummary = document.createElement('span');
+          runAllSummary.className = 'testRunAllSummary';
+          runAllBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (runAllBtn.dataset.pending === '1') { return; }
+            runAllBtn.dataset.pending = '1';
+            runAllBtn.textContent = 'Running…';
+            batchState = { total: runners.length, done: 0, passed: 0, failed: 0, errored: 0 };
+            updateBatchSummary();
+            runners.forEach((r) => r.runTest());
+          });
+          runAllBar.appendChild(runAllBtn);
+          runAllBar.appendChild(runAllSummary);
+          matchList.appendChild(runAllBar);
+        }
+
         matches.forEach((match) => {
           const file = typeof match === 'string' ? match : String(match.file || '');
           const testNames = (match && Array.isArray(match.testNames)) ? match.testNames : [];
@@ -9207,10 +10206,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
 
           if (testNames.length) {
             testNames.forEach((t) => {
-              group.appendChild(createTestRunRow(file, t.nodeId, t.name, t.line, targetInfo));
+              const row = createTestRunRow(file, t.nodeId, t.name, t.line, targetInfo, handleBatchResult);
+              runners.push(row);
+              group.appendChild(row);
             });
           } else {
-            group.appendChild(createTestRunRow(file, '', 'Run this file', '', targetInfo));
+            const row = createTestRunRow(file, '', 'Run this file', '', targetInfo, handleBatchResult);
+            runners.push(row);
+            group.appendChild(row);
           }
           matchList.appendChild(group);
         });
@@ -9285,9 +10288,10 @@ function getHtml(host: string, port: number, cspSource: string): string {
       const row = testRunRowsByRequestId.get(msg.requestId);
       testRunRowsByRequestId.delete(msg.requestId);
       if (!row) { return; }
-      const { runBtn, resultLine, outputToggle, outputPre, fixBtn } = row;
+      const { runBtn, resultLine, outputToggle, outputPre, fixBtn, installBtn } = row;
       runBtn.dataset.pending = '0';
       runBtn.textContent = '↻ Run again';
+      if (installBtn) { installBtn.dataset.pending = '0'; }
       if (msg.output) {
         outputPre.textContent = msg.output;
         outputToggle.style.display = '';
@@ -9301,8 +10305,24 @@ function getHtml(host: string, port: number, cspSource: string): string {
         // don't offer it here (it would just waste a Claude turn misdiagnosing
         // a missing plugin/bad pytest.ini as a code issue).
         if (fixBtn) { fixBtn.style.display = msg.environmentIssue ? 'none' : ''; }
+        // A named missing package (pytest itself, or a plugin pytest.ini
+        // expects) is something we can offer to fix directly instead of
+        // just describing it — same interpreter the failed run used.
+        if (installBtn) {
+          if (msg.missingPackage && msg.pythonPath) {
+            installBtn.dataset.package = msg.missingPackage;
+            installBtn.dataset.pythonPath = msg.pythonPath;
+            installBtn.textContent = '⬇ Install ' + msg.missingPackage + ' & retry';
+            installBtn.title = 'Runs "' + msg.pythonPath + ' -m pip install ' + msg.missingPackage + '" then re-runs this test. Only happens when you click this.';
+            installBtn.style.display = '';
+          } else {
+            installBtn.style.display = 'none';
+          }
+        }
+        if (row.onResult) { row.onResult(msg); }
         return;
       }
+      if (installBtn) { installBtn.style.display = 'none'; }
       const passWord = msg.passed ? 'Passed' : 'Failed';
       const passIcon = msg.passed ? '✓' : '✗';
       if (fixBtn) { fixBtn.style.display = msg.passed ? 'none' : ''; }
@@ -9326,6 +10346,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
           + (msg.reason ? ': ' + msg.reason : '') + ')' + claudeNote;
         resultLine.className = 'testRunResultLine testRunBestEffort';
       }
+      if (row.onResult) { row.onResult(msg); }
     } else if (msg.type === 'fixTestResult') {
       const entry = fixTestRowsByRequestId.get(msg.requestId);
       fixTestRowsByRequestId.delete(msg.requestId);
@@ -9404,6 +10425,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
       if (msg.ok && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
       }
+    } else if (msg.type === 'newFunctionTestResult') {
+      resolveChipTestResult(newFunctionTestChipsByRequestId, msg, '🆕 Generate test for new function');
+    } else if (msg.type === 'callChainTestResult') {
+      resolveChipTestResult(chainTestChipsByRequestId, msg, 'Generate Call-Path Test');
+    } else if (msg.type === 'contractTestResult') {
+      resolveChipTestResult(contractTestChipsByRequestId, msg, '⚠ Generate contract test(s)');
+    } else if (msg.type === 'broadCoverageTestResult') {
+      resolveChipTestResult(broadCoverageTestChipsByRequestId, msg, '📊 Generate broader coverage');
     } else if (msg.type === 'criticalFunctionsResult') {
       criticalFunctionsDetails.textContent = '';
       if (!msg.ok) {
@@ -9418,7 +10447,9 @@ function getHtml(host: string, port: number, cspSource: string): string {
       items.forEach((item) => {
         const row = document.createElement('div');
         row.className = 'criticalFnRow';
-        row.title = item.file ? 'Open ' + item.file : 'File location unknown';
+        row.title = item.file
+          ? 'Open ' + item.file + ' and show its caller/callee graph'
+          : 'Show caller/callee graph';
 
         const count = document.createElement('span');
         count.className = 'criticalFnCount';
@@ -9435,10 +10466,21 @@ function getHtml(host: string, port: number, cspSource: string): string {
           file.className = 'criticalFnFile';
           file.textContent = item.file;
           row.appendChild(file);
-          row.addEventListener('click', () => {
-            vscode.postMessage({ type: 'openFile', file: item.file, line: '' });
-          });
         }
+
+        // Every ranked item comes from the callgraph index, so item.symbol
+        // is always a real node id — clicking should show its graph the
+        // same way any other result row does, not just open the file.
+        row.addEventListener('click', () => {
+          const tail = String(item.symbol || '').split('.').pop() || item.symbol;
+          if (item.file) {
+            vscode.postMessage({ type: 'openFile', file: item.file, line: '' });
+          }
+          vscode.postMessage({
+            type: 'graphForResult',
+            result: { graphSymbol: item.symbol, fullName: item.symbol, symbol: tail, name: tail, file: item.file || '', line: '' },
+          });
+        });
         criticalFunctionsDetails.appendChild(row);
       });
     }
