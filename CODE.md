@@ -1,8 +1,8 @@
 # CODE.md
 
-Machine-generated structural truth for this repository.
+An end-to-end automated testing framework, built on real code callgraphs, for AI coding agents.
 
-Used by AI coding assistants to understand architecture, code flow, dependencies, UI behavior, TODOs, known gaps, and validation rules.
+CODE.md's callgraph tells an agent exactly which tests a change requires — so it can run only those, generate the ones that don't exist yet, and fix the code when a test fails for real. Everything else in this file (structure, modules, routes, entry points) is the evidence layer that makes that loop trustworthy, not the point of the file.
 
 Generated from direct repository evidence only.
 
@@ -18,15 +18,46 @@ Its primary purpose is:
 <brief_description>
 ```
 
-Key capabilities include:
+CODE.md's core loop for this repository:
 
-* `<capability_1>`
-* `<capability_2>`
-* `<capability_3>`
+* Run only the tests a change's callgraph impact actually requires — not the whole suite.
+* Generate a test when a function has none, from a real caller when possible.
+* Fix the underlying code when a test fails for real, then re-run to confirm the fix holds.
 
 ### Why this helps LLMs
 
-LLMs perform better when they start with a high-level mental model of the project. This reduces misinterpretation and prevents the model from wasting tokens trying to infer the repository’s purpose from scattered source files.
+An agent that has to guess which tests to run either runs everything (slow, expensive) or runs too little (misses regressions). A callgraph turns "which tests matter here?" into a direct lookup, so the agent can act on a real answer instead of a guess.
+
+---
+
+## Callgraph Test Generation
+
+The callgraph is a test map: every function node resolves to the tests that actually exercise it — not just tests whose name happens to match.
+
+* Functions with a discovered test: `<count>`
+* Functions with no discovered test: `<count>`
+* Tests confirmed via coverage (not just "ran"): `<count>`
+
+Function → test mapping:
+
+| Function     | Test file     | Test name     | Coverage-confirmed |
+| ------------ | ------------- | ------------- | ------------------ |
+| `<function>` | `<test_file>` | `<test_name>` | `<true/false>`      |
+
+Execution model:
+
+* Tests run for real, in the repository's own environment — pass/fail is the test runner's actual exit code, never an LLM's self-report.
+* "Coverage-confirmed" means the changed lines were provably hit during that run, not just that the test process exited 0.
+* Environment/dependency failures (missing interpreter, missing plugin, bad config) are reported as environment issues, distinct from a real test failure — a missing package is not a code bug.
+
+Generation and repair — always an explicit action, never automatic:
+
+* A function with no discovered test can get one generated from a real caller: mechanically, by replaying a confirmed caller's literal arguments, or, when no literal call site exists, by asking an AI coding agent to write one.
+* A genuine test failure (not an environment issue) can be handed to an AI coding agent to diagnose and fix, then re-verified by running the test again for a real pass/fail.
+
+### Why this helps LLMs
+
+Without a callgraph, an agent has to guess which test file covers a function by name-matching, which misses tests that exercise it indirectly through a caller. With the callgraph, "what tests cover this?", "did my change break anything?", and "is there a test for this at all?" become direct graph lookups plus a real test run, not a guess — and a failure is a hard fact the LLM can act on instead of a self-reported claim it has to trust.
 
 ---
 
@@ -190,38 +221,7 @@ Example call edges:
 
 ### Why this helps LLMs
 
-Instead of parsing thousands of lines of code, the model gets a pre-computed flow of how functions interact. This dramatically reduces token usage and improves reasoning accuracy.
-
----
-
-## Callgraph Test Generation
-
-The callgraph is also a test map: every function node can be resolved to the tests that actually exercise it — not just tests whose name happens to match.
-
-* Functions with a discovered test: `<count>`
-* Functions with no discovered test: `<count>`
-* Tests confirmed via coverage (not just "ran"): `<count>`
-
-Function → test mapping:
-
-| Function     | Test file     | Test name     | Coverage-confirmed |
-| ------------ | ------------- | ------------- | ------------------ |
-| `<function>` | `<test_file>` | `<test_name>` | `<true/false>`      |
-
-Execution model:
-
-* Tests run for real, in the repository's own environment — pass/fail is the test runner's actual exit code, never an LLM's self-report.
-* "Coverage-confirmed" means the changed lines were provably hit during that run, not just that the test process exited 0.
-* Environment/dependency failures (missing interpreter, missing plugin, bad config) are reported as environment issues, distinct from a real test failure — a missing package is not a code bug.
-
-Generation and repair — always an explicit action, never automatic:
-
-* A function with no discovered test can get one generated from a real caller: mechanically, by replaying a confirmed caller's literal arguments, or, when no literal call site exists, by asking an LLM to write one.
-* A genuine test failure (not an environment issue) can be handed to an LLM to diagnose and fix, then re-verified by running the test again for a real pass/fail.
-
-### Why this helps LLMs
-
-Without a callgraph, an agent has to guess which test file covers a function by name-matching, which misses tests that exercise it indirectly through a caller. With the callgraph, "what tests cover this?", "did my change break anything?", and "is there a test for this at all?" become direct graph lookups plus a real test run, not a guess — and a failure is a hard fact the LLM can act on instead of a self-reported claim it has to trust.
+Instead of parsing thousands of lines of code, the model gets a pre-computed flow of how functions interact. This dramatically reduces token usage and improves reasoning accuracy. This is the graph "Callgraph Test Generation" above is built on.
 
 ---
 
@@ -296,25 +296,26 @@ The source inventory helps agents quickly locate TODOs, missing logic, weak spot
 
 ## Why This Helps LLMs
 
-CODE.md gives AI coding assistants a structured map of the repository before they begin working.
+CODE.md gives AI coding agents a callgraph-driven testing loop, backed by a structured map of the repository, before they begin working.
 
 It helps by:
 
-* Giving the LLM a source map of the repository
+* Running only the tests a change's callgraph impact actually requires — never the whole suite, never nothing
+* Generating a test for a function that has none, instead of leaving the gap
+* Fixing code from a real, hard-fact test failure, then re-verifying — never trusting a self-report
+* Giving the LLM a source map of the repository, so it knows what covers what before it acts
 * Reducing the need to scan thousands of lines of code
 * Preventing hallucinations by clarifying what is known and unknown
 * Cutting token usage through pre-computed metadata
-* Improving accuracy when answering codebase questions
 * Helping agents follow real callgraphs and file dependencies
 * Making UI, API, and backend flows easier to trace
-* Saving developer time by avoiding repeated repo exploration
-* Finding, running, generating, and fixing the tests that cover a change — with a real pass/fail, not a self-report
+* Saving developer time by avoiding repeated repo exploration and unnecessary test runs
 
 In simple terms:
 
 ```text
-Fewer tokens.
-Fewer hallucinations.
-Less repeated exploration.
-Better AI coding assistance.
+Run what's required.
+Generate what's missing.
+Fix what fails.
+Prove it, don't guess.
 ```
