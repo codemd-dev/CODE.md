@@ -6555,6 +6555,15 @@ def build_navigatable_cytoscape_graph(
       const rootHighlightIds = highlightIdSet(highlight.changed_nodes || highlight.roots || []);
       const affectedHighlightIds = highlightIdSet(highlight.affected_nodes || []);
       const fileHighlightIds = highlightIdSet(highlight.file_nodes || []);
+      // Present only for graphs that know the git status of each changed
+      // node (currently the diff file graph) — when empty, every changed
+      // node falls back to the generic "Changed" red below instead of a
+      // per-status color.
+      const deletedHighlightIds = highlightIdSet(highlight.deleted_nodes || []);
+      const addedHighlightIds = highlightIdSet(highlight.added_nodes || []);
+      const modifiedHighlightIds = highlightIdSet(highlight.modified_nodes || []);
+      const criticalHighlightIds = highlightIdSet(highlight.critical_nodes || []);
+      const hasStatusSplit = Boolean(deletedHighlightIds.size || addedHighlightIds.size || modifiedHighlightIds.size);
       const legendDefinitions = {{
         \"defines\": \"file or module defines this symbol\",
         \"imports\": \"module imports another symbol or module\",
@@ -6733,8 +6742,12 @@ def build_navigatable_cytoscape_graph(
         style: [
           {{ selector: \"node\", style: {{ \"label\":\"data(label)\", \"background-color\":\"#3267e3\", \"color\":\"#111827\", \"font-size\":\"11px\", \"text-valign\":\"bottom\", \"text-halign\":\"center\", \"text-margin-y\":8, \"text-max-width\":148, \"text-wrap\":\"wrap\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.88, \"text-background-padding\":2, \"width\":16, \"height\":16, \"border-width\":1, \"border-color\":\"#1d4ed8\", \"min-zoomed-font-size\":7 }} }},
           {{ selector: \"node.impact-root\", style: {{ \"background-color\":\"#dc2626\", \"border-color\":\"#7f1d1d\", \"border-width\":4, \"width\":24, \"height\":24, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-deleted\", style: {{ \"background-color\":\"#dc2626\", \"border-color\":\"#7f1d1d\", \"border-width\":4, \"width\":24, \"height\":24, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-added\", style: {{ \"background-color\":\"#16a34a\", \"border-color\":\"#14532d\", \"border-width\":4, \"width\":24, \"height\":24, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-modified\", style: {{ \"background-color\":\"#9333ea\", \"border-color\":\"#581c87\", \"border-width\":4, \"width\":24, \"height\":24, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
           {{ selector: \"node.impact-affected\", style: {{ \"background-color\":\"#f59e0b\", \"border-color\":\"#92400e\", \"border-width\":3, \"width\":20, \"height\":20, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
           {{ selector: \"node.impact-file\", style: {{ \"background-color\":\"#10b981\", \"border-color\":\"#047857\", \"border-width\":3, \"width\":19, \"height\":19, \"font-weight\":\"700\", \"text-background-opacity\":1 }} }},
+          {{ selector: \"node.impact-critical\", style: {{ \"border-color\":\"#eab308\", \"border-width\":5 }} }},
           {{ selector: \"node:selected\", style: {{ \"width\":16, \"height\":16, \"overlay-opacity\":0.08, \"border-width\":2 }} }},
           {{ selector: \"node:active\", style: {{ \"width\":16, \"height\":16, \"overlay-opacity\":0.05 }} }},
           {{ selector: \"edge\", style: {{ \"label\":\"data(label)\", \"width\":1.7, \"line-color\":\"#64748b\", \"target-arrow-color\":\"#64748b\", \"target-arrow-shape\":\"triangle\", \"arrow-scale\":1.35, \"curve-style\":\"bezier\", \"font-size\":\"10px\", \"color\":\"#dc2626\", \"font-weight\":\"600\", \"text-background-color\":\"#ffffff\", \"text-background-opacity\":0.9, \"text-background-padding\":2, \"text-margin-y\":0, \"min-zoomed-font-size\":7 }} }},
@@ -6746,7 +6759,17 @@ def build_navigatable_cytoscape_graph(
       }});
       function renderNodeLegend() {{
         const rows = [];
-        if (rootHighlightIds.size) {{
+        if (hasStatusSplit) {{
+          if (deletedHighlightIds.size) {{
+            rows.push([\"#dc2626\", \"Deleted\", \"removed in this uncommitted change / commit\"]);
+          }}
+          if (addedHighlightIds.size) {{
+            rows.push([\"#16a34a\", \"Added\", \"newly added in this uncommitted change / commit\"]);
+          }}
+          if (modifiedHighlightIds.size) {{
+            rows.push([\"#9333ea\", \"Modified\", \"edited in this uncommitted change / commit\"]);
+          }}
+        }} else if (rootHighlightIds.size) {{
           rows.push([\"#dc2626\", \"Changed\", \"the function whose code changed\"]);
         }}
         if (affectedHighlightIds.size) {{
@@ -6754,6 +6777,9 @@ def build_navigatable_cytoscape_graph(
         }}
         if (fileHighlightIds.size) {{
           rows.push([\"#10b981\", \"File-mapped\", \"evidence tied to a changed file rather than a direct call edge\"]);
+        }}
+        if (criticalHighlightIds.size) {{
+          rows.push([\"#eab308\", \"Critical\", \"heavily depended-on — shown as a gold outline on top of its own color\"]);
         }}
         const nodeLegendRows = document.getElementById(\"nodeLegendRows\");
         if (nodeLegendRows) {{
@@ -6766,9 +6792,13 @@ def build_navigatable_cytoscape_graph(
       function applyHighlightClasses() {{
         cy.nodes().forEach(node => {{
           const id = node.id();
-          node.toggleClass(\"impact-root\", rootHighlightIds.has(id));
+          node.toggleClass(\"impact-root\", !hasStatusSplit && rootHighlightIds.has(id));
+          node.toggleClass(\"impact-deleted\", hasStatusSplit && deletedHighlightIds.has(id));
+          node.toggleClass(\"impact-added\", hasStatusSplit && addedHighlightIds.has(id));
+          node.toggleClass(\"impact-modified\", hasStatusSplit && modifiedHighlightIds.has(id));
           node.toggleClass(\"impact-affected\", !rootHighlightIds.has(id) && affectedHighlightIds.has(id));
           node.toggleClass(\"impact-file\", !rootHighlightIds.has(id) && !affectedHighlightIds.has(id) && fileHighlightIds.has(id));
+          node.toggleClass(\"impact-critical\", criticalHighlightIds.has(id));
         }});
         cy.edges().forEach(edge => {{
           const sourceHighlighted = rootHighlightIds.has(edge.source().id()) || affectedHighlightIds.has(edge.source().id()) || fileHighlightIds.has(edge.source().id());
@@ -7029,7 +7059,14 @@ def build_navigatable_cytoscape_graph(
       }});
 
       const highlightCount = rootHighlightIds.size + affectedHighlightIds.size + fileHighlightIds.size;
-      const highlightText = highlightCount ? ` · ${{rootHighlightIds.size}} changed, ${{affectedHighlightIds.size}} affected${{fileHighlightIds.size ? `, ${{fileHighlightIds.size}} file-mapped` : \"\"}}` : \"\";
+      const changedText = hasStatusSplit
+        ? [
+            deletedHighlightIds.size ? `${{deletedHighlightIds.size}} deleted` : \"\",
+            addedHighlightIds.size ? `${{addedHighlightIds.size}} added` : \"\",
+            modifiedHighlightIds.size ? `${{modifiedHighlightIds.size}} modified` : \"\",
+          ].filter(Boolean).join(\", \")
+        : `${{rootHighlightIds.size}} changed`;
+      const highlightText = highlightCount ? ` · ${{changedText}}, ${{affectedHighlightIds.size}} affected${{fileHighlightIds.size ? `, ${{fileHighlightIds.size}} file-mapped` : \"\"}}${{criticalHighlightIds.size ? `, ${{criticalHighlightIds.size}} critical` : \"\"}}` : \"\";
       setStatus(
         `${{countLabel(cy.nodes().length, "node", "nodes")}}, ${{countLabel(cy.edges().length, "edge", "edges")}}${{highlightText}}${{snapshotText}}`,
         `Showing connections from ${{compactLabel(nodeById.get(firstRoot) || firstRoot)}}. Click a node to reveal the next connected node or edge.`
@@ -7669,6 +7706,29 @@ def build_diff_file_graph(output_repo_dir, diff_entries):
             node_labels[file_path] = f"{status}: {file_path}"
     edge_labels = _load_graph_edge_labels(str(graph_json_path))
     initial_roots = sorted(changed_graph_nodes)[:12]
+    # Split the single "changed" bucket by git status so the graph can color
+    # deleted/added/modified files differently — status_by_file already has
+    # this per-file (used above for node_labels), it just wasn't surfaced as
+    # separate highlight buckets before, so every changed file rendered as
+    # the same generic "Changed" red regardless of whether it was removed,
+    # new, or edited.
+    deleted_nodes = {
+        node for node, file_path in graph_node_to_changed_file.items()
+        if status_by_file.get(file_path) == "deleted"
+    }
+    added_nodes = {
+        node for node, file_path in graph_node_to_changed_file.items()
+        if status_by_file.get(file_path) == "added"
+    }
+    modified_nodes = changed_graph_nodes - deleted_nodes - added_nodes
+    # File-level fan-in over the *full* file graph (not just this subgraph) —
+    # a file many other files import/depend on is worth flagging as critical
+    # even if this particular diff only touches it lightly.
+    file_fan_in = {}
+    for src, dst in edge_pairs:
+        file_fan_in[dst] = file_fan_in.get(dst, 0) + 1
+    CRITICAL_FILE_FAN_IN_THRESHOLD = 5
+    critical_nodes = {node for node in selected if file_fan_in.get(node, 0) >= CRITICAL_FILE_FAN_IN_THRESHOLD}
     return build_navigatable_cytoscape_graph(
         sorted(selected),
         graph_edges,
@@ -7683,6 +7743,10 @@ def build_diff_file_graph(output_repo_dir, diff_entries):
         initial_visible_edges=graph_edges[:120],
         highlight_data={
             "changed_nodes": sorted(changed_graph_nodes),
+            "deleted_nodes": sorted(deleted_nodes),
+            "added_nodes": sorted(added_nodes),
+            "modified_nodes": sorted(modified_nodes),
+            "critical_nodes": sorted(critical_nodes),
             "affected_nodes": sorted(selected - changed_graph_nodes),
             "affected_files": changed_files,
         },

@@ -1,0 +1,120 @@
+<svg width="1300" height="1050" viewBox="0 0 1300 1050" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" role="img" aria-label="CODEMD test architecture">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="aBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0969da"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1300" height="1050" fill="#ffffff"/>
+
+  <text x="650" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#1f2328">CODEMD test architecture</text>
+  <text x="650" y="60" text-anchor="middle" font-size="13.5" fill="#57606a">What runs where, and what talks to what</text>
+
+  <!-- Zone 1: VS Code -->
+  <rect x="40" y="86" width="1220" height="148" rx="14" fill="#ffffff" stroke="#8c959f" stroke-width="1.25" stroke-dasharray="5 4"/>
+  <text x="60" y="108" font-size="13" font-weight="700" fill="#57606a">INSIDE VS CODE</text>
+
+  <rect x="90" y="128" width="460" height="80" rx="10" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+  <text x="320" y="160" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">CODEMD Panel</text>
+  <text x="320" y="180" text-anchor="middle" font-size="12" fill="#57606a">webview UI — chips, cards, Run/Fix buttons</text>
+
+  <line x1="550" y1="168" x2="606" y2="168" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+
+  <rect x="610" y="128" width="610" height="80" rx="10" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+  <text x="915" y="155" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">Extension Host (TypeScript)</text>
+  <text x="915" y="175" text-anchor="middle" font-size="12" fill="#57606a">watches your files for uncommitted changes; spawns and</text>
+  <text x="915" y="191" text-anchor="middle" font-size="12" fill="#57606a">reads real exit codes from every process below</text>
+
+  <line x1="915" y1="208" x2="915" y2="244" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Zone 2: local processes -->
+  <rect x="40" y="256" width="1220" height="290" rx="14" fill="#ffffff" stroke="#8c959f" stroke-width="1.25" stroke-dasharray="5 4"/>
+  <text x="60" y="278" font-size="13" font-weight="700" fill="#57606a">LOCAL PROCESSES — SPAWNED ON DEMAND, RESULTS STREAMED BACK</text>
+
+  <!-- fan-out from Extension Host -->
+  <path d="M915,244 L915,300 M915,300 L270,300 L270,316 M915,300 L650,300 L650,316 M915,300 L1030,300 L1030,316" fill="none" stroke="#57606a" stroke-width="1.5"/>
+  <path d="M270,300 L270,316" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M650,300 L650,316" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M1030,300 L1030,316" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Col A: Python analyzer -->
+  <rect x="90" y="320" width="360" height="210" rx="10" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="270" y="346" text-anchor="middle" font-size="15" font-weight="700" fill="#0969da">Python Analyzer</text>
+  <text x="270" y="362" text-anchor="middle" font-size="11.5" fill="#57606a">(isolated venv, managed automatically)</text>
+  <text x="112" y="388" font-size="12" fill="#1f2328">• </text>
+  <text x="124" y="388" font-size="12" fill="#1f2328"><tspan font-weight="650">main.py</tspan> — builds the callgraph:</text>
+  <text x="124" y="404" font-size="12" fill="#1f2328">Python, JS/TS, file graph, SCIM index</text>
+  <text x="112" y="428" font-size="12" fill="#1f2328">• </text>
+  <text x="124" y="428" font-size="12" fill="#1f2328"><tspan font-weight="650">deletion-report.py</tspan> — diffs the</text>
+  <text x="124" y="444" font-size="12" fill="#1f2328">uncommitted change, ranks blast radius,</text>
+  <text x="124" y="460" font-size="12" fill="#1f2328">replays a real caller's literal args when</text>
+  <text x="124" y="476" font-size="12" fill="#1f2328">one exists (mechanical, no AI)</text>
+
+  <!-- Col B: Test runners -->
+  <rect x="470" y="320" width="360" height="210" rx="10" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+  <text x="650" y="346" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">Test Runners</text>
+  <text x="650" y="362" text-anchor="middle" font-size="11.5" fill="#57606a">every result is a real exit code</text>
+  <text x="492" y="388" font-size="12" fill="#1f2328">• pytest + coverage.py — Python</text>
+  <text x="492" y="410" font-size="12" fill="#1f2328">• go test — Go</text>
+  <text x="492" y="432" font-size="12" fill="#1f2328">• cargo test + cargo-llvm-cov — Rust</text>
+  <text x="492" y="454" font-size="12" fill="#1f2328">• Claude-found command + c8 —</text>
+  <text x="504" y="470" font-size="12" fill="#1f2328">other languages (e.g. JS/TS)</text>
+
+  <!-- Col C: Claude CLI -->
+  <rect x="850" y="320" width="360" height="210" rx="10" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.5"/>
+  <text x="1030" y="346" text-anchor="middle" font-size="15" font-weight="700" fill="#bc4c00">Local Claude Code CLI</text>
+  <text x="1030" y="362" text-anchor="middle" font-size="11.5" fill="#57606a">subprocess, structured JSON-schema output</text>
+  <text x="872" y="386" font-size="12" fill="#1f2328">• Writes Python tests: Regression,</text>
+  <text x="884" y="402" font-size="12" fill="#1f2328">Call-Path, New-Function, Contract,</text>
+  <text x="884" y="418" font-size="12" fill="#1f2328">or Broader-Coverage</text>
+  <text x="872" y="440" font-size="12" fill="#1f2328">• Finds the run command for</text>
+  <text x="884" y="456" font-size="12" fill="#1f2328">non-direct languages (read-only)</text>
+  <text x="872" y="478" font-size="12" fill="#1f2328">• Fix with Claude — diagnoses test</text>
+  <text x="884" y="494" font-size="12" fill="#1f2328">vs. code vs. environment, edits,</text>
+  <text x="884" y="510" font-size="12" fill="#1f2328">re-verifies by rerunning itself</text>
+
+  <line x1="270" y1="530" x2="270" y2="614" stroke="#0969da" stroke-width="1.5" marker-end="url(#aBlue)"/>
+  <path d="M1030,530 C1030,590 620,600 560,614" fill="none" stroke="#bc4c00" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Zone 3: persisted on disk -->
+  <rect x="40" y="576" width="1220" height="148" rx="14" fill="#ffffff" stroke="#8c959f" stroke-width="1.25" stroke-dasharray="5 4"/>
+  <text x="60" y="598" font-size="13" font-weight="700" fill="#57606a">PERSISTED ON DISK</text>
+
+  <rect x="140" y="618" width="500" height="80" rx="10" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="390" y="650" text-anchor="middle" font-size="16" font-weight="700" fill="#1a7f37">.codemd/</text>
+  <text x="390" y="670" text-anchor="middle" font-size="12" fill="#57606a">callgraph JSON · CODE.md · generated_tests/</text>
+
+  <rect x="680" y="618" width="500" height="80" rx="10" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+  <text x="930" y="650" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">VS Code global storage</text>
+  <text x="930" y="670" text-anchor="middle" font-size="12" fill="#57606a">the managed Python venv, backend-output cache</text>
+
+  <!-- connector down to zone 4 -->
+  <path d="M390,698 L390,780" fill="none" stroke="#57606a" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#a)"/>
+  <text x="405" y="742" font-size="12" fill="#57606a">reads the same index</text>
+
+  <!-- Zone 4: MCP -->
+  <rect x="40" y="746" width="1220" height="240" rx="14" fill="#ffffff" stroke="#8c959f" stroke-width="1.25" stroke-dasharray="5 4"/>
+  <text x="60" y="768" font-size="13" font-weight="700" fill="#57606a">OPTIONAL — YOUR AI AGENT TALKS TO THE SAME INDEX DIRECTLY, VIA MCP</text>
+
+  <rect x="140" y="784" width="260" height="60" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+  <text x="270" y="820" text-anchor="middle" font-size="14.5" font-weight="650" fill="#1f2328">Claude Code</text>
+
+  <rect x="520" y="784" width="260" height="60" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+  <text x="650" y="820" text-anchor="middle" font-size="14.5" font-weight="650" fill="#1f2328">Codex</text>
+
+  <rect x="900" y="784" width="260" height="60" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+  <text x="1030" y="820" text-anchor="middle" font-size="14.5" font-weight="650" fill="#1f2328">Cursor</text>
+
+  <line x1="270" y1="844" x2="560" y2="892" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="650" y1="844" x2="650" y2="892" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="1030" y1="844" x2="740" y2="892" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="460" y="896" width="380" height="70" rx="10" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="650" y="924" text-anchor="middle" font-size="14.5" font-weight="700" fill="#0969da">CODEMD MCP Server (opt-in)</text>
+  <text x="650" y="942" text-anchor="middle" font-size="11" fill="#57606a">get_impact_radius · get_callers/callees · find_tests · review_changes</text>
+
+  <text x="650" y="1010" text-anchor="middle" font-size="12.5" fill="#57606a">Nothing here runs unless you click it — Set Up MCP is opt-in, and Fix with Claude only ever fires on an explicit click.</text>
+</svg>

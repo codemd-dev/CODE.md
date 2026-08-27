@@ -1,8 +1,8 @@
 {
   "name": "codemd-graphs",
   "displayName": "CODEMD",
-  "description": "AI writes your code fast. CODEMD proves each change is safe — traces the callgraph, generates and runs the missing test, and fixes real failures before you commit.",
-  "version": "0.0.101",
+  "description": "Traces the callgraph, writes the missing test, and blocks unsafe commits — before an AI agent's edit ships.",
+  "version": "0.0.111",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -174,6 +174,17 @@
           "type": "number",
           "default": 8100,
           "description": "Port the local FastAPI server binds to."
+        },
+        "codemdGraphs.readOnlyMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, CODEMD never invokes Claude to write tests or fix failures — it only analyzes, and runs tests that already exist. The free, mechanical Regression Test (no AI involved) is unaffected."
+        },
+        "codemdGraphs.maxCostPerActionUsd": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.05,
+          "description": "Caps how much API-equivalent usage a single Claude action (writing a test, fixing a failure, or finding how to run a test) can use, in USD. On a Claude Pro/Max subscription this isn't a real charge — it's the same usage figure the CLI reports internally — but the cap still protects your rate-limited 5-hour/7-day quota from one runaway action. Claude stops as soon as it crosses this between turns and the action is reported as failed rather than applied; since the check happens between turns, not mid-turn, actual usage can run slightly over this for one expensive turn. Raise it if you want to allow heavier actions."
         },
         "codemdGraphs.excludeGlobs": {
           "type": "array",

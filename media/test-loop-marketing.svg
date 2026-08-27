@@ -1,0 +1,51 @@
+<svg width="1400" height="330" viewBox="0 0 1400 330" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" role="img" aria-label="CODEMD: from an agent's edit to a safe commit">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="330" fill="#ffffff"/>
+
+  <!-- connectors (drawn first, under the boxes) -->
+  <line x1="248" y1="178" x2="282" y2="178" stroke="#8c959f" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="538" y1="178" x2="572" y2="178" stroke="#8c959f" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="828" y1="178" x2="862" y2="178" stroke="#8c959f" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="1118" y1="178" x2="1152" y2="178" stroke="#8c959f" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 1 -->
+  <rect x="0" y="70" width="248" height="216" rx="16" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+  <text x="124" y="130" text-anchor="middle" font-size="40">🤖</text>
+  <text x="124" y="182" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">Agent writes code</text>
+  <text x="124" y="205" text-anchor="middle" font-size="14" fill="#57606a">Claude · Cursor · Copilot</text>
+  <text x="124" y="223" text-anchor="middle" font-size="14" fill="#57606a">Codex — or you</text>
+
+  <!-- 2 -->
+  <rect x="282" y="70" width="248" height="216" rx="16" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="406" y="130" text-anchor="middle" font-size="40">🧭</text>
+  <text x="406" y="182" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">CODEMD finds</text>
+  <text x="406" y="204" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">the risk</text>
+  <text x="406" y="227" text-anchor="middle" font-size="14" fill="#57606a">traces the callgraph,</text>
+  <text x="406" y="245" text-anchor="middle" font-size="14" fill="#57606a">ranks blast radius</text>
+
+  <!-- 3 -->
+  <rect x="572" y="70" width="248" height="216" rx="16" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="696" y="130" text-anchor="middle" font-size="40">🧪</text>
+  <text x="696" y="182" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">Writes &amp; runs</text>
+  <text x="696" y="204" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">a real test</text>
+  <text x="696" y="227" text-anchor="middle" font-size="14" fill="#57606a">grounded in how the</text>
+  <text x="696" y="245" text-anchor="middle" font-size="14" fill="#57606a">code is actually called</text>
+
+  <!-- 4 -->
+  <rect x="862" y="70" width="248" height="216" rx="16" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="986" y="130" text-anchor="middle" font-size="40">🔧</text>
+  <text x="986" y="182" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">Fixes real</text>
+  <text x="986" y="204" text-anchor="middle" font-size="17" font-weight="750" fill="#1f2328">failures</text>
+  <text x="986" y="227" text-anchor="middle" font-size="14" fill="#57606a">one click — never</text>
+  <text x="986" y="245" text-anchor="middle" font-size="14" fill="#57606a">automatic</text>
+
+  <!-- 5 -->
+  <rect x="1152" y="70" width="248" height="216" rx="16" fill="#16a34a" stroke="#15803d" stroke-width="2"/>
+  <text x="1276" y="130" text-anchor="middle" font-size="40">✅</text>
+  <text x="1276" y="182" text-anchor="middle" font-size="17" font-weight="800" fill="#ffffff">Safe to commit</text>
+  <text x="1276" y="227" text-anchor="middle" font-size="14" fill="#dcfce7">a real test-runner</text>
+  <text x="1276" y="245" text-anchor="middle" font-size="14" fill="#dcfce7">result, every time</text>
+</svg>

@@ -2,9 +2,18 @@
 
 **AI writes the code. CODEMD proves the change is safe before you commit.**
 
-Claude, Cursor, Codex, and Copilot write code fast — but they routinely skip the test, or write one that never actually exercises the line they changed. CODEMD closes that loop inside VS Code: it traces your uncommitted change through the repo's callgraph, checks whether anything actually tests the function you touched, writes a real test grounded in how that function is genuinely called when one's missing, and runs it for a genuine pass/fail — automatically, before you commit.
+Claude, Copilot, Cursor, and Codex write code fast — but they don't always test what they changed. CODEMD closes that gap automatically, right inside VS Code, before you commit.
 
-**The loop:** agent changes code → CODEMD maps the impact via the callgraph → finds the tests that already cover it → generates the ones that don't exist → runs only what's required (not the whole suite, not nothing) → surfaces real failures → helps fix the code. Pass/fail is always a real test-runner result — never an LLM's self-report.
+**How it works:**
+
+1. **Claude (or any AI) changes your code.**
+2. **CODEMD traces the change** through your codebase to see everything it affects.
+3. **It checks for a real test** — and writes one, grounded in how the code is actually used, if none exists.
+4. **It runs the test** and confirms the changed lines actually ran — a real pass/fail, not an AI's opinion.
+5. **If it fails,** one click has Claude fix the test or the code, then re-verify.
+6. **You get a clear report** — safe to commit, or not — before you check in.
+
+![The CODEMD loop: agent writes code, CODEMD finds the risk, writes and runs a real test, fixes real failures, safe to commit](https://github.com/codemd-dev/CODE.md/blob/main/media/test-loop-marketing.png?raw=true)
 
 ```
 $ git commit -m "add checkout retry flow"
@@ -16,37 +25,47 @@ CODEMD — writing missing test...
 OK  safe to commit
 ```
 
-1. **Analyze** — every uncommitted change is traced through the repo's callgraph: what it calls, what calls it, how far the blast radius reaches.
-2. **Identify** — CODEMD checks each changed function against existing tests and flags the ones nothing currently covers.
-3. **Write & run** — it writes a real test grounded in how the function is actually called, then runs it and reports a genuine pass/fail — before you commit.
-
-Coding agents can search your repo, but they have to reconstruct how it fits together every time. CODEMD builds that structure once — callers, callees, blast radius — and keeps it current, so the test-gap check above is instant instead of a fresh investigation.
-
 > **Pre-release preview:** CODEMD is currently in early testing. Please report install issues, confusing flows, or inaccurate results.
 >
 > **Install note:** If the CODEMD icon or panel does not appear right after installing or updating the extension, run **Developer: Reload Window** from the VS Code Command Palette.
 
 ![CODEMD impact graph and change report inside VS Code](https://github.com/codemd-dev/CODE.md/blob/main/uncommitted-edits.jpg?raw=true)
 
-## The test loop, in detail
+## The 5 kinds of tests CODEMD writes — and only these 5
 
-1. **Find the gap.** CODEMD checks your uncommitted changes against the repo's callgraph and flags every modified or new function — then checks whether any existing test actually references it, not just whether a test file happens to exist nearby.
-2. **Generate a real test.** For a function with no coverage, click **Generate regression test** — a free, no-AI replay of a confirmed real caller's actual arguments — or **Ask Claude for a Call Path Test**, which reads how the function is genuinely invoked and writes a test around that, not a placeholder.
-3. **Run it and get a real answer.** Click **Run**. For Python, Go, and Rust this executes directly in your own environment and reports a hard pass/fail, with coverage confirmation showing whether the changed lines actually ran. Other languages ask your local Claude Code CLI to find the right command (read-only — it can't run or fix anything at that step); CODEMD then runs that command itself and reads the real exit code, so pass/fail is never just an LLM's opinion of its own output. JS/TS additionally gets measured coverage via `c8`.
-4. **Fix on your terms.** A failing test shows a **🔧 Fix with Claude** button — never automatic. One click has Claude re-run the test itself, decide whether the test's assumptions or the code under test is actually wrong, fix the smaller correct thing, and verify by rerunning before reporting back what changed.
+CODEMD doesn't generate tests freely. Every run picks exactly one of the 5 kinds below, based on what it finds in your callgraph — never open-ended, never invented:
 
-## Also catches, before you commit
+1. **Regression Test** — free, no AI involved. A real caller's actual arguments are replayed exactly as they're passed in your code. Instant and fully deterministic.
+2. **Call-Path Test** — when a real caller's arguments aren't plain literals (a variable, a computed value), or when two changed functions call each other directly, Claude reads the real call and writes the test by hand around it — still grounded in an actual call site, just not mechanically replayable.
+3. **New-Function Test** — for a function you just added. CODEMD finds its first real caller in the callgraph and asks Claude to write a test around that actual usage.
+4. **Contract Test** — when a signature change breaks existing callers, CODEMD writes one test per broken call site, each showing the corrected call against the new signature.
+5. **Broader-Coverage Test** — for a function with several real callers, one test per genuinely different way it's called, not just the first one found.
+
+Whichever kind it picks, CODEMD only writes it when you click **Check tests** — nothing runs in the background — and it then runs the test and reports a real pass/fail.
+
+## What else shows up in your impact report
+
+These aren't actions CODEMD takes — they're risks it flags *in the report*, for you to review before you commit:
 
 - **Deleted or renamed functions** that something else still calls.
 - **Changed function signatures** that break existing call sites.
-- **Blast radius** — every function, file, or route your edit touches indirectly, ranked by risk. This is the same analysis that powers the test-gap detection above.
+- **Blast radius** — every function, file, or route your edit touches indirectly, ranked by risk.
 - **Risky changes** — edits to CI/deploy config, migrations, schemas, or heavily-depended-on files.
 
-## Also useful
+## Other ways to use CODEMD
 
 - **Check Latest Commits** — the same impact check, for changes that are already committed.
 - **Search** — jump straight to any function, file, or route and see what connects to it.
-- **Works with your AI agent directly** — CODEMD can expose its local repo index to Claude Code, Codex, and Cursor over MCP, so your agent checks what it's about to break (and what needs a test) instead of guessing. Opt-in via **Set Up MCP** in the CODEMD panel — nothing is configured automatically.
+- **Read-only access for your AI agent** — CODEMD can expose its local repo index to Claude Code, Codex, and Cursor over MCP: impact radius, callers/callees, and test coverage lookups only — no write tools, so your agent can look before it leaps without CODEMD taking any action on its own. Opt-in via **Set Up MCP** in the CODEMD panel.
+- **Read-only mode** — set `codemdGraphs.readOnlyMode` to `true` to stop CODEMD from ever invoking Claude to write a test or fix a failure. It still traces impact and runs the free, mechanical Regression Test and any tests that already exist — you just won't get AI-generated tests or the Fix button until you turn it back off.
+- **A usage cap on every AI action** — `codemdGraphs.maxCostPerActionUsd` (default `$1`) caps how much API-equivalent usage any single Claude action (writing a test, fixing a failure, or finding a run command) is allowed to use. On a Claude Pro/Max subscription this isn't a real charge — nothing is billed per call — but the cap still protects your rate-limited 5-hour/7-day quota from one action eating an outsized chunk of it. Claude enforces this itself and stops the moment it's crossed — raise it in Settings if you want to allow heavier actions.
+- **An activity report of everything CODEMD did** — every test run, every test it generated, and every fix it attempted is logged to `.codemd/reports/activity.md`, with how long each took and how much usage it took. CODEMD tells you the first time it writes to this file, with a button to open it.
+
+## Under the hood
+
+Everything runs locally: a bundled Python analyzer builds and maintains the callgraph, your own test runners (`pytest`, `go test`, `cargo test`, ...) produce every pass/fail, and the local Claude Code CLI is invoked only for test generation and the Fix button — never automatically.
+
+![CODEMD architecture: the webview panel and extension host in VS Code, the local Python analyzer, test runners, and Claude Code CLI they spawn, what gets persisted in .codemd/ and VS Code's global storage, and the optional MCP server exposing the same index to Claude Code, Codex, and Cursor](https://github.com/codemd-dev/CODE.md/blob/main/media/test-architecture.png?raw=true)
 
 ## Getting Started
 
