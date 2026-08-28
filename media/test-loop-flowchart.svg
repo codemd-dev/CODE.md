@@ -1,0 +1,130 @@
+<svg width="1020" height="1750" viewBox="0 0 1020 1750" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" role="img" aria-label="CODEMD test loop flowchart">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+    <marker id="aGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+    <marker id="aRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1020" height="1680" fill="#ffffff"/>
+  <text x="510" y="40" text-anchor="middle" font-size="27" font-weight="800" fill="#111827" letter-spacing="1">CODEMD FLOW</text>
+
+  <!-- 1 -->
+  <rect x="230" y="70" width="560" height="90" rx="16" fill="#faf1da" stroke="#d9a441" stroke-width="1.5"/>
+  <text x="258" y="122" font-size="24">🤖</text>
+  <text x="510" y="110" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">1. Claude or Coding Agent</text>
+  <text x="510" y="132" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">writes code</text>
+  <line x1="510" y1="160" x2="510" y2="196" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 2 -->
+  <rect x="230" y="200" width="560" height="70" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="256" y="242" font-size="22">🔍</text>
+  <text x="510" y="242" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">2. CODEMD automatically tracks the uncommitted change</text>
+  <line x1="510" y1="270" x2="510" y2="306" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 3 -->
+  <rect x="230" y="310" width="560" height="70" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="256" y="352" font-size="22">⚠️</text>
+  <text x="510" y="352" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">3. CODEMD ranks it — blast radius, Low to High risk</text>
+  <line x1="510" y1="380" x2="510" y2="416" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 4 -->
+  <rect x="230" y="420" width="560" height="70" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="256" y="462" font-size="22">✅</text>
+  <text x="510" y="462" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">4. Check existing tests for that change only</text>
+  <line x1="510" y1="490" x2="510" y2="526" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- diamond -->
+  <polygon points="510,530 680,590 510,650 340,590" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="510" y="596" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">Tests exist?</text>
+
+  <!-- YES -> run tests pill -->
+  <line x1="340" y1="590" x2="286" y2="590" stroke="#16a34a" stroke-width="2" marker-end="url(#aGreen)"/>
+  <text x="313" y="576" text-anchor="middle" font-size="13" font-weight="800" fill="#16a34a">YES</text>
+  <rect x="60" y="560" width="220" height="60" rx="30" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="90" y="598" font-size="20">▶️</text>
+  <text x="180" y="597" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">Run tests</text>
+
+  <!-- NO -> box 5 -->
+  <line x1="680" y1="590" x2="710" y2="590" stroke="#dc2626" stroke-width="2"/>
+  <line x1="710" y1="590" x2="710" y2="656" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+  <text x="724" y="576" text-anchor="middle" font-size="13" font-weight="800" fill="#dc2626">NO</text>
+
+  <!-- 5 -->
+  <rect x="430" y="660" width="560" height="90" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="456" y="700" font-size="22">📋</text>
+  <text x="710" y="694" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">5. No test covers it — CODEMD generates</text>
+  <text x="710" y="716" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">one scoped to just this change</text>
+  <line x1="710" y1="750" x2="710" y2="756" stroke="#57606a" stroke-width="1.5"/>
+
+  <!-- detail panel -->
+  <rect x="430" y="760" width="560" height="320" rx="14" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="710" y="790" text-anchor="middle" font-size="15.5" font-weight="800" fill="#1e3a8a">What CODEMD actually generates today</text>
+
+  <!-- python row -->
+  <circle cx="460" cy="825" r="6" fill="#2563eb"/>
+  <text x="478" y="830" font-size="14" font-weight="700" fill="#1f2328">Python — CODEMD writes it directly:</text>
+  <text x="478" y="850" font-size="12.5" fill="#374151">Regression Test (mechanical replay of a real caller)</text>
+  <text x="478" y="868" font-size="12.5" fill="#374151">Call-Path Test · New-Function Test · Contract Test</text>
+  <text x="478" y="886" font-size="12.5" fill="#374151">Broader-Coverage Test  — the last four ask the local</text>
+  <text x="478" y="904" font-size="12.5" fill="#374151">Claude Code CLI to write one grounded in real usage</text>
+
+  <!-- go row -->
+  <circle cx="460" cy="934" r="6" fill="#6b7280"/>
+  <text x="478" y="939" font-size="14" font-weight="700" fill="#1f2328">Go — generation not available yet</text>
+  <text x="478" y="957" font-size="12.5" fill="#374151">CODEMD still runs whatever tests already exist directly</text>
+
+  <!-- rust row -->
+  <circle cx="460" cy="983" r="6" fill="#6b7280"/>
+  <text x="478" y="988" font-size="14" font-weight="700" fill="#1f2328">Rust — generation not available yet</text>
+  <text x="478" y="1006" font-size="12.5" fill="#374151">CODEMD still runs whatever tests already exist directly</text>
+
+  <!-- other row -->
+  <circle cx="460" cy="1032" r="6" fill="#6b7280"/>
+  <text x="478" y="1037" font-size="14" font-weight="700" fill="#1f2328">Other languages — generation not available yet</text>
+  <text x="478" y="1055" font-size="12.5" fill="#374151">the local Claude Code CLI finds the right run command</text>
+  <text x="478" y="1071" font-size="12.5" fill="#374151">(read-only) and CODEMD executes it for a real result</text>
+
+  <!-- merges into box 6 — routed as right-angle elbows that stay clear of
+       the detail panel's footprint (x 430-990, bottom 1080) entirely, each
+       landing on its own point along box 6's top edge rather than sharing
+       a single overlapping approach lane. -->
+  <path d="M170,620 V1146 H420 V1166" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#aGreen)"/>
+  <path d="M710,1080 V1150 H600 V1166" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 6 -->
+  <rect x="230" y="1170" width="560" height="70" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="256" y="1212" font-size="20">▶️</text>
+  <text x="510" y="1212" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">6. Run the test — a real exit code</text>
+  <line x1="510" y1="1240" x2="510" y2="1276" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 7 -->
+  <rect x="230" y="1280" width="560" height="70" rx="14" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="256" y="1322" font-size="21">📊</text>
+  <text x="510" y="1322" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">7. Analyze the failure</text>
+  <line x1="510" y1="1350" x2="510" y2="1386" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 8 -->
+  <rect x="230" y="1390" width="560" height="70" rx="14" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="256" y="1432" font-size="21">🔧</text>
+  <text x="510" y="1425" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">8. Fix with Claude — one click, never automatic</text>
+  <text x="510" y="1445" text-anchor="middle" font-size="12" fill="#57606a">diagnoses whether the test, the code, or the environment is wrong</text>
+  <line x1="510" y1="1460" x2="510" y2="1496" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- 9 -->
+  <rect x="230" y="1500" width="560" height="70" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="256" y="1542" font-size="20">🔁</text>
+  <text x="510" y="1542" text-anchor="middle" font-size="16.5" font-weight="700" fill="#1f2328">9. Re-run the test to verify</text>
+
+  <!-- loop back if still failing -->
+  <path d="M230,1535 H140 V1315 H226" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#aRed)"/>
+  <text x="128" y="1430" text-anchor="middle" font-size="12.5" font-weight="700" fill="#dc2626" transform="rotate(-90 128 1430)">still failing</text>
+
+  <line x1="510" y1="1570" x2="510" y2="1606" stroke="#16a34a" stroke-width="1.5" marker-end="url(#aGreen)"/>
+  <text x="524" y="1592" font-size="12.5" font-weight="700" fill="#16a34a">passes</text>
+
+  <!-- 10 -->
+  <rect x="230" y="1610" width="560" height="90" rx="45" fill="#16a34a" stroke="#15803d" stroke-width="2"/>
+  <text x="270" y="1665" font-size="26" fill="#ffffff">✅</text>
+  <text x="530" y="1655" text-anchor="middle" font-size="18" font-weight="800" fill="#ffffff">10. Success</text>
+  <text x="530" y="1678" text-anchor="middle" font-size="13.5" fill="#dcfce7">all tests pass — safe to commit</text>
+</svg>
