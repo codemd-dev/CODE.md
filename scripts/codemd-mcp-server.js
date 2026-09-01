@@ -843,7 +843,7 @@ function isTestFile(relPath) {
   return (
     /(^|\/)(__tests__|tests?|spec)(\/|$)/.test(normalized) ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
-    /(_test|test_)[A-Za-z0-9_-]*\.py$/.test(name) ||
+    /^test_[A-Za-z0-9_-]*\.py$/.test(name) || /_test\.py$/.test(name) ||
     /Test\.(java|kt|cs)$/i.test(name) ||
     /_test\.go$/.test(name) ||
     /_test(s)?\.rs$/.test(name)

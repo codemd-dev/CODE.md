@@ -152,6 +152,7 @@ let outputChannel: vscode.OutputChannel;
 let statusBarItem: vscode.StatusBarItem;
 let debugLogPath = '';
 let staleServerCleanupPromise: Promise<void> | null = null;
+let serverStartPromise: Promise<string> | null = null;
 
 function initializeDebugLog(context: vscode.ExtensionContext): void {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -959,6 +960,24 @@ function parseClaudeBudgetError(stdout: string, capUsd: number): string | null {
   return `Stopped to stay under your $${capUsd.toFixed(2)} usage limit for this action (used ${spent} before Claude's between-turn check caught it). Raise codemdGraphs.maxCostPerActionUsd in Settings if you want to allow heavier actions.`;
 }
 
+// Same idea as parseClaudeBudgetError, for the other way a genuinely-working
+// run exits non-zero: it used up its whole --max-turns budget (subtype
+// "error_max_turns") before reaching a final answer — e.g. investigating a
+// wrong test-runner config in a monorepo, or a failure that turned out to
+// need a live backend server. Without this, that case fell through to the
+// same generic "may not be logged in" message a real auth failure gets,
+// which is actively misleading after Claude has visibly just spent minutes
+// reading files and running commands — confirmed against a real run where
+// this happened (a 220s Fix attempt against dtc-starter's storefront that
+// hit its turn cap while chasing the wrong jest config, reported as a login
+// problem). A real auth failure exits on turn 1 with no tool activity, so
+// this check never fires for that case.
+function parseClaudeMaxTurnsError(stdout: string, maxTurns: number): string | null {
+  const envelope = extractClaudeResultEnvelope(stdout);
+  if (envelope?.subtype !== 'error_max_turns') { return null; }
+  return `Claude used all ${maxTurns} turns without finishing — it may have been investigating something that turned out to be more involved than expected (or genuinely unfixable in this environment) rather than hitting an error. Check "View output" above for what it was doing, then it's safe to just try again if it looked close.`;
+}
+
 // Turns one line of Claude's --output-format stream-json JSONL into a short
 // human-readable line for the live Fix-progress transcript — raw JSONL read
 // as one giant line is what users were seeing before this (reported as
@@ -1004,10 +1023,10 @@ function summarizeClaudeToolInput(name: string, input: any): string {
 // a markdown block for .codemd/reports/activity.md, or null for message types
 // nobody needs a durable record of (status pings, graph data, etc.) — see
 // GraphsViewProvider.post(), the single funnel every result already passes
-// through. Deliberately uses only fields already present on each payload
-// rather than threading extra context through every call site; test-run
-// entries can end up without a function name for now as a result — a real,
-// known gap, not an oversight.
+// through. testRunResult entries get file/targetSymbol/targetPath/durationMs/
+// defectRecorded merged onto them by postTestRunResult specifically so this
+// function has something useful to report beyond bare pass/fail — see that
+// function's doc comment.
 function formatReportEntryMarkdown(message: any): string | null {
   if (!message || typeof message.type !== 'string') { return null; }
   const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
@@ -1018,10 +1037,14 @@ function formatReportEntryMarkdown(message: any): string | null {
     return kept.length ? `- ${kept.join(' · ')}\n` : '';
   };
 
+  // Fixed taxonomy from the README's "5 kinds of tests" table — keep these
+  // labels in sync with that table's category names, not with the internal
+  // message-type names, since two message types (callPathTestResult and
+  // callChainTestResult) both fall under "Call-Path Test" there.
   const genKindLabels: Record<string, string> = {
     callPathTestResult: 'Call-Path Test',
     newFunctionTestResult: 'New-Function Test',
-    callChainTestResult: 'Call-Path Test (call-chain)',
+    callChainTestResult: 'Call-Path Test',
     contractTestResult: 'Contract Test',
     broadCoverageTestResult: 'Broader-Coverage Test',
     regressionTestResult: 'Regression Test',
@@ -1033,14 +1056,26 @@ function formatReportEntryMarkdown(message: any): string | null {
       : message.passed === true ? '✓ Passed'
       : message.passed === false ? '✗ Failed'
       : '— Ran (result unclear)';
-    let block = `### ${ts} — Test run: ${status}\n`;
+    const target = message.targetSymbol || message.targetPath || '';
+    let block = `### ${ts} — Test run: ${status}` + (target ? ` — \`${target}\`` : '') + '\n';
+    const testFile = typeof message.file === 'string' ? message.file : '';
+    const generatorKind = testFile ? generatorKindFromTestFileName(testFile) : '';
+    const category = generatorKind ? (TEST_KIND_LABELS[generatorKind] || generatorKind)
+      : message.viaClaude ? 'Claude-discovered test command'
+      : testFile ? 'Existing test'
+      : '';
+    if (category) { block += `- Category: ${category}\n`; }
+    if (testFile) { block += `- Test file: ${testFile}\n`; }
     if (message.error) { block += `- Error: ${message.error}\n`; }
     if (message.reason) { block += `- ${message.reason}\n`; }
     if (typeof message.coverageConfirmed === 'boolean') {
       block += `- Coverage confirmed: ${message.coverageConfirmed ? 'yes' : 'no'}\n`;
     }
     if (message.viaClaude) { block += '- Run via: Claude-discovered command\n'; }
-    return block + '\n';
+    if (message.defectRecorded) {
+      block += `- ⚠ Code bug found — recorded to ${message.defectRecorded}\n`;
+    }
+    return block + statLine(asSeconds(message.durationMs)) + '\n';
   }
 
   if (message.type in genKindLabels) {
@@ -1714,6 +1749,10 @@ function localBackendEnv(context: vscode.ExtensionContext): NodeJS.ProcessEnv {
     GOOGLE_ANALYTICS_CLIENT_SECRET: '',
     CODEVAL_MIXPANEL_SECRET_KEY: '',
     CODEVAL_SECRET_ENCRYPTION_KEY: '',
+    OPENAI_API_KEY: '',
+    SUPABASE_URL: '',
+    SUPABASE_KEY: '',
+    SUPABASE_SERVICE_ROLE_KEY: '',
   };
 }
 
@@ -1726,7 +1765,30 @@ async function isServerReachable(baseUrl: string): Promise<boolean> {
   }
 }
 
+/**
+ * Serializes concurrent callers (e.g. a search-result-graph request and a
+ * "Generate" run both wanting the FastAPI companion up at the same time)
+ * onto a single in-flight attempt. Without this, two callers could both
+ * observe the server unreachable and not-yet-tracked (isServerReachable and
+ * the serverProcess check below both involve `await`s), and each spawn
+ * their own uvicorn process racing to bind the same port.
+ */
 async function ensureServerRunning(
+  context: vscode.ExtensionContext,
+  onStatus: (message: string) => void,
+  quiet: boolean,
+): Promise<string> {
+  if (serverStartPromise) {
+    return serverStartPromise;
+  }
+  const attempt = ensureServerRunningExclusive(context, onStatus, quiet).finally(() => {
+    serverStartPromise = null;
+  });
+  serverStartPromise = attempt;
+  return attempt;
+}
+
+async function ensureServerRunningExclusive(
   context: vscode.ExtensionContext,
   onStatus: (message: string) => void,
   quiet: boolean,
@@ -2378,6 +2440,37 @@ function execNodeCliAsync(scriptPath: string, args: string[], cwd: string, timeo
  * would otherwise report as "couldn't launch" even though typing the same
  * command in a terminal works (the shell there is what resolves the shim).
  */
+/**
+ * Bounds how many local pytest/coverage subprocesses computePythonTestRunPayload
+ * can have running at once. The "Check existing tests" flow (runExistingTestsForResult)
+ * auto-fires once per changed/added Python symbol in a result batch — with no cap of
+ * its own, since it's local-only and was assumed cheap — and each fire runs up to 3
+ * matched test files in parallel via Promise.all. A large diff or first-time scan
+ * across a big repo can therefore spawn hundreds of `coverage run -m pytest`
+ * processes simultaneously and exhaust the system. This queues excess requests
+ * instead of firing them all at once; nothing is dropped, just serialized.
+ */
+const MAX_CONCURRENT_PYTHON_TEST_RUNS = 3;
+let activePythonTestRuns = 0;
+const pythonTestRunWaiters: Array<() => void> = [];
+
+function acquirePythonTestRunSlot(): Promise<void> {
+  if (activePythonTestRuns < MAX_CONCURRENT_PYTHON_TEST_RUNS) {
+    activePythonTestRuns++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => { pythonTestRunWaiters.push(resolve); });
+}
+
+function releasePythonTestRunSlot(): void {
+  const next = pythonTestRunWaiters.shift();
+  if (next) {
+    next(); // hand the slot straight to the next waiter — activePythonTestRuns stays the same
+  } else {
+    activePythonTestRuns--;
+  }
+}
+
 function execCommandAsync(
   cmd: string,
   args: string[],
@@ -2410,6 +2503,12 @@ function execCommandOnceAsync(
       return;
     }
     trackProcess(proc);
+    // No caller of this function ever writes to stdin — end it immediately
+    // so a CLI that defensively waits for piped stdin before proceeding
+    // (observed with `claude -p ...`: "Warning: no stdin data received in
+    // 3s, proceeding without it") sees EOF right away instead of stalling
+    // every single invocation for ~3s.
+    proc.stdin?.end();
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -2462,6 +2561,10 @@ function execCommandCancelableAsync(
       return;
     }
     trackProcess(proc);
+    // See the matching comment in execCommandOnceAsync — end stdin right
+    // away so `claude -p ...` doesn't stall ~3s per call waiting for piped
+    // input that will never arrive.
+    proc.stdin?.end();
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -2621,6 +2724,557 @@ function pythonModuleNameFor(relPath: string): string {
   return parts.length ? parts.join('.') : '__init__';
 }
 
+/** Languages the Claude-based test generators below understand. Adding one
+ * means: a real callgraph artifact with caller/call-site data (see
+ * callgraphArtifactFor), a module/import-name resolver, and a test-framework
+ * hint for the prompt — not just an extension check. */
+type TestLanguage = 'python' | 'javascript' | 'java' | 'csharp' | 'go' | 'rust' | 'kotlin';
+
+function testLanguageFor(file: string): TestLanguage | null {
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.py')) { return 'python'; }
+  if (/\.(jsx?|tsx?|mjs|cjs)$/.test(lower)) { return 'javascript'; }
+  if (lower.endsWith('.java')) { return 'java'; }
+  if (lower.endsWith('.cs')) { return 'csharp'; }
+  if (lower.endsWith('.go')) { return 'go'; }
+  if (lower.endsWith('.rs')) { return 'rust'; }
+  if (lower.endsWith('.kt') || lower.endsWith('.kts')) { return 'kotlin'; }
+  return null;
+}
+
+/**
+ * Cheap, filesystem-only check for whether a JS/TS repo has ANY test runner
+ * set up at all — no Claude call. A repo with zero test tooling is the
+ * common case CODEMD exists for, not an edge case, so this needs to answer
+ * honestly and immediately rather than let "Ask Claude to run" spend 90-120s
+ * discovering nothing, or let "Fix with Claude" freelance an install of its
+ * own choosing (see fixTestFailureForResult's environment-issue prompt,
+ * which is explicitly barred from that — see the comment there). CODEMD
+ * never installs a test framework into a user's repo on its own; this only
+ * reports what's already there.
+ */
+// Directories to check, nearest first: the target file's own package up to
+// (and including) the workspace root. Confirmed against a real monorepo
+// (dtc-starter, a pnpm/Turborepo workspace): its root package.json declares
+// "test": "turbo test", which only actually runs apps/backend's Jest suite —
+// apps/storefront has no test runner at all. Checking only the workspace
+// root (the original behavior) read that root-level script and concluded
+// the WHOLE repo "has a runner", so a storefront file's Run/generate-test
+// flow skipped the free, deterministic "Set up test runner" offer entirely
+// and went straight into a Claude-driven command-discovery/Fix cycle that
+// burned ~90-220s and real usage per attempt before arriving at the same
+// "there's no runner here" conclusion the cheap check should have given
+// immediately. Real per-package tooling (Jest, ESLint, npm workspaces
+// itself) resolves config the same way: nearest directory wins, not the
+// repo root.
+function jsTestRunnerSearchDirs(folder: vscode.WorkspaceFolder, targetFile?: string): string[] {
+  const root = folder.uri.fsPath;
+  if (!targetFile) { return [root]; }
+  const absTarget = path.isAbsolute(targetFile) ? targetFile : path.join(root, targetFile);
+  const dirs: string[] = [];
+  let dir = path.dirname(absTarget);
+  const rootResolved = path.resolve(root);
+  for (let i = 0; i < 12; i++) {
+    const resolved = path.resolve(dir);
+    dirs.push(resolved);
+    if (resolved === rootResolved) { break; }
+    const parent = path.dirname(resolved);
+    // Stop at the workspace root even if it's reached via a symlink/case
+    // mismatch that fails the exact-string check above, and stop at the
+    // filesystem root so a target file outside the workspace can't walk
+    // forever.
+    if (parent === resolved || (!resolved.startsWith(rootResolved) && dirs.length > 1)) { break; }
+    dir = parent;
+  }
+  if (!dirs.includes(rootResolved)) { dirs.push(rootResolved); }
+  return dirs;
+}
+
+function detectJsTestRunner(folder: vscode.WorkspaceFolder, targetFile?: string): { found: boolean; runner?: string } {
+  const KNOWN_RUNNER_DEPS = ['jest', 'vitest', 'mocha', 'ava', 'tape', 'uvu', '@vscode/test-cli', '@vscode/test-electron'];
+  const CONFIG_FILES: { file: string; runner: string }[] = [
+    { file: 'jest.config.js', runner: 'jest' },
+    { file: 'jest.config.cjs', runner: 'jest' },
+    { file: 'jest.config.mjs', runner: 'jest' },
+    { file: 'jest.config.ts', runner: 'jest' },
+    { file: 'jest.config.json', runner: 'jest' },
+    { file: 'vitest.config.js', runner: 'vitest' },
+    { file: 'vitest.config.ts', runner: 'vitest' },
+    { file: 'vitest.config.mjs', runner: 'vitest' },
+    { file: '.mocharc.json', runner: 'mocha' },
+    { file: '.mocharc.js', runner: 'mocha' },
+    { file: '.mocharc.yml', runner: 'mocha' },
+    { file: '.mocharc.yaml', runner: 'mocha' },
+    { file: '.vscode-test.mjs', runner: '@vscode/test-cli' },
+    { file: '.vscode-test.js', runner: '@vscode/test-cli' },
+  ];
+  for (const dir of jsTestRunnerSearchDirs(folder, targetFile)) {
+    try {
+      const pkgPath = path.join(dir, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+        for (const runner of KNOWN_RUNNER_DEPS) {
+          if (allDeps[runner]) { return { found: true, runner }; }
+        }
+        // npm's own scaffolded placeholder ("Error: no test specified") is not
+        // a real test script — everything else counts, even a thin wrapper
+        // around a runner not in KNOWN_RUNNER_DEPS (e.g. a custom test.js).
+        // A monorepo root delegating via "turbo test"/"pnpm -r test" is
+        // deliberately NOT treated as a real answer for a specific package —
+        // only this exact directory's own script counts, which is why the
+        // root is checked last (see jsTestRunnerSearchDirs) rather than
+        // short-circuiting the search.
+        const testScript = String(pkg.scripts?.test || '');
+        if (testScript && !/no test specified/i.test(testScript) && !/^(turbo|pnpm -r|npm run -ws|yarn workspaces)\b/.test(testScript.trim())) {
+          return { found: true, runner: 'package.json "test" script' };
+        }
+      }
+    } catch {
+      // Malformed package.json — fall through to the config-file scan below
+      // rather than treating it as "no runner found".
+    }
+    for (const { file, runner } of CONFIG_FILES) {
+      if (fs.existsSync(path.join(dir, file))) {
+        return { found: true, runner };
+      }
+    }
+  }
+  return { found: false };
+}
+
+interface JsTestRunnerPlan {
+  runner: 'vitest' | 'jest';
+  packages: string[];
+  configFile: string;
+  configContents: string;
+  testScript: string;
+  reason: string;
+}
+
+/**
+ * Deterministically picks ONE lightweight test runner for a JS/TS repo that
+ * has none — a fixed rule, not a Claude judgment call, so the same repo
+ * shape always produces the same answer and the footprint stays small on
+ * purpose (this exists to run the handful of tests CODEMD itself generates,
+ * not to stand up a full test culture). Priority mirrors real ecosystem
+ * convention instead of a single hardcoded default:
+ * - An existing Babel/CRA/Next.js setup -> Jest, since that's the path of
+ *   least resistance there (those stacks ship Jest presets already) and
+ *   fighting that convention would cost more setup than it saves.
+ * - Otherwise -> Vitest: needs no separate ts-jest/babel-jest compile step
+ *   for TypeScript, and installs a single package instead of three. This
+ *   also covers ESM/Vite-native projects, where Vitest fits directly.
+ */
+function selectJsTestRunner(folder: vscode.WorkspaceFolder): JsTestRunnerPlan {
+  let pkg: any = {};
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(folder.uri.fsPath, 'package.json'), 'utf8'));
+  } catch {
+    // No/invalid package.json — fall through to the plain-Node default below.
+  }
+  const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  const isEsm = pkg.type === 'module';
+  const hasViteConfig = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs'].some((f) => fs.existsSync(path.join(folder.uri.fsPath, f)));
+  const hasBabelSetup = ['.babelrc', '.babelrc.js', '.babelrc.json', 'babel.config.js', 'babel.config.json']
+    .some((f) => fs.existsSync(path.join(folder.uri.fsPath, f)))
+    || Boolean(allDeps['next'] || allDeps['react-scripts']);
+
+  if (hasBabelSetup) {
+    return {
+      runner: 'jest',
+      packages: ['jest', 'ts-jest', '@types/jest'],
+      configFile: 'jest.config.js',
+      configContents: "module.exports = {\n  preset: 'ts-jest',\n  testEnvironment: 'node',\n  testMatch: ['<rootDir>/.codemd/generated_tests/**/*.test.[jt]s?(x)'],\n};\n",
+      testScript: 'jest',
+      reason: 'This project already has a Babel/CRA/Next.js setup, where Jest is the path of least resistance.',
+    };
+  }
+  return {
+    runner: 'vitest',
+    packages: ['vitest'],
+    // .mts (not .ts) — verified live: a plain .ts config with ESM `export
+    // default` in a package.json with no "type": "module" makes Vite warn
+    // on every single run ("uses features unsupported by configLoader:
+    // 'native'"). .mts sidesteps it entirely, no other change needed.
+    // globals: true — closest match to how CODEMD's own prompts already
+    // write JS/TS tests (bare describe/it/expect, Jest's default ergonomics)
+    // so a generated test needs no extra import line for those.
+    configFile: 'vitest.config.mts',
+    configContents: "import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: {\n    environment: 'node',\n    globals: true,\n    include: ['.codemd/generated_tests/**/*.test.{ts,tsx,js,jsx}'],\n  },\n});\n",
+    testScript: 'vitest run',
+    reason: isEsm || hasViteConfig
+      ? 'This project is already ESM/Vite-native, which Vitest fits directly.'
+      : 'No existing JS/TS test framework or bundler convention found — Vitest needs no separate compile step for TypeScript and is the smaller install of the two.',
+  };
+}
+
+/**
+ * Repo-relative path (under ARTIFACT_OUTPUT_DIR) to the callgraph artifact
+ * holding real caller/call-site data for a language, and the JSON key its
+ * ordered call list lives under. Python's build_python_callgraph embeds
+ * `ordered_calls` directly inside python_callgraph.json; the JS/TS pipeline
+ * instead writes a `calls` array to a separate ordered-call-sequence file
+ * (see write_ordered_call_sequence in backend/main.py) — same per-call
+ * shape ({caller, callee, file, line, call_text}) either way, just a
+ * different container.
+ */
+function callgraphArtifactFor(language: TestLanguage): { relPath: string; key: 'ordered_calls' | 'calls' } {
+  if (language === 'python') {
+    return { relPath: path.join('python', 'python_callgraph.json'), key: 'ordered_calls' };
+  }
+  if (language === 'java') {
+    // build_tree_sitter_java_callgraph (backend/main.py) writes its ordered
+    // call list the same way the JS/TS pipeline does — a separate `calls`
+    // array via the shared write_ordered_call_sequence, not embedded under
+    // `ordered_calls` like Python's.
+    return { relPath: path.join('tree_sitter_java', 'tree_sitter_java_ordered_call_sequence.json'), key: 'calls' };
+  }
+  if (language === 'csharp') {
+    // build_csharp_callgraph (backend/main.py) is regex-based, not
+    // tree-sitter, but writes through the same shared
+    // write_ordered_call_sequence as Java/JS — confirmed by reading it —
+    // so the container/key convention is identical.
+    return { relPath: path.join('csharp', 'csharp_ordered_call_sequence.json'), key: 'calls' };
+  }
+  if (language === 'go') {
+    return { relPath: path.join('tree_sitter_go', 'tree_sitter_go_ordered_call_sequence.json'), key: 'calls' };
+  }
+  if (language === 'rust') {
+    return { relPath: path.join('tree_sitter_rust', 'tree_sitter_rust_ordered_call_sequence.json'), key: 'calls' };
+  }
+  if (language === 'kotlin') {
+    return { relPath: path.join('tree_sitter_kotlin', 'tree_sitter_kotlin_ordered_call_sequence.json'), key: 'calls' };
+  }
+  return { relPath: path.join('javascript', 'javascript_ordered_call_sequence.json'), key: 'calls' };
+}
+
+/** Rough "top-level area of the repo" for a file, used only to flag when a
+ * call chain crosses a module boundary — doesn't need to be a precise
+ * package/namespace concept, just enough to tell "same area" from
+ * "different area" apart. */
+function topLevelModuleFor(file: string, language: TestLanguage): string {
+  if (language === 'python') {
+    return pythonModuleNameFor(file).split('.')[0];
+  }
+  const rel = file.replace(/\\/g, '/');
+  return rel.split('/')[0] || rel;
+}
+
+/**
+ * Repo-relative JS/TS source path -> the relative import specifier a test
+ * saved under .codemd/generated_tests/ needs to reach it. Unlike Python's
+ * dotted module names (a package concept), JS/TS imports are real relative
+ * file paths, so this walks the actual directory distance from the
+ * generated-tests output folder to the source file instead of reusing
+ * pythonModuleNameFor's approach.
+ */
+function jsImportPathFor(folder: vscode.WorkspaceFolder, file: string): string {
+  const outDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests');
+  const sourceAbs = path.join(folder.uri.fsPath, file);
+  let rel = path.relative(outDir, sourceAbs).replace(/\\/g, '/');
+  rel = rel.replace(/\.(jsx|tsx|mjs|cjs|js|ts)$/i, '');
+  return rel.startsWith('.') ? rel : `./${rel}`;
+}
+
+/**
+ * Java's import is `import <package>.<ClassOrMember>;`, derived from the
+ * source file's own `package` declaration — not a directory-convention
+ * guess like topLevelModuleFor uses, since getting this wrong produces a
+ * test that doesn't compile at all (unlike Python/JS, where a slightly-off
+ * import at least fails informatively at runtime). Reads the file once to
+ * extract it; falls back to an honest "check the file" hint rather than
+ * guessing a package from the path when the file is unreadable or has none
+ * (the default/unnamed package is rare but valid Java).
+ */
+function javaImportHint(folder: vscode.WorkspaceFolder, file: string, tail: string): string {
+  let packageName = '';
+  try {
+    const source = fs.readFileSync(path.join(folder.uri.fsPath, file), 'utf8');
+    const match = source.match(/^\s*package\s+([\w.]+)\s*;/m);
+    if (match) { packageName = match[1]; }
+  } catch {
+    // Unreadable — fall through to the no-package-found phrasing below.
+  }
+  return packageName
+    ? `importable as \`import ${packageName}.${tail};\` (this file declares \`package ${packageName};\`)`
+    : `in the default (unnamed) Java package as far as could be determined — check "${file}" for its actual \`package\` declaration before writing the import (a test outside that package will not compile)`;
+}
+
+/**
+ * C#'s equivalent of javaImportHint — reads the file's own `namespace`
+ * declaration (either the classic block form `namespace X { ... }` or the
+ * C# 10+ file-scoped form `namespace X;`) since a test needs `using
+ * {namespace};` (or the fully-qualified `{namespace}.{tail}`) to reach the
+ * target. Unlike Java, C# does not require the file/class name to match, so
+ * this is the one place C# genuinely needs its own logic — everything about
+ * saving the file (generatedTestFileNameFor) can reuse the loose
+ * Python/JS-style naming untouched.
+ */
+function csharpImportHint(folder: vscode.WorkspaceFolder, file: string, tail: string): string {
+  let namespaceName = '';
+  try {
+    const source = fs.readFileSync(path.join(folder.uri.fsPath, file), 'utf8');
+    const fileScoped = source.match(/^\s*namespace\s+([\w.]+)\s*;/m);
+    const blockScoped = source.match(/\bnamespace\s+([\w.]+)\s*\{/);
+    namespaceName = (fileScoped || blockScoped)?.[1] || '';
+  } catch {
+    // Unreadable — fall through to the no-namespace-found phrasing below.
+  }
+  return namespaceName
+    ? `importable via \`using ${namespaceName};\` (or fully qualified as \`${namespaceName}.${tail}\`) — this file declares \`namespace ${namespaceName}\``
+    : `in no namespace as far as could be determined — check "${file}" for its actual \`namespace\` declaration before writing the \`using\` directive`;
+}
+
+/**
+ * Go's import needs the full module path, not just the package name —
+ * `import "pkg"` alone only works for stdlib; a real project's own package
+ * needs `import "{module}/{dir}"` from go.mod's own `module` directive,
+ * since a generated test lives outside the module's normal tree
+ * (.codemd/generated_tests/) and can't infer this from its own location the
+ * way a colocated _test.go file could.
+ */
+function goImportHint(folder: vscode.WorkspaceFolder, file: string, tail: string): string {
+  const absFile = path.join(folder.uri.fsPath, file);
+  let packageName = '';
+  try {
+    const source = fs.readFileSync(absFile, 'utf8');
+    const match = source.match(/^\s*package\s+(\w+)/m);
+    if (match) { packageName = match[1]; }
+  } catch {
+    // Unreadable — fall through to the no-package-found phrasing below.
+  }
+  let modulePath = '';
+  let dir = path.dirname(absFile);
+  for (let i = 0; i < 20; i++) {
+    const goModPath = path.join(dir, 'go.mod');
+    if (fs.existsSync(goModPath)) {
+      try {
+        const goModText = fs.readFileSync(goModPath, 'utf8');
+        const moduleMatch = goModText.match(/^\s*module\s+(\S+)/m);
+        if (moduleMatch) {
+          const dirRel = path.relative(dir, path.dirname(absFile)).replace(/\\/g, '/');
+          modulePath = dirRel ? `${moduleMatch[1]}/${dirRel}` : moduleMatch[1];
+        }
+      } catch {
+        // Unreadable go.mod — fall through with whatever modulePath we have.
+      }
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) { break; }
+    dir = parent;
+  }
+  if (modulePath && packageName) {
+    return `importable as \`import "${modulePath}"\` (package \`${packageName}\`), calling it as \`${packageName}.${tail}\``;
+  }
+  if (packageName) {
+    return `in package \`${packageName}\`, but no go.mod module path could be determined — check the module path yourself before writing the import`;
+  }
+  return `in a package that could not be determined — check "${file}" for its actual \`package\` declaration`;
+}
+
+/**
+ * Rust's import needs the crate name (from Cargo.toml's own `name`, with
+ * hyphens normalized to underscores per Cargo's own convention) plus the
+ * module path from the crate's `src/` root to this file — a best-effort
+ * derivation, not a guarantee, since Rust's actual module tree is declared
+ * via `mod` statements that don't always mirror the file layout exactly
+ * (re-exports, `#[path = ...]` overrides). Same honesty tier as this
+ * extension's existing Rust run-path caveat: good enough to point Claude in
+ * the right direction, not a substitute for it checking the file's own
+ * `mod`/`pub use` declarations.
+ */
+function rustImportHint(folder: vscode.WorkspaceFolder, file: string, tail: string): string {
+  const absFile = path.join(folder.uri.fsPath, file);
+  const crateRoot = findCargoRootDir(absFile);
+  let crateName = '';
+  if (crateRoot) {
+    try {
+      const cargoToml = fs.readFileSync(path.join(crateRoot, 'Cargo.toml'), 'utf8');
+      const nameMatch = cargoToml.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      if (nameMatch) { crateName = nameMatch[1].replace(/-/g, '_'); }
+    } catch {
+      // Unreadable Cargo.toml — fall through with no crate name.
+    }
+  }
+  let modPath = '';
+  if (crateRoot) {
+    const srcDir = path.join(crateRoot, 'src');
+    const dirRel = path.relative(srcDir, path.dirname(absFile)).replace(/\\/g, '/');
+    const fileStem = path.basename(absFile, '.rs');
+    const segments = [dirRel, ['lib', 'main', 'mod'].includes(fileStem) ? '' : fileStem].filter((s) => s && s !== '.');
+    modPath = segments.join('/').replace(/\//g, '::');
+  }
+  if (crateName && modPath) {
+    return `importable as \`use ${crateName}::${modPath}::${tail};\` — a best-effort guess from this file's location under src/, not a guarantee; check "${file}"'s own \`mod\`/\`pub use\` declarations before trusting it`;
+  }
+  if (crateName) {
+    return `in crate \`${crateName}\`, but its module path could not be determined from this file's location — check "${file}"'s \`mod\` declarations before writing the \`use\` statement`;
+  }
+  return `in a crate that could not be determined — check "${file}" for the nearest Cargo.toml`;
+}
+
+/** How to phrase "importable as ..." for the target symbol in a prompt —
+ * Python uses `from {dotted.module} import {name}`; JS/TS uses a relative
+ * import path and may be ESM or CommonJS, so the prompt is told to check
+ * rather than assuming one. */
+function importHintFor(language: TestLanguage, file: string, folder: vscode.WorkspaceFolder, tail: string): string {
+  if (language === 'python') {
+    return `importable as \`from ${pythonModuleNameFor(file)} import ${tail}\``;
+  }
+  if (language === 'java') {
+    return javaImportHint(folder, file, tail);
+  }
+  if (language === 'csharp') {
+    return csharpImportHint(folder, file, tail);
+  }
+  if (language === 'go') {
+    return goImportHint(folder, file, tail);
+  }
+  if (language === 'rust') {
+    return rustImportHint(folder, file, tail);
+  }
+  if (language === 'kotlin') {
+    // Kotlin's package syntax is identical to Java's -- same extraction
+    // logic applies verbatim.
+    return javaImportHint(folder, file, tail);
+  }
+  // Verified against a real generation (backend/static/autotrack.js's
+  // codevalCleanText): without the "exact path, do not recompute" framing,
+  // Claude reasonably assumed a conventional Jest-colocated `__tests__/`
+  // location in its own reasoning and re-derived the relative import from
+  // THAT imagined path instead of trusting the one given here — which
+  // produced an import one directory level off (resolved outside the repo
+  // entirely) once the file was actually saved flatly under
+  // ARTIFACT_OUTPUT_DIR/generated_tests/, its one real, fixed location.
+  const importPath = jsImportPathFor(folder, file);
+  return `importable via a relative import from "${importPath}" — this is the exact, correct relative path from where your test file`
+    + ` will actually be saved (always flatly under ${ARTIFACT_OUTPUT_DIR}/generated_tests/, never a conventional colocated`
+    + ' \\`__tests__/\\` folder or any other location), so use this path verbatim rather than recomputing your own relative import based on'
+    + ' an assumed save location. (Check package.json\'s "type" field and neighboring test files to see whether this project uses ESM'
+    + ' `import` or CommonJS `require`, and match that — but the path itself is fixed, not something to re-derive.)';
+}
+
+/** The test-framework phrase to drop into a prompt's final "write ONE test
+ * file" instruction — pytest for Python (this project always uses it), or a
+ * prompt to detect which JS/TS framework is actually in use rather than
+ * assuming Jest. */
+function testFrameworkNounFor(language: TestLanguage): string {
+  if (language === 'python') { return 'pytest'; }
+  if (language === 'java') { return 'JUnit 5 (Jupiter) — use `org.junit.jupiter.api.Test`/`Assertions`, not JUnit 4\'s `org.junit.Test`'; }
+  if (language === 'csharp') { return "this project's actual .NET test framework (xUnit's `[Fact]`, NUnit's `[Test]`, or MSTest's `[TestMethod]` — check the .csproj's PackageReference entries and existing test files to see which one it uses; default to xUnit with `[Fact]`/`Assert` if none is apparent)"; }
+  if (language === 'go') { return 'go test — a `func TestXxx(t *testing.T)` function, using table-driven subtests (`t.Run`) for multiple cases rather than separate top-level functions, matching Go\'s own convention'; }
+  if (language === 'rust') { return 'cargo test — a `#[test] fn` function (inside a `#[cfg(test)] mod tests` block if this project follows that convention, check existing tests)'; }
+  if (language === 'kotlin') { return 'JUnit 5 (Jupiter) — use `org.junit.jupiter.api.Test`/`Assertions`, exactly as for this project\'s Java code'; }
+  return "this project's actual JS/TS test framework (Jest, Vitest, or Mocha — check package.json and existing test files to see which one it uses)";
+}
+
+/**
+ * Java's filename MUST equal its public class name exactly (a compiler
+ * requirement, not a convention), and Maven Surefire/Gradle's default test
+ * discovery only picks up `**Test.java` — so unlike Python/JS's loose
+ * `test_<kind>_<name>.ext` naming, a Java generated test needs a real,
+ * unique, valid identifier ending in "Test". Keeps the kind word (chain/
+ * newfunc/callpath/broadcoverage) as its own leading PascalCase segment so
+ * generatorKindFromTestFileName below can still recognize it.
+ */
+function javaTestClassNameFor(namePrefix: string): string {
+  const parts = namePrefix.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('') || 'Generated';
+  const validStart = /^[A-Za-z]/.test(pascal) ? pascal : `T${pascal}`;
+  return validStart.endsWith('Test') ? validStart : `${validStart}Test`;
+}
+
+/**
+ * A generation prompt line, Java-only (empty string otherwise, harmless in a
+ * `.join(' ')`'d prompt array): tells Claude the EXACT class name it must
+ * use, pre-computed here rather than left to Claude's own choice, since
+ * writeGeneratedTest/generatedTestFileNameFor will save the file under this
+ * exact name and Java requires the public class name to match the filename.
+ */
+function javaClassNameInstruction(language: TestLanguage, namePrefix: string): string {
+  if (language !== 'java') { return ''; }
+  const className = javaTestClassNameFor(namePrefix);
+  return `The public test class MUST be named exactly \`${className}\` (it will be saved as ${className}.java, and Java requires the class name to match the filename exactly) — do not choose a different name.`;
+}
+
+/**
+ * Repo-relative save filename for a generated test, one convention per
+ * language: Python/JS's loose `test_<prefix>.<ext>` (their runners discover
+ * by prefix/directory, not exact name), or Java's compiler-mandated
+ * class-name-equals-filename via javaTestClassNameFor above. Centralized so
+ * writeGeneratedTest and generateCallPathTestForResult's own inline save
+ * logic can't drift into two different Java naming schemes.
+ */
+function generatedTestFileNameFor(namePrefix: string, language: TestLanguage | null, ext: string): string {
+  if (language === 'java') {
+    return `${javaTestClassNameFor(namePrefix)}${ext}`;
+  }
+  const safeName = namePrefix.replace(/[^A-Za-z0-9_]/g, '_');
+  return `test_${safeName}${ext}`;
+}
+
+/** Which of the five generators produced a test file, inferred from the
+ * `test_<kind>_...` filename prefix (Python/JS) or the leading PascalCase
+ * word of the class name (Java — see generatedTestFileNameFor) —
+ * '' if the name doesn't match any of them (a pre-existing test the
+ * user wrote, or one found via find_tests, not something CODEMD generated). */
+function generatorKindFromTestFileName(testFile: string): string {
+  const base = path.basename(testFile).toLowerCase();
+  if (base.startsWith('test_callpath_') || base.startsWith('callpath')) { return 'call_path'; }
+  if (base.startsWith('test_newfunc_') || base.startsWith('newfunc')) { return 'new_function'; }
+  if (base.startsWith('test_chain_') || base.startsWith('chain')) { return 'call_chain'; }
+  if (base.startsWith('test_contract_') || base.startsWith('contract')) { return 'contract'; }
+  if (base.startsWith('test_broadcoverage_') || base.startsWith('broadcoverage')) { return 'broad_coverage'; }
+  return '';
+}
+
+/** Friendly category label per generator kind, for grouping the "tests
+ * found" list by test type instead of by raw file path — a bare
+ * `.codemd/generated_tests/test_broadcoverage_foo.py` path means nothing to
+ * a user skimming for what to look at first. */
+const TEST_KIND_LABELS: Record<string, string> = {
+  contract: 'Contract test — proven-broken caller',
+  call_chain: 'Call-chain test — changed functions calling each other',
+  call_path: 'Call-path test — changed functions calling each other',
+  new_function: 'New-function test',
+  broad_coverage: 'Broad-coverage test — across all callers',
+};
+
+/** Display order for the labels above — proven-broken-call-site evidence
+ * (contract/call-chain/call-path) ranks above generic coverage (new-function,
+ * then broad-coverage across many callers), so the most concrete signal of
+ * real breakage shows first. An unrecognized/hand-written test (kind '')
+ * sorts last — least is known about how it relates to this specific change. */
+const TEST_KIND_ORDER: Record<string, number> = {
+  contract: 0,
+  call_chain: 1,
+  call_path: 1,
+  new_function: 2,
+  broad_coverage: 3,
+};
+function testKindRank(kind: string): number {
+  return kind in TEST_KIND_ORDER ? TEST_KIND_ORDER[kind] : 4;
+}
+
+/** Output filename extension for a generated test, matching the source
+ * file's own extension convention for JS/TS so it's picked up by that
+ * project's test runner globs (e.g. `*.test.ts`). */
+function generatedTestExtFor(file: string, language: TestLanguage): string {
+  if (language === 'python') { return '.py'; }
+  if (language === 'java') { return '.java'; }
+  if (language === 'csharp') { return '.cs'; }
+  if (language === 'go') { return '_test.go'; }
+  if (language === 'rust') { return '.rs'; }
+  if (language === 'kotlin') { return '.kt'; }
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.tsx')) { return '.test.tsx'; }
+  if (lower.endsWith('.ts') || lower.endsWith('.mts')) { return '.test.ts'; }
+  if (lower.endsWith('.jsx')) { return '.test.jsx'; }
+  return '.test.js';
+}
+
 /**
  * `claude -p --output-format json --json-schema` occasionally leaks a
  * trailing tool-call closing tag (e.g. "</testSource>\n</invoke>") onto
@@ -2650,38 +3304,41 @@ function stripStrayClosingTag(text: string): string {
   return result;
 }
 
-interface PythonCallSite {
+interface CallSite {
   file: string;
   line: number;
   callText: string;
 }
 
 /**
- * Looks up exact call-site locations for a Python function's confirmed
- * callers from the cached callgraph artifact (.codemd/python/python_callgraph.json's
- * `ordered_calls`, which already records {caller, callee, file, line,
- * call_text} for every real call edge). Used to hand generateCallPathTestForResult's
- * Claude prompt precise "read this file at this line" locations instead of
- * bare symbol names — without this, Claude has to Grep/Glob the whole repo
- * to even find where a caller lives before it can read how the function is
- * actually invoked, which is exactly the exploration that was burning turns
- * and wall-clock. Returns an empty map (never throws) if the artifact is
- * missing or unreadable — callers fall back to the old bare-name prompt.
+ * Looks up exact call-site locations for a function's confirmed callers from
+ * the cached callgraph artifact for its language (see callgraphArtifactFor —
+ * a `caller`/`callee`/`file`/`line`/`call_text` record per real call edge,
+ * however that language's pipeline stores it). Used to hand
+ * generateCallPathTestForResult's Claude prompt precise "read this file at
+ * this line" locations instead of bare symbol names — without this, Claude
+ * has to Grep/Glob the whole repo to even find where a caller lives before
+ * it can read how the function is actually invoked, which is exactly the
+ * exploration that was burning turns and wall-clock. Returns an empty map
+ * (never throws) if the artifact is missing or unreadable — callers fall
+ * back to the old bare-name prompt.
  */
-async function resolvePythonCallSites(
+async function resolveCallSites(
   folder: vscode.WorkspaceFolder,
+  language: TestLanguage,
   calleeSymbol: string,
   callerCompactNames: string[],
-): Promise<Map<string, PythonCallSite>> {
-  const sites = new Map<string, PythonCallSite>();
-  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
+): Promise<Map<string, CallSite>> {
+  const sites = new Map<string, CallSite>();
+  const { relPath, key } = callgraphArtifactFor(language);
+  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, relPath);
   let data: any;
   try {
     data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
   } catch {
     return sites;
   }
-  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
+  const orderedCalls: any[] = Array.isArray(data?.[key]) ? data[key] : [];
   const calleeCompact = compactSymbolName(calleeSymbol);
   const wanted = new Set(callerCompactNames);
   for (const call of orderedCalls) {
@@ -2697,33 +3354,35 @@ async function resolvePythonCallSites(
   return sites;
 }
 
-interface PythonCallerSite extends PythonCallSite {
+interface CallerSite extends CallSite {
   caller: string;
 }
 
 /**
  * All real callers of a symbol, discovered from scratch from the current
- * callgraph's ordered_calls — unlike resolvePythonCallSites above, which
- * only verifies a pre-known candidate list. Needed for a function that has
- * no pre-change impact data yet (e.g. one newly added in the current diff):
+ * callgraph's ordered call list — unlike resolveCallSites above, which only
+ * verifies a pre-known candidate list. Needed for a function that has no
+ * pre-change impact data yet (e.g. one newly added in the current diff):
  * its real callers, if any, only exist in the just-regenerated callgraph.
  */
-async function findPythonCallersOf(
+export async function findCallersOf(
   folder: vscode.WorkspaceFolder,
+  language: TestLanguage,
   calleeSymbol: string,
   limit = 8,
-): Promise<PythonCallerSite[]> {
-  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
+): Promise<CallerSite[]> {
+  const { relPath, key } = callgraphArtifactFor(language);
+  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, relPath);
   let data: any;
   try {
     data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
   } catch {
     return [];
   }
-  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
+  const orderedCalls: any[] = Array.isArray(data?.[key]) ? data[key] : [];
   const calleeCompact = compactSymbolName(calleeSymbol);
   const seen = new Set<string>();
-  const sites: PythonCallerSite[] = [];
+  const sites: CallerSite[] = [];
   for (const call of orderedCalls) {
     const callee = String(call?.callee || '');
     if (callee !== calleeSymbol && compactSymbolName(callee) !== calleeCompact) { continue; }
@@ -2758,46 +3417,53 @@ interface SameCommitCallChain {
  * same diff — this is what makes a call-path/integration test valuable
  * instead of two disconnected unit tests: the commit didn't just touch two
  * functions, it touched two functions on the same live call chain. One pass
- * over ordered_calls, not O(pairs), so this stays cheap even for a diff
- * touching dozens of functions.
+ * per language actually present in `results` over its ordered call list, not
+ * O(pairs), so this stays cheap even for a diff touching dozens of functions
+ * across languages.
  */
 async function findSameCommitCallChains(
   folder: vscode.WorkspaceFolder,
   results: NormalizedSearchResult[],
 ): Promise<SameCommitCallChain[]> {
-  const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'python', 'python_callgraph.json');
-  let data: any;
-  try {
-    data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
-  } catch {
-    return [];
-  }
-  const orderedCalls: any[] = Array.isArray(data?.ordered_calls) ? data.ordered_calls : [];
   const bySymbol = new Map<string, NormalizedSearchResult>();
+  const languagesPresent = new Set<TestLanguage>();
   for (const r of results) {
     if (r.graphSymbol) {
       bySymbol.set(compactSymbolName(r.graphSymbol), r);
     }
+    const language = r.file ? testLanguageFor(r.file) : null;
+    if (language) { languagesPresent.add(language); }
   }
   const chains: SameCommitCallChain[] = [];
   const seenPairs = new Set<string>();
-  for (const call of orderedCalls) {
-    const callerCompact = compactSymbolName(String(call?.caller || ''));
-    const calleeCompact = compactSymbolName(String(call?.callee || ''));
-    if (!callerCompact || !calleeCompact || callerCompact === calleeCompact) { continue; }
-    const callerResult = bySymbol.get(callerCompact);
-    const calleeResult = bySymbol.get(calleeCompact);
-    if (!callerResult || !calleeResult) { continue; }
-    const pairKey = [callerCompact, calleeCompact].sort().join('|');
-    if (seenPairs.has(pairKey)) { continue; }
-    const file = String(call?.file || '');
-    const line = Number(call?.line || 0);
-    if (!file || !line) { continue; }
-    seenPairs.add(pairKey);
-    const callerModule = callerResult.file ? pythonModuleNameFor(callerResult.file).split('.')[0] : '';
-    const calleeModule = calleeResult.file ? pythonModuleNameFor(calleeResult.file).split('.')[0] : '';
-    const crossesModuleBoundary = Boolean(callerModule && calleeModule && callerModule !== calleeModule);
-    chains.push({ callerResult, calleeResult, file, line, callText: String(call?.call_text || ''), crossesModuleBoundary });
+  for (const language of languagesPresent) {
+    const { relPath, key } = callgraphArtifactFor(language);
+    const cgPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, relPath);
+    let data: any;
+    try {
+      data = JSON.parse(await fs.promises.readFile(cgPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    const orderedCalls: any[] = Array.isArray(data?.[key]) ? data[key] : [];
+    for (const call of orderedCalls) {
+      const callerCompact = compactSymbolName(String(call?.caller || ''));
+      const calleeCompact = compactSymbolName(String(call?.callee || ''));
+      if (!callerCompact || !calleeCompact || callerCompact === calleeCompact) { continue; }
+      const callerResult = bySymbol.get(callerCompact);
+      const calleeResult = bySymbol.get(calleeCompact);
+      if (!callerResult || !calleeResult) { continue; }
+      const pairKey = [callerCompact, calleeCompact].sort().join('|');
+      if (seenPairs.has(pairKey)) { continue; }
+      const file = String(call?.file || '');
+      const line = Number(call?.line || 0);
+      if (!file || !line) { continue; }
+      seenPairs.add(pairKey);
+      const callerModule = callerResult.file ? topLevelModuleFor(callerResult.file, language) : '';
+      const calleeModule = calleeResult.file ? topLevelModuleFor(calleeResult.file, language) : '';
+      const crossesModuleBoundary = Boolean(callerModule && calleeModule && callerModule !== calleeModule);
+      chains.push({ callerResult, calleeResult, file, line, callText: String(call?.call_text || ''), crossesModuleBoundary });
+    }
   }
   // Cross-module boundary edges are the higher-value finding (a public
   // contract change, not an internal detail), so they lead the list.
@@ -3032,6 +3698,145 @@ function findCargoRootDir(absFilePath: string): string | null {
     dir = parent;
   }
   return null;
+}
+
+/** Same upward walk as findCargoRootDir, but for whichever Java build tool
+ * this repo actually uses — needed because a CODEMD-generated test lives
+ * under .codemd/generated_tests/, not inside src/(main|test)/java, so
+ * "which build root does this belong to" can't be inferred from the target
+ * source file's own path the way Cargo.toml lookup can. */
+function findJavaBuildRootDir(folder: vscode.WorkspaceFolder): { root: string; tool: 'maven' | 'gradle' } | null {
+  const root = folder.uri.fsPath;
+  if (fs.existsSync(path.join(root, 'pom.xml'))) { return { root, tool: 'maven' }; }
+  if (fs.existsSync(path.join(root, 'build.gradle')) || fs.existsSync(path.join(root, 'build.gradle.kts'))) {
+    return { root, tool: 'gradle' };
+  }
+  return null;
+}
+
+/** Walks upward from a C# file's directory to find the nearest .csproj —
+ * needed as the ProjectReference target for the throwaway test project
+ * runCsharpTestFileForResult builds (see its doc comment for why C# gets a
+ * genuinely different, simpler strategy than Java's). */
+function findCsprojFor(absFilePath: string): string | null {
+  let dir = path.dirname(absFilePath);
+  for (let i = 0; i < 20; i++) {
+    if (fs.existsSync(dir)) {
+      const csproj = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.csproj'));
+      if (csproj) { return path.join(dir, csproj); }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) { break; }
+    dir = parent;
+  }
+  return null;
+}
+
+/** First `<TargetFramework>` (or `<TargetFrameworks>`, taking the first of
+ * the semicolon list) declared in a .csproj — the throwaway test project
+ * must target something compatible to reference it at all. Falls back to a
+ * reasonably current default rather than failing outright when the csproj
+ * uses an SDK feature (Directory.Build.props, MSBuild conditionals) this
+ * simple regex read can't follow. */
+function targetFrameworkFor(csprojPath: string): string {
+  try {
+    const text = fs.readFileSync(csprojPath, 'utf8');
+    const single = text.match(/<TargetFramework>([^<]+)<\/TargetFramework>/);
+    if (single) { return single[1].trim(); }
+    const multi = text.match(/<TargetFrameworks>([^<]+)<\/TargetFrameworks>/);
+    if (multi) { return multi[1].split(';')[0].trim(); }
+  } catch {
+    // Unreadable — fall through to the default below.
+  }
+  return 'net8.0';
+}
+
+/**
+ * Cheap, filesystem-only check for whether a Java repo has ANY test
+ * framework declared at all — the same job detectJsTestRunner does for
+ * JS/TS. A real XML/Groovy/Kotlin-DSL parse is overkill for a yes/no
+ * presence check, so this just looks for the coordinate text in the build
+ * file — false positives (a commented-out dependency) are harmless here,
+ * they just mean "Set up test runner" won't offer to add a second one.
+ */
+function detectJavaTestRunner(folder: vscode.WorkspaceFolder): { found: boolean; runner?: string } {
+  const buildRoot = findJavaBuildRootDir(folder);
+  if (!buildRoot) { return { found: false }; }
+  const buildFile = buildRoot.tool === 'maven'
+    ? 'pom.xml'
+    : (fs.existsSync(path.join(buildRoot.root, 'build.gradle.kts')) ? 'build.gradle.kts' : 'build.gradle');
+  let text = '';
+  try {
+    text = fs.readFileSync(path.join(buildRoot.root, buildFile), 'utf8');
+  } catch {
+    return { found: false };
+  }
+  if (/junit-jupiter|org\.junit\.jupiter/.test(text)) { return { found: true, runner: 'JUnit 5' }; }
+  if (/<artifactId>\s*junit\s*<\/artifactId>|['"]junit:junit['"]/.test(text)) { return { found: true, runner: 'JUnit 4' }; }
+  if (/testng/i.test(text)) { return { found: true, runner: 'TestNG' }; }
+  return { found: false };
+}
+
+/**
+ * Inserts a `<dependency>` block for a single, fixed JUnit 5 coordinate into
+ * pom.xml's `<dependencies>` (creating that element if the pom has none at
+ * all — rare, but a bare-bones pom.xml is valid). Deliberately a plain text
+ * insertion, not a real XML parse/serialize round-trip — that would risk
+ * reformatting the whole file (reordering attributes, changing quote style,
+ * collapsing whitespace) for a one-element change. Returns null only when
+ * neither anchor (`</dependencies>` or `</project>`) is found at all, which
+ * means the file is malformed enough that guessing at an edit would be
+ * worse than reporting "couldn't automatically edit pom.xml".
+ */
+function insertMavenJUnitDependency(pomText: string): string | null {
+  const snippet = [
+    '    <dependency>',
+    '      <groupId>org.junit.jupiter</groupId>',
+    '      <artifactId>junit-jupiter</artifactId>',
+    '      <version>5.10.2</version>',
+    '      <scope>test</scope>',
+    '    </dependency>',
+    '  ',
+  ].join('\n');
+  if (pomText.includes('</dependencies>')) {
+    return pomText.replace('</dependencies>', `${snippet}</dependencies>`);
+  }
+  if (pomText.includes('</project>')) {
+    const block = `  <dependencies>\n${snippet}</dependencies>\n`;
+    return pomText.replace('</project>', `${block}</project>`);
+  }
+  return null;
+}
+
+/**
+ * Same job as insertMavenJUnitDependency, for build.gradle(.kts). Gradle,
+ * unlike Maven Surefire, does NOT auto-detect JUnit 5 from the dependency
+ * alone — `test { useJUnitPlatform() }` is required or Gradle silently uses
+ * the legacy JUnit 4 runner and never discovers Jupiter tests at all, so
+ * this adds both, each only if not already present.
+ */
+function insertGradleJUnitDependency(buildText: string): string {
+  let result = buildText;
+  if (!/junit-jupiter|org\.junit\.jupiter/.test(result)) {
+    const depLine = "    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'\n";
+    const depBlock = result.match(/dependencies\s*\{/);
+    if (depBlock && typeof depBlock.index === 'number') {
+      const at = depBlock.index + depBlock[0].length;
+      result = `${result.slice(0, at)}\n${depLine}${result.slice(at)}`;
+    } else {
+      result += `\ndependencies {\n${depLine}}\n`;
+    }
+  }
+  if (!/test\s*\{[^}]*useJUnitPlatform/s.test(result)) {
+    const testBlock = result.match(/\btest\s*\{/);
+    if (testBlock && typeof testBlock.index === 'number') {
+      const at = testBlock.index + testBlock[0].length;
+      result = `${result.slice(0, at)}\n    useJUnitPlatform()\n${result.slice(at)}`;
+    } else {
+      result += '\ntest {\n    useJUnitPlatform()\n}\n';
+    }
+  }
+  return result;
 }
 
 /**
@@ -4126,23 +4931,15 @@ function buildBlastRadiusCard(entry: BlastRadiusEntry): ChangeCard {
 
 function buildChangesAnswer(report: any): string {
   const modified = Array.isArray(report?.modified) ? report.modified : [];
-  const deleted = Array.isArray(report?.deleted) ? report.deleted : [];
-  const added = Array.isArray(report?.added) ? report.added : [];
-  const unsupported = Array.isArray(report?.unsupported_files) ? report.unsupported_files.map((f: unknown) => String(f || '')).filter(Boolean) : [];
-  const uncommittedFiles = Array.isArray(report?.uncommitted_files) ? report.uncommitted_files : [];
-  const impactedFileSet = new Set<string>();
-  for (const item of modified) {
-    for (const file of impactedFilesFromChange(item)) {
-      impactedFileSet.add(file);
-    }
-  }
 
-  // These three counts are statically PROVEN facts (from python_function_
+  // These two counts are statically PROVEN facts (from python_function_
   // signature_diff / check_call_sites), not heuristic risk scores — lead
   // with them so the one or two changes actually worth opening aren't
-  // buried under the raw "118 functions changed" count.
+  // buried under the raw "118 functions changed" count. Pure counts (functions
+  // touched, new functions, impacted files, uncommitted files, ...) are
+  // surfaced as summary tiles instead (see buildChangesSummaryTiles) — this
+  // text is reserved for what a tile can't hold: which specific functions.
   const breaking = modified.filter((m: any) => callSiteIssuesFromChange(m).length > 0);
-  const cosmeticOnly = modified.filter((m: any) => isCosmeticOnlyChange(m));
   const unprovenSignatureChanges = modified.filter(
     (m: any) => !isCosmeticOnlyChange(m) && callSiteIssuesFromChange(m).length === 0 && signatureDiffFromChange(m).changed,
   );
@@ -4160,29 +4957,61 @@ function buildChangesAnswer(report: any): string {
   if (unprovenSignatureChanges.length) {
     lines.push(`${unprovenSignatureChanges.length} other signature change(s), worth a manual look: ${namesFor(unprovenSignatureChanges)}.`);
   }
-  const noSignatureChange = modified.length - breaking.length - unprovenSignatureChanges.length - cosmeticOnly.length;
-  const cosmeticNote = cosmeticOnly.length ? `, ${cosmeticOnly.length} cosmetic-only` : '';
-  lines.push(
-    `${modified.length + deleted.length} function(s) touched in total (${noSignatureChange} body-only edit(s) with no signature change${cosmeticNote}) — see "Other Modified Functions" below.`,
-  );
-  if (added.length) {
-    lines.push(`${added.length} new function(s) added — see "New Functions" below.`);
-  }
-  if (impactedFileSet.size) {
-    lines.push(`${impactedFileSet.size} impacted file(s) found by the callgraph.`);
-  } else {
-    lines.push('No callgraph file impact found yet.');
-  }
-  if (unsupported.length) {
-    lines.push(`${unsupported.length} other changed file(s) grouped separately.`);
-  }
-  if (uncommittedFiles.length) {
-    lines.push(`${uncommittedFiles.length} uncommitted file(s) found by Git status.`);
-  }
   if (!report?.callgraph_available) {
     lines.push('Callgraph unavailable; impact scoring is limited.');
   }
   return lines.join('\n');
+}
+
+/**
+ * Numeric facts from the same report/results/callChains buildChangesAnswer
+ * and buildTestPlanSummaryLine already compute, reshaped into "at a glance"
+ * tiles instead of prose — call-path opportunities lead, matching the
+ * priority order in buildTestPlanSummaryLine's own doc comment.
+ */
+function buildChangesSummaryTiles(
+  report: any,
+  results: NormalizedSearchResult[],
+  callChains: SameCommitCallChain[],
+): { label: string; value: number; tone: 'high' | 'primary' | 'info' | 'neutral' }[] {
+  const modified = Array.isArray(report?.modified) ? report.modified : [];
+  const deleted = Array.isArray(report?.deleted) ? report.deleted : [];
+  const unsupported = Array.isArray(report?.unsupported_files) ? report.unsupported_files : [];
+  const uncommittedFiles = Array.isArray(report?.uncommitted_files) ? report.uncommitted_files : [];
+  const breaking = modified.filter((m: any) => callSiteIssuesFromChange(m).length > 0);
+  const impactedFileSet = new Set<string>();
+  for (const item of modified) {
+    for (const file of impactedFilesFromChange(item)) {
+      impactedFileSet.add(file);
+    }
+  }
+  const newFunctionCount = results.filter((r) => r.changeCard?.kind === 'added').length;
+  const modifiedTestCount = results.filter((r) => r.changeCard?.kind === 'modified').length;
+
+  const tiles: { label: string; value: number; tone: 'high' | 'primary' | 'info' | 'neutral' }[] = [];
+  if (breaking.length) {
+    tiles.push({ label: 'Breaking changes', value: breaking.length, tone: 'high' });
+  }
+  if (callChains.length) {
+    tiles.push({ label: 'Call-path opportunities', value: callChains.length, tone: 'primary' });
+  }
+  if (newFunctionCount) {
+    tiles.push({ label: 'New functions', value: newFunctionCount, tone: 'info' });
+  }
+  if (modifiedTestCount) {
+    tiles.push({ label: 'Modified functions', value: modifiedTestCount, tone: 'info' });
+  }
+  tiles.push({ label: 'Functions touched', value: modified.length + deleted.length, tone: 'neutral' });
+  if (impactedFileSet.size) {
+    tiles.push({ label: 'Impacted files', value: impactedFileSet.size, tone: 'neutral' });
+  }
+  if (unsupported.length) {
+    tiles.push({ label: 'Other changed files', value: unsupported.length, tone: 'neutral' });
+  }
+  if (uncommittedFiles.length) {
+    tiles.push({ label: 'Uncommitted files', value: uncommittedFiles.length, tone: 'neutral' });
+  }
+  return tiles;
 }
 
 /**
@@ -4209,7 +5038,32 @@ function buildTestPlanSummaryLine(results: NormalizedSearchResult[], callChains:
   return parts.length ? `Test plan: ${parts.join('; ')}.` : '';
 }
 
-function serializeCallChains(chains: SameCommitCallChain[]): any[] {
+/**
+ * The chain-test generator (generateCallChainTestForResult -> writeGeneratedTest)
+ * always names its output test_chain_<callerTail>_<calleeTail><ext> with no
+ * timestamp/uniqueness suffix, so a prior generation for this exact pair is
+ * cheap to detect by just recomputing that same deterministic path — no need
+ * to search file contents. Returns '' when the pair hasn't been generated
+ * (or spans two languages, which the generator itself refuses).
+ */
+function existingCallChainTestFile(folder: vscode.WorkspaceFolder, chain: SameCommitCallChain): string {
+  const callerFile = chain.callerResult.file;
+  const calleeFile = chain.calleeResult.file;
+  const language = testLanguageFor(callerFile);
+  if (!language || language !== testLanguageFor(calleeFile)) {
+    return '';
+  }
+  const callerSymbol = chain.callerResult.graphSymbol || '';
+  const calleeSymbol = chain.calleeResult.graphSymbol || '';
+  const callerTail = callerSymbol.split('.').pop() || callerSymbol;
+  const calleeTail = calleeSymbol.split('.').pop() || calleeSymbol;
+  const ext = generatedTestExtFor(callerFile, language);
+  const fileName = generatedTestFileNameFor(`chain_${callerTail}_${calleeTail}`, language, ext);
+  const outPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests', fileName);
+  return fs.existsSync(outPath) ? path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/') : '';
+}
+
+function serializeCallChains(chains: SameCommitCallChain[], folder: vscode.WorkspaceFolder): any[] {
   return chains.map((c) => ({
     callerSymbol: c.callerResult.graphSymbol,
     callerFile: c.callerResult.file,
@@ -4222,6 +5076,7 @@ function serializeCallChains(chains: SameCommitCallChain[]): any[] {
     line: c.line,
     callText: c.callText,
     crossesModuleBoundary: c.crossesModuleBoundary,
+    existingTestPath: existingCallChainTestFile(folder, c),
   }));
 }
 
@@ -4935,6 +5790,13 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   private reportsNoticeShown = false;
   private reportWriteQueue: Promise<void> = Promise.resolve();
 
+  // requestId -> start time, set when a test-run request is first dispatched
+  // (runTestFileForResult / runTestViaClaudeForResult) and consumed once in
+  // postTestRunResult to compute how long the run actually took, without
+  // threading a timer through every one of the ~50 postTestRunResult call
+  // sites across all the per-language runners.
+  private testRunStartTimes = new Map<string, number>();
+
   private maybeAppendReportEntry(message: any): void {
     const markdown = formatReportEntryMarkdown(message);
     if (!markdown) {
@@ -5000,20 +5862,138 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Current Run/Write mode + read-only/batch-cap state, as read fresh from
+   * configuration — sent to the webview on load (markWebviewReady) and
+   * again after every setRunMode/setWriteMode so both the panel and
+   * sidebar surfaces (and both mode pills) always reflect the same
+   * authoritative values rather than trusting the webview's own optimistic
+   * update.
+   */
+  private postModesConfig(): void {
+    const config = vscode.workspace.getConfiguration('codemdGraphs');
+    const maxAutoWritesPerBatch = config.get<number>('maxAutoWritesPerBatch', 3);
+    this.post({
+      type: 'modesConfig',
+      runMode: config.get<string>('runMode', 'auto') === 'manual' ? 'manual' : 'auto',
+      writeMode: config.get<string>('writeMode', 'manual') === 'auto' ? 'auto' : 'manual',
+      readOnlyMode: this.isReadOnlyMode(),
+      maxAutoWritesPerBatch: Number.isFinite(maxAutoWritesPerBatch) && maxAutoWritesPerBatch > 0 ? maxAutoWritesPerBatch : 3,
+    });
+  }
+
+  /**
+   * Write:Auto needs Run:Auto's data (the existing-tests verdict) to decide
+   * whether a symbol already has coverage worth skipping for, so turning
+   * Write on also forces Run on — enforced here, not just in the webview's
+   * own click handler, so the persisted setting stays consistent even if a
+   * stale webview posts an inconsistent pair.
+   */
+  private async setRunOrWriteMode(which: 'run' | 'write', value: any): Promise<void> {
+    const config = vscode.workspace.getConfiguration('codemdGraphs');
+    if (which === 'run') {
+      const runMode = value === 'manual' ? 'manual' : 'auto';
+      await config.update('runMode', runMode, vscode.ConfigurationTarget.Workspace);
+    } else {
+      const writeMode = value === 'auto' ? 'auto' : 'manual';
+      await config.update('writeMode', writeMode, vscode.ConfigurationTarget.Workspace);
+      if (writeMode === 'auto') {
+        await config.update('runMode', 'auto', vscode.ConfigurationTarget.Workspace);
+      }
+    }
+    this.postModesConfig();
+  }
+
+  /**
    * Same as post({ type: 'testRunResult', ... }) but also mirrors the run's
    * raw stdout/stderr into the CODEMD output channel — the webview's own
    * "View output" toggle is easy to miss and gets wiped on the next run, so
    * anyone who wants to grep/scroll back through prior runs needs a durable
-   * copy somewhere outside the webview.
+   * copy somewhere outside the webview. `message` (the original request this
+   * result answers) is optional; used to record a defect (recordDefectIfGenuine)
+   * and to enrich the .codemd/reports/activity.md entry (formatReportEntryMarkdown)
+   * with the test file/target/duration, none of which the per-language runners
+   * put on `payload` themselves.
    */
-  private postTestRunResult(payload: any): void {
+  private postTestRunResult(payload: any, message?: any): void {
     const label = payload?.ok === false ? 'error' : payload?.passed === false ? 'FAILED' : payload?.passed === true ? 'passed' : 'result';
     if (typeof payload?.output === 'string' && payload.output) {
       outputChannel?.appendLine(`\n--- Test run (${label}) ---\n${payload.output}`);
     } else if (payload?.error) {
       outputChannel?.appendLine(`\n--- Test run (${label}): ${payload.error} ---`);
     }
-    this.post({ type: 'testRunResult', ...payload });
+    const requestId = String(payload?.requestId || '');
+    const startedAt = requestId ? this.testRunStartTimes.get(requestId) : undefined;
+    if (requestId) { this.testRunStartTimes.delete(requestId); }
+    const durationMs = typeof payload?.durationMs === 'number' ? payload.durationMs
+      : typeof startedAt === 'number' ? Date.now() - startedAt : undefined;
+    const defectRecorded = this.recordDefectIfGenuine(payload, message);
+    this.post({
+      type: 'testRunResult',
+      ...payload,
+      durationMs,
+      file: payload?.file || message?.file || undefined,
+      targetSymbol: payload?.targetSymbol || message?.targetSymbol || undefined,
+      targetPath: payload?.targetPath || message?.targetPath || undefined,
+      defectRecorded: defectRecorded || undefined,
+    });
+  }
+
+  /**
+   * Logs a defect record under ARTIFACT_OUTPUT_DIR/defects/ when — and only
+   * when — a CODEMD-*generated* test actually ran and a real assertion
+   * failed. Deliberately narrow: a run that never really executed the test
+   * (payload.environmentIssue — missing package, bad pytest config, import
+   * error) says nothing about the target code and is excluded, same as any
+   * test that isn't one of ours (found via find_tests, or hand-written) —
+   * this is meant to answer "how often do CODEMD's own generated tests
+   * catch a real bug," not "how often does any test fail." One JSON file
+   * per defect so records are easy to diff/grep/aggregate later.
+   *
+   * Returns the defect file's workspace-relative path on success (also fed
+   * into the activity.md entry via postTestRunResult's defectRecorded), or
+   * null when nothing was recorded.
+   */
+  private recordDefectIfGenuine(payload: any, message: any): string | null {
+    if (!message || payload?.ok !== true || payload?.passed !== false || payload?.environmentIssue) {
+      return null;
+    }
+    const testFile = String(message?.file || '').replace(/\\/g, '/');
+    const generator = generatorKindFromTestFileName(testFile);
+    if (!generator || !testFile.includes(`${ARTIFACT_OUTPUT_DIR}/generated_tests/`)) {
+      return null;
+    }
+    const targetSymbol = String(message?.targetSymbol || '');
+    const targetPath = String(message?.targetPath || '');
+    if (!targetSymbol || !targetPath) {
+      return null;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return null;
+    }
+    try {
+      const defectsDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'defects');
+      fs.mkdirSync(defectsDir, { recursive: true });
+      const timestamp = new Date().toISOString();
+      const safeSymbol = targetSymbol.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 80) || 'symbol';
+      const outPath = path.join(defectsDir, `${timestamp.replace(/[:.]/g, '-')}_${safeSymbol}.json`);
+      const record = {
+        timestamp,
+        generator,
+        targetSymbol,
+        targetPath,
+        targetStartLine: Number(message?.targetStartLine || 0) || undefined,
+        testFile,
+        output: typeof payload?.output === 'string' ? payload.output.slice(-8000) : '',
+      };
+      fs.writeFileSync(outPath, JSON.stringify(record, null, 2), 'utf8');
+      const relPath = path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
+      outputChannel?.appendLine(`[defects] Recorded a genuine test failure for "${targetSymbol}" -> ${relPath}`);
+      return relPath;
+    } catch (err: any) {
+      outputChannel?.appendLine(`[defects] Failed to write defect record: ${err?.message || err}`);
+      return null;
+    }
   }
 
   private handleMessage(message: any, source: 'view' | 'side' = 'view'): void {
@@ -5042,6 +6022,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.runResultGraph(message.result || {});
     } else if (message.type === 'findTestsForResult') {
       this.runFindTestsForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'runExistingTestsForResult') {
+      this.runExistingTestsForResult(message.result || {}, String(message.requestId || ''));
+    } else if (message.type === 'setRunMode') {
+      this.setRunOrWriteMode('run', message.value);
+    } else if (message.type === 'setWriteMode') {
+      this.setRunOrWriteMode('write', message.value);
     } else if (message.type === 'generateRegressionTest') {
       this.generateRegressionTestForResult(message.result || {}, String(message.requestId || ''));
     } else if (message.type === 'generateCallPathTest') {
@@ -5060,10 +6046,28 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.runTestFileForResult(message);
     } else if (message.type === 'installTestDependency') {
       this.installTestDependencyAndRetry(message);
+    } else if (message.type === 'setUpTestRunner') {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const requestId = String(message.requestId || '');
+      if (!folder) {
+        this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: 'No workspace folder open.' });
+      } else {
+        const language = testLanguageFor(String(message.file || ''));
+        if (language === 'java' || language === 'kotlin') {
+          // Kotlin reuses Java's harness-install entirely unchanged — same
+          // pom.xml/build.gradle files, same JUnit 5 coordinate, same
+          // detectJavaTestRunner/insertMavenJUnitDependency functions. See
+          // runKotlinTestFileForResult's doc comment for why no separate
+          // setUpKotlinTestRunnerForResult exists.
+          this.setUpJavaTestRunnerForResult(message, folder);
+        } else {
+          this.setUpJsTestRunnerForResult(message, folder);
+        }
+      }
     } else if (message.type === 'runTestViaClaude') {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
-        this.postTestRunResult({ requestId: String(message.requestId || ''), ok: false, error: 'No workspace folder open.' });
+        this.postTestRunResult({ requestId: String(message.requestId || ''), ok: false, error: 'No workspace folder open.' }, message);
       } else {
         this.runTestViaClaudeForResult(message, folder);
       }
@@ -5139,6 +6143,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     this.postDisplayedGraph();
     this.postSearchHistory();
     this.postSearchSuggestions();
+    this.postModesConfig();
     if (this.hasGenerated) {
       this.post({ type: 'generated' });
     }
@@ -5449,82 +6454,94 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
 
   async runGenerate(options: { quiet: boolean }): Promise<void> {
     const { quiet } = options;
-    if (!quiet) {
-      await this.reveal();
-    }
+    // Claimed synchronously as the very first statement, before any
+    // `await` — so two calls fired close together (rapid "Generate"
+    // clicks, or overlapping background triggers like startup analysis and
+    // a file-watcher refresh landing around the same time) can never both
+    // observe this.busy as false and each go on to spawn their own
+    // local-analyze.py process. Everything below this point — including
+    // the quiet fast-paths, which do their own `await`s before deciding
+    // whether real analysis is even needed — runs under the claim, and the
+    // `finally` guarantees it's released on every exit path, including the
+    // early returns.
     if (this.busy) {
       if (!quiet) {
+        await this.reveal();
         vscode.window.showInformationMessage('CODEMD: Already analyzing — please wait for it to finish.');
       }
       return;
     }
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
+    this.busy = true;
+    try {
       if (!quiet) {
-        vscode.window.showErrorMessage('CODEMD: Open a folder or workspace before generating CODEMD callgraphs.');
+        await this.reveal();
       }
-      return;
-    }
-
-    const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
-    const graphFileUri = localGraphFileUri(outDirUri);
-    if (quiet && fs.existsSync(graphFileUri.fsPath)) {
-      this.ensureLocalGraphLoaded(folder);
-      this.post({ type: 'status', text: this.lastStatus });
-      this.lastGraphTitle = '';
-      this.postGraph();
-      this.postSearchSuggestions(folder);
-      this.post({ type: 'generated' });
-      this.refreshMcpUsage(folder);
-    }
-
-    // Background startup runs are the ones that repeat needlessly on every
-    // reload — skip them entirely when git shows no changes since the last
-    // completed analysis. An explicit "Generate" click always runs for real.
-    if (quiet && fs.existsSync(graphFileUri.fsPath)) {
-      const currentHash = await computeGitStateHash(folder.uri.fsPath);
-      const storedHash = readStoredGitStateHash(outDirUri);
-      if (currentHash && storedHash && currentHash === storedHash) {
-        const result = readLocalAnalysisResult(outDirUri);
-        if (result) {
-          this.ownerName = String(result?.owner_name || '');
-          this.repoName = String(result?.repo_name || '');
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        if (!quiet) {
+          vscode.window.showErrorMessage('CODEMD: Open a folder or workspace before generating CODEMD callgraphs.');
         }
-        this.lastStatus = 'Up to date — no changes detected since the last analysis.';
+        return;
+      }
+
+      const outDirUri = vscode.Uri.joinPath(folder.uri, ARTIFACT_OUTPUT_DIR);
+      const graphFileUri = localGraphFileUri(outDirUri);
+      if (quiet && fs.existsSync(graphFileUri.fsPath)) {
+        this.ensureLocalGraphLoaded(folder);
         this.post({ type: 'status', text: this.lastStatus });
-        // Repair (copy cytoscape.min.js into the workspace, rewrite the
-        // mirrored HTML's script path) must finish before this graph is
-        // adopted as last/displayed — otherwise a webview that's already
-        // ready (e.g. via a concurrent ensureLocalGraphLoaded/resolveWebviewView
-        // call) could be handed an unrepaired graph and, since re-posting the
-        // same webview URI later is a no-op, it would stay blank.
-        await repairMirroredArtifactsForWebview(this.context, outDirUri);
-        this.hasGenerated = true;
-        this.lastGraphFileUri = graphFileUri;
-        if (!this.displayedGraphFileUri && !this.lastDisplayedServerGraphUrl) {
-          this.displayedGraphFileUri = graphFileUri;
-        }
         this.lastGraphTitle = '';
         this.postGraph();
         this.postSearchSuggestions(folder);
         this.post({ type: 'generated' });
-        // this.postFeatureCatalog(result); // Product Feature List temporarily disabled
         this.refreshMcpUsage(folder);
-        statusBarItem.text = '$(check) CODEMD: up to date';
-        statusBarItem.tooltip = 'CODEMD';
-        return;
       }
-    }
 
-    this.busy = true;
-    statusBarItem.text = '$(sync~spin) CODEMD: analyzing…';
-    const status = (text: string) => {
-      this.lastStatus = text;
-      this.post({ type: 'status', text });
-    };
+      // Background startup runs are the ones that repeat needlessly on every
+      // reload — skip them entirely when git shows no changes since the last
+      // completed analysis. An explicit "Generate" click always runs for real.
+      if (quiet && fs.existsSync(graphFileUri.fsPath)) {
+        const currentHash = await computeGitStateHash(folder.uri.fsPath);
+        const storedHash = readStoredGitStateHash(outDirUri);
+        if (currentHash && storedHash && currentHash === storedHash) {
+          const result = readLocalAnalysisResult(outDirUri);
+          if (result) {
+            this.ownerName = String(result?.owner_name || '');
+            this.repoName = String(result?.repo_name || '');
+          }
+          this.lastStatus = 'Up to date — no changes detected since the last analysis.';
+          this.post({ type: 'status', text: this.lastStatus });
+          // Repair (copy cytoscape.min.js into the workspace, rewrite the
+          // mirrored HTML's script path) must finish before this graph is
+          // adopted as last/displayed — otherwise a webview that's already
+          // ready (e.g. via a concurrent ensureLocalGraphLoaded/resolveWebviewView
+          // call) could be handed an unrepaired graph and, since re-posting the
+          // same webview URI later is a no-op, it would stay blank.
+          await repairMirroredArtifactsForWebview(this.context, outDirUri);
+          this.hasGenerated = true;
+          this.lastGraphFileUri = graphFileUri;
+          if (!this.displayedGraphFileUri && !this.lastDisplayedServerGraphUrl) {
+            this.displayedGraphFileUri = graphFileUri;
+          }
+          this.lastGraphTitle = '';
+          this.postGraph();
+          this.postSearchSuggestions(folder);
+          this.post({ type: 'generated' });
+          // this.postFeatureCatalog(result); // Product Feature List temporarily disabled
+          this.refreshMcpUsage(folder);
+          statusBarItem.text = '$(check) CODEMD: up to date';
+          statusBarItem.tooltip = 'CODEMD';
+          return;
+        }
+      }
 
-    const runBody = async (report: (text: string) => void) => {
-      try {
+      statusBarItem.text = '$(sync~spin) CODEMD: analyzing…';
+      const status = (text: string) => {
+        this.lastStatus = text;
+        this.post({ type: 'status', text });
+      };
+
+      const runBody = async (report: (text: string) => void) => {
+        try {
         const config = vscode.workspace.getConfiguration('codemdGraphs');
         const analysisMode = String(config.get('analysisMode') || 'cli').toLowerCase();
         const useServerForGeneration = analysisMode === 'server';
@@ -5596,21 +6613,22 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
     };
 
-    if (quiet) {
-      await runBody(status);
-    } else {
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Generate CODEMD', cancellable: false },
-        async (progress) => {
-          await runBody((text) => {
-            progress.report({ message: text });
-            status(text);
-          });
-        },
-      );
+      if (quiet) {
+        await runBody(status);
+      } else {
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Generate CODEMD', cancellable: false },
+          async (progress) => {
+            await runBody((text) => {
+              progress.report({ message: text });
+              status(text);
+            });
+          },
+        );
+      }
+    } finally {
+      this.busy = false;
     }
-
-    this.busy = false;
   }
 
   /** Loads (and caches) the local callgraph node index, rebuilding it if the source file changed on disk. */
@@ -6038,34 +7056,62 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Read-only mode is on — CODEMD will not invoke Claude to write tests. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' });
       return;
     }
-    if (!file.toLowerCase().endsWith('.py')) {
-      this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Call Path Test currently only supports Python.' });
+    const language = testLanguageFor(file);
+    if (!language) {
+      this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Generating a test with Claude currently only supports Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin.' });
       return;
     }
     const tail = symbol.split('.').pop() || symbol;
-    const moduleName = pythonModuleNameFor(file);
     const callers: string[] = Array.isArray(result?.changeCard?.impactedFunctions)
       ? result.changeCard.impactedFunctions.slice(0, 8)
       : [];
-    const callSites = callers.length ? await resolvePythonCallSites(folder, symbol, callers) : new Map<string, PythonCallSite>();
+    const callSites = callers.length ? await resolveCallSites(folder, language, symbol, callers) : new Map<string, CallSite>();
+    // "removed" change cards point at a symbol that no longer exists in
+    // `file` — telling Claude to "Read the function X defined in file Y"
+    // below would send it hunting for code that was just deleted. The real
+    // ask here is different in kind, not just in wording: there is nothing
+    // to test directly, so this instead points Claude at the (still-real)
+    // former callers and asks it to confirm THEIR behavior is still correct
+    // now that the call is gone.
+    const isRemoved = result?.changeCard?.kind === 'removed';
     let callerLine: string;
     if (!callers.length) {
-      callerLine = 'No confirmed callers were found in the current callgraph — write a direct test of the function using realistic inputs based on its own signature and body.';
+      callerLine = isRemoved
+        ? 'No confirmed callers were found for this removed function in the current callgraph — since nothing in the codebase appears to call it, there is no call path to regression-test.'
+        : 'No confirmed callers were found in the current callgraph — write a direct test of the function using realistic inputs based on its own signature and body.';
     } else {
       const described = callers.map((name) => {
         const site = callSites.get(name);
         return site ? `${name} (${site.file}:${site.line}${site.callText ? `, calls it as \`${site.callText}(...)\`` : ''})` : name;
       });
-      callerLine = `Its confirmed real callers in this codebase: ${described.join(', ')}.`
-        + (callSites.size
-          // At least one caller already has an exact file:line above — no
-          // search needed for that one, just Read it directly.
-          ? ' Read ONE of the callers with an exact file:line given above — go straight to that location, no need to search for it.'
-          : ' Read at least one of these to see how it\'s actually invoked in practice.');
+      callerLine = isRemoved
+        ? `Its confirmed former callers in this codebase (before the removal): ${described.join(', ')}.`
+          + (callSites.size
+            ? ' Read ONE of them with an exact file:line given above.'
+            : ' Read at least one of these to see how it used to invoke this function.')
+        : `Its confirmed real callers in this codebase: ${described.join(', ')}.`
+          + (callSites.size
+            // At least one caller already has an exact file:line above — no
+            // search needed for that one, just Read it directly.
+            ? ' Read ONE of the callers with an exact file:line given above — go straight to that location, no need to search for it.'
+            : ' Read at least one of these to see how it\'s actually invoked in practice.');
     }
     const targetLocation = startLine ? ` at line ${startLine}` : '';
+    const removedContext = String(result?.changeCard?.change || `The function "${symbol}" was removed from the analyzed source.`);
+    const introLine = isRemoved
+      ? `The function "${symbol}" that used to live in "${file}"${targetLocation} was just removed — ${removedContext} It no longer exists, so do not try to Read or test it directly; do not import it.`
+      : `Read the function "${symbol}" defined in "${file}"${targetLocation} (${importHintFor(language, file, folder, tail)}).`;
+    const testTargetLine = isRemoved
+      ? `Write ONE ${testFrameworkNounFor(language)} test file (as plain text, not written to disk by you) that exercises the caller you read the way it is really`
+        + ' used now — realistic constructed inputs, not placeholders — so the test would catch that caller regressing now that this function is gone,'
+        + ' e.g. a leftover reference to the removed function, a broken fallback, or a crash.'
+      : `Write ONE ${testFrameworkNounFor(language)} test file (as plain text, not written to disk by you) that exercises this function the way it is really`
+        + ' used — realistic constructed inputs, not placeholders — so the test would catch a real caller breaking, not just a syntax error.';
+    const importLine = isRemoved
+      ? '(including its own imports — it will be saved standalone and run exactly as you wrote it); do not import the removed function.'
+      : `(including its own imports — it will be saved standalone and run exactly as you wrote it), importing ${tail} exactly as described above.`;
     const prompt = [
-      `Read the function "${symbol}" defined in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`).`,
+      introLine,
       callerLine,
       // Verified against a real invocation (backend/scim.py's
       // evidence_feature_candidates): without this, Claude reasonably tries
@@ -6074,19 +7120,20 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       // hit --max-turns twice before producing nothing. Scoping it to just
       // the target + one caller, treating internal calls as black boxes,
       // converged in 9 turns with a genuinely good test.
-      'Do not read or trace any other helper functions this one calls internally — reason about them only from their names and how',
+      isRemoved
+        ? 'Do not read or trace any other helper functions the caller calls internally — reason about them only from their names and how'
+        : 'Do not read or trace any other helper functions this one calls internally — reason about them only from their names and how',
       'their results are used, not their own implementations. Do not grep or explore the rest of the codebase beyond the one caller above.',
-      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises this function the way it is really',
-      'used — realistic constructed inputs, not placeholders — so the test would catch a real caller breaking, not just a syntax error.',
+      testTargetLine,
       'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
-      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
-      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
-      `${moduleName} exactly as shown above.`,
+      javaClassNameInstruction(language, `callpath_${tail}`),
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained test file source',
+      importLine,
     ].join(' ');
     const schema = JSON.stringify({
       type: 'object',
       properties: {
-        testSource: { type: 'string', description: 'Complete, self-contained pytest file source, including imports.' },
+        testSource: { type: 'string', description: 'Complete, self-contained test file source, including imports, in this project\'s actual test framework.' },
         notes: { type: 'string', description: 'One or two sentences on what the test exercises and why — technical detail is fine here (function/file names, mocking, call sites).' },
         plainSummary: { type: 'string', description: 'One plain-English sentence for a non-technical reader: what real-world behavior this test checks and why it matters. No function/variable/file names, no jargon like mock, monkeypatch, fixture, or assert.' },
       },
@@ -6105,8 +7152,35 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     // budget room to actually finish instead of getting cut off mid-read.
     const CALL_PATH_TEST_TIMEOUT_MS = 180000;
     const costCapUsd = this.maxCostPerActionUsd();
+    // Shown immediately, before Claude has even started — a user asked why
+    // the button just said "Generating…" with nothing else, and specifically
+    // wanted to see what's actually being asked for while they wait, the same
+    // way the Fix-with-Claude live transcript already works. The rest of the
+    // transcript below (stream-json events) appends after this same chunk.
+    this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${prompt}\n\n--- live output ---\n` });
     try {
-      const run = await execCommandAsync(
+      let stdoutLineBuffer = '';
+      const handleChunk = (text: string, stream: 'stdout' | 'stderr') => {
+        if (stream === 'stderr') {
+          if (text.trim()) { this.post({ type: 'testGenProgress', requestId, chunk: text }); }
+          return;
+        }
+        stdoutLineBuffer += text;
+        const lines = stdoutLineBuffer.split(/\r?\n/);
+        stdoutLineBuffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) { continue; }
+          let obj: any;
+          try {
+            obj = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const formatted = formatClaudeStreamEvent(obj);
+          if (formatted) { this.post({ type: 'testGenProgress', requestId, chunk: formatted + '\n' }); }
+        }
+      };
+      const { promise } = execCommandCancelableAsync(
         claudeCommand,
         [
           '-p', prompt,
@@ -6117,14 +7191,21 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           // above the observed real-world minimum, not just a guess.
           '--max-turns', '16',
           '--allowedTools', 'Read,Grep,Glob',
-          '--output-format', 'json',
+          // stream-json (JSONL, one event per line), not the single-blob json
+          // every other field on this response still assumes — see
+          // extractClaudeResultEnvelope below, which handles both shapes.
+          // --verbose is REQUIRED by the CLI for -p + stream-json.
+          '--output-format', 'stream-json',
+          '--verbose',
           '--json-schema', schema,
           '--max-budget-usd', String(costCapUsd),
         ],
         folder.uri.fsPath,
         { ...process.env },
         CALL_PATH_TEST_TIMEOUT_MS,
+        handleChunk,
       );
+      const run = await promise;
       const generationMs = Date.now() - startedAt;
       // Raw CLI transcript (stdout+stderr), independent of whether it parses
       // as JSON — surfaced to the user on every branch below (behind a "View
@@ -6142,13 +7223,12 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       if (run.status !== 0) {
         const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
-        this.post({ type: 'callPathTestResult', requestId, ok: false, error: budgetError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput });
+        const turnsError = parseClaudeMaxTurnsError(run.stdout, 16);
+        this.post({ type: 'callPathTestResult', requestId, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput });
         return;
       }
-      let envelope: any;
-      try {
-        envelope = JSON.parse(run.stdout);
-      } catch {
+      const envelope = extractClaudeResultEnvelope(run.stdout);
+      if (!envelope) {
         this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', generationMs, output: rawOutput });
         return;
       }
@@ -6161,7 +7241,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const generationCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
       const outDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests');
       await fs.promises.mkdir(outDir, { recursive: true });
-      const outName = `test_callpath_${tail.replace(/[^A-Za-z0-9_]/g, '_')}.py`;
+      const outName = generatedTestFileNameFor(`callpath_${tail}`, language, generatedTestExtFor(file, language));
       const outPath = path.join(outDir, outName);
       await fs.promises.writeFile(outPath, testSource, 'utf8');
       const relPath = path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
@@ -6199,6 +7279,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   private async runClaudeTestGeneration(
     folder: vscode.WorkspaceFolder,
     prompt: string,
+    requestId: string,
   ): Promise<
     | { ok: true; testSource: string; notes: string; plainSummary: string; generationMs: number; generationCostUsd?: number; output: string }
     | { ok: false; error: string; generationMs?: number; output?: string }
@@ -6213,7 +7294,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     const schema = JSON.stringify({
       type: 'object',
       properties: {
-        testSource: { type: 'string', description: 'Complete, self-contained pytest file source, including imports.' },
+        testSource: { type: 'string', description: 'Complete, self-contained test file source, including imports, in this project\'s actual test framework.' },
         notes: { type: 'string', description: 'One or two sentences on what the test exercises and why — technical detail is fine here (function/file names, mocking, call sites).' },
         plainSummary: { type: 'string', description: 'One plain-English sentence for a non-technical reader: what real-world behavior this test checks and why it matters. No function/variable/file names, no jargon like mock, monkeypatch, fixture, or assert.' },
       },
@@ -6222,14 +7303,44 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     const startedAt = Date.now();
     const TIMEOUT_MS = 180000;
     const costCapUsd = this.maxCostPerActionUsd();
+    // Same live-transcript treatment as generateCallPathTestForResult and the
+    // Fix flow: the prompt itself lands in the transcript immediately (so a
+    // curious user can see what's being asked for before Claude produces
+    // anything), then every stream-json event appends after it as it happens
+    // — instead of "Generating… Ns" being the only sign of life for up to
+    // three minutes.
+    this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${prompt}\n\n--- live output ---\n` });
     try {
-      const run = await execCommandAsync(
+      let stdoutLineBuffer = '';
+      const handleChunk = (text: string, stream: 'stdout' | 'stderr') => {
+        if (stream === 'stderr') {
+          if (text.trim()) { this.post({ type: 'testGenProgress', requestId, chunk: text }); }
+          return;
+        }
+        stdoutLineBuffer += text;
+        const lines = stdoutLineBuffer.split(/\r?\n/);
+        stdoutLineBuffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) { continue; }
+          let obj: any;
+          try {
+            obj = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const formatted = formatClaudeStreamEvent(obj);
+          if (formatted) { this.post({ type: 'testGenProgress', requestId, chunk: formatted + '\n' }); }
+        }
+      };
+      const { promise } = execCommandCancelableAsync(
         claudeCommand,
-        ['-p', prompt, '--max-turns', '16', '--allowedTools', 'Read,Grep,Glob', '--output-format', 'json', '--json-schema', schema, '--max-budget-usd', String(costCapUsd)],
+        ['-p', prompt, '--max-turns', '16', '--allowedTools', 'Read,Grep,Glob', '--output-format', 'stream-json', '--verbose', '--json-schema', schema, '--max-budget-usd', String(costCapUsd)],
         folder.uri.fsPath,
         { ...process.env },
         TIMEOUT_MS,
+        handleChunk,
       );
+      const run = await promise;
       const generationMs = Date.now() - startedAt;
       const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
       if (run.spawnError) {
@@ -6240,12 +7351,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       if (run.status !== 0) {
         const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
-        return { ok: false, error: budgetError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput };
+        const turnsError = parseClaudeMaxTurnsError(run.stdout, 16);
+        return { ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput };
       }
-      let envelope: any;
-      try {
-        envelope = JSON.parse(run.stdout);
-      } catch {
+      const envelope = extractClaudeResultEnvelope(run.stdout);
+      if (!envelope) {
         return { ok: false, error: 'Could not parse a response from Claude Code CLI.', generationMs, output: rawOutput };
       }
       const structured = envelope?.structured_output;
@@ -6254,6 +7364,22 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         return { ok: false, error: 'Claude did not return any test source.', generationMs, output: rawOutput };
       }
       const generationCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
+      // run.stdout is the CLI's --output-format json envelope, printed as one
+      // compact line — testSource alone can run several KB once its own
+      // newlines are escaped, so the naive `.slice(-4000)` tail-truncation
+      // used for the error paths above routinely cuts into the middle of
+      // this JSON instead of the (usually irrelevant) start. Pretty-print it
+      // instead so "View Claude output" shows something readable, and keep
+      // any stderr (CLI warnings, e.g. workspace-trust prompts) as a
+      // separately labeled block rather than glued onto the same string.
+      let prettyOutput: string;
+      try {
+        prettyOutput = JSON.stringify(envelope, null, 2);
+      } catch {
+        prettyOutput = run.stdout;
+      }
+      if (prettyOutput.length > 8000) { prettyOutput = prettyOutput.slice(0, 8000) + '\n… (truncated)'; }
+      if (run.stderr.trim()) { prettyOutput += `\n\n--- stderr ---\n${run.stderr.trim().slice(-2000)}`; }
       return {
         ok: true,
         testSource,
@@ -6261,18 +7387,17 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         plainSummary: stripStrayClosingTag(String(structured?.plainSummary || '')),
         generationMs,
         generationCostUsd,
-        output: rawOutput,
+        output: prettyOutput,
       };
     } catch (err: any) {
       return { ok: false, error: err?.message || String(err) };
     }
   }
 
-  private async writeGeneratedTest(folder: vscode.WorkspaceFolder, namePrefix: string, testSource: string): Promise<string> {
+  private async writeGeneratedTest(folder: vscode.WorkspaceFolder, namePrefix: string, testSource: string, ext = '.py', language: TestLanguage | null = null): Promise<string> {
     const outDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'generated_tests');
     await fs.promises.mkdir(outDir, { recursive: true });
-    const safeName = namePrefix.replace(/[^A-Za-z0-9_]/g, '_');
-    const outPath = path.join(outDir, `test_${safeName}.py`);
+    const outPath = path.join(outDir, generatedTestFileNameFor(namePrefix, language, ext));
     await fs.promises.writeFile(outPath, testSource, 'utf8');
     return path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
   }
@@ -6294,13 +7419,13 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
       return;
     }
-    if (!file.toLowerCase().endsWith('.py')) {
-      this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: 'Generating a test for a new function currently only supports Python.' });
+    const language = testLanguageFor(file);
+    if (!language) {
+      this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: 'Generating a test for a new function currently only supports Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin.' });
       return;
     }
     const tail = symbol.split('.').pop() || symbol;
-    const moduleName = pythonModuleNameFor(file);
-    const callers = await findPythonCallersOf(folder, symbol, 5);
+    const callers = await findCallersOf(folder, language, symbol, 5);
     const [primary, ...rest] = callers;
     const callerLine = primary
       ? `It is already called from "${primary.caller}" at ${primary.file}:${primary.line}`
@@ -6310,23 +7435,23 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       : 'This is a brand-new function with no confirmed callers yet in the current callgraph — write a direct test of the function using realistic inputs based on its own signature and body.';
     const targetLocation = startLine ? ` at line ${startLine}` : '';
     const prompt = [
-      `A new function "${symbol}" was just added in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`), as part of the current uncommitted change.`,
+      `A new function "${symbol}" was just added in "${file}"${targetLocation} (${importHintFor(language, file, folder, tail)}), as part of the current uncommitted change.`,
       callerLine,
       'Do not read or trace any other helper functions this one calls internally — reason about them only from their names and how',
       'their results are used, not their own implementations. Do not grep or explore the rest of the codebase beyond the one caller mentioned above, if any.',
-      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises this function the way it is really',
+      `Write ONE ${testFrameworkNounFor(language)} test file (as plain text, not written to disk by you) that exercises this function the way it is really`,
       'used — realistic constructed inputs, not placeholders — so the test would catch this new function regressing once it ships.',
       'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
-      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
-      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
-      `${moduleName} exactly as shown above.`,
+      javaClassNameInstruction(language, `newfunc_${tail}`),
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained test file source',
+      `(including its own imports — it will be saved standalone and run exactly as you wrote it), importing ${tail} exactly as described above.`,
     ].join(' ');
-    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    const gen = await this.runClaudeTestGeneration(folder, prompt, requestId);
     if (!gen.ok) {
       this.post({ type: 'newFunctionTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
       return;
     }
-    const relPath = await this.writeGeneratedTest(folder, `newfunc_${tail}`, gen.testSource);
+    const relPath = await this.writeGeneratedTest(folder, `newfunc_${tail}`, gen.testSource, generatedTestExtFor(file, language), language);
     this.post({
       type: 'newFunctionTestResult',
       requestId,
@@ -6364,17 +7489,20 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'callChainTestResult', requestId, ok: false, error: 'Missing chain details to generate a test for.' });
       return;
     }
-    if (!callerFile.toLowerCase().endsWith('.py') || !calleeFile.toLowerCase().endsWith('.py')) {
-      this.post({ type: 'callChainTestResult', requestId, ok: false, error: 'Call-path tests currently only support Python.' });
+    const callerLanguage = testLanguageFor(callerFile);
+    const calleeLanguage = testLanguageFor(calleeFile);
+    if (!callerLanguage || callerLanguage !== calleeLanguage) {
+      this.post({ type: 'callChainTestResult', requestId, ok: false, error: 'Call-chain tests currently only support Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin, and both functions must be in the same language.' });
       return;
     }
+    const language = callerLanguage;
     const callerTail = callerSymbol.split('.').pop() || callerSymbol;
     const calleeTail = calleeSymbol.split('.').pop() || calleeSymbol;
-    const callerModule = pythonModuleNameFor(callerFile);
-    const calleeModule = pythonModuleNameFor(calleeFile);
+    const callerModule = topLevelModuleFor(callerFile, language);
+    const calleeModule = topLevelModuleFor(calleeFile, language);
     const prompt = [
-      `Two functions changed together in the current diff and are directly connected: "${callerSymbol}" (in "${callerFile}", importable as`,
-      `\`from ${callerModule} import ${callerTail}\`) calls "${calleeSymbol}" (in "${calleeFile}", importable as \`from ${calleeModule} import ${calleeTail}\`)`,
+      `Two functions changed together in the current diff and are directly connected: "${callerSymbol}" (in "${callerFile}",`,
+      `${importHintFor(language, callerFile, folder, callerTail)}) calls "${calleeSymbol}" (in "${calleeFile}", ${importHintFor(language, calleeFile, folder, calleeTail)})`,
       `at ${edgeFile}:${edgeLine}${callText ? ` (as \`${callText}(...)\`)` : ''}.`,
       `Read "${callerTail}" at ${edgeFile}:${edgeLine} to see the exact call, and read "${calleeTail}" itself to understand what it does.`,
       crossesModuleBoundary
@@ -6382,21 +7510,23 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           + ` "${callerTail}" depends on, not an internal implementation detail, and make the assertions reflect that.`
         : '',
       'Do not read or trace any other functions beyond these two. Do not grep or explore the rest of the codebase.',
-      'Write ONE pytest test file (as plain text, not written to disk by you) that exercises the two together as a real call chain —',
+      `Write ONE ${testFrameworkNounFor(language)} test file (as plain text, not written to disk by you) that exercises the two together as a real call chain —`,
       `call "${callerTail}" the way it is really used, with realistic constructed inputs, and assert on an effect that only shows up`,
       `after it calls "${calleeTail}" — so the test would catch a regression in either function, or a break in how they interact,`,
-      'not just a syntax error.',
+      'not just a syntax error. If relevant to what you read, also consider: a return value from either function that changed shape',
+      `(e.g. became optional/nullable) but whose caller still assumes the old shape; an exception "${calleeTail}" could now raise that`,
+      `"${callerTail}" does not handle; and boundary/null/empty inputs at the point where "${callerTail}" calls "${calleeTail}".`,
       'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the test.',
-      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
-      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${callerTail} from`,
-      `${callerModule} exactly as shown above.`,
+      javaClassNameInstruction(language, `chain_${callerTail}_${calleeTail}`),
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained test file source',
+      `(including its own imports — it will be saved standalone and run exactly as you wrote it), importing ${callerTail} exactly as described above.`,
     ].join(' ');
-    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    const gen = await this.runClaudeTestGeneration(folder, prompt, requestId);
     if (!gen.ok) {
       this.post({ type: 'callChainTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
       return;
     }
-    const relPath = await this.writeGeneratedTest(folder, `chain_${callerTail}_${calleeTail}`, gen.testSource);
+    const relPath = await this.writeGeneratedTest(folder, `chain_${callerTail}_${calleeTail}`, gen.testSource, generatedTestExtFor(callerFile, language), language);
     this.post({
       type: 'callChainTestResult',
       requestId,
@@ -6420,6 +7550,14 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    * checked against the new signature, not guessed at). One test function
    * per broken caller, each showing the CORRECTED call so it documents the
    * exact contract that caller must be updated to follow.
+   *
+   * Python-only, and NOT extendable to JS/TS the same "free" way the other
+   * four generators were: check_call_sites' proof comes from
+   * python_find_calls_in_function/python_check_call_compatibility
+   * (backend/features/core/helpers.py), which parse the caller's Python AST
+   * and hard-filter to `.py` callers — there is no JS/TS equivalent static
+   * analysis yet, so callSiteIssues is always empty for JS/TS and this gate
+   * reflects a real capability gap, not just an unlifted check.
    */
   private async generateContractTestForResult(result: any, requestId: string): Promise<void> {
     const symbol = String(result?.fullName || result?.graphSymbol || '').trim();
@@ -6457,12 +7595,15 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       `Write ONE pytest test file (as plain text, not written to disk by you) with one test function per broken caller listed above (${capped.length} total),`,
       'each showing the CORRECTED call — updated to match the new signature — and asserting the function behaves as that caller actually needs.',
       'These tests document the exact contract each broken caller must be updated to follow — they are not testing the broken (old) call itself.',
+      `If relevant to what you read, also cover: a boundary/null/empty value for any new or changed parameter, and — if "${tail}" can now`,
+      'raise an exception it could not before, or its return value changed shape (e.g. became optional/nullable) — a test asserting the',
+      'corrected caller actually handles that.',
       'Do not modify any files. Do not run any commands. Do not fix the callers themselves — only write the test.',
       'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
       `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
       `${moduleName} exactly as shown above.`,
     ].join(' ');
-    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    const gen = await this.runClaudeTestGeneration(folder, prompt, requestId);
     if (!gen.ok) {
       this.post({ type: 'contractTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
       return;
@@ -6489,7 +7630,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    * existing single call-path test only reads ONE real caller, which misses
    * genuinely different calling patterns a function with many callers has in
    * practice. Reuses the same confirmed-caller data (changeCard.impactedFunctions
-   * + resolvePythonCallSites), just asks Claude for one test per distinct
+   * + resolveCallSites), just asks Claude for one test per distinct
    * pattern instead of one test total.
    */
   private async generateBroadCoverageTestForResult(result: any, requestId: string): Promise<void> {
@@ -6501,8 +7642,9 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'No symbol/file to generate a test for.' });
       return;
     }
-    if (!file.toLowerCase().endsWith('.py')) {
-      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'Broader coverage tests currently only support Python.' });
+    const language = testLanguageFor(file);
+    if (!language) {
+      this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'Input variation tests currently only support Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin.' });
       return;
     }
     const callers: string[] = Array.isArray(result?.changeCard?.impactedFunctions) ? result.changeCard.impactedFunctions.slice(0, 8) : [];
@@ -6511,34 +7653,33 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const tail = symbol.split('.').pop() || symbol;
-    const moduleName = pythonModuleNameFor(file);
-    const callSites = await resolvePythonCallSites(folder, symbol, callers);
+    const callSites = await resolveCallSites(folder, language, symbol, callers);
     const described = callers.map((name) => {
       const site = callSites.get(name);
       return site ? `${name} (${site.file}:${site.line}${site.callText ? `, calls it as ${site.callText}(...)` : ''})` : name;
     });
     const targetLocation = startLine ? ` at line ${startLine}` : '';
     const prompt = [
-      `The function "${symbol}" in "${file}"${targetLocation} (importable as \`from ${moduleName} import ${tail}\`) was changed and has ${callers.length} confirmed`,
+      `The function "${symbol}" in "${file}"${targetLocation} (${importHintFor(language, file, folder, tail)}) was changed and has ${callers.length} confirmed`,
       "real callers in this codebase — a single test on one caller wouldn't cover how differently each of them actually uses it.",
       `Its confirmed real callers: ${described.join(', ')}.`,
       'Read as many of these as needed (exact file:line locations given above) to identify genuinely DIFFERENT calling patterns —',
       'different argument shapes, edge cases, or usage contexts — not near-duplicates of each other.',
       'Do not read or trace any other helper functions this one calls internally. Do not grep or explore the rest of the codebase beyond these callers.',
-      'Write ONE pytest test file (as plain text, not written to disk by you) with one test function per genuinely distinct calling pattern you found',
+      `Write ONE ${testFrameworkNounFor(language)} test file (as plain text, not written to disk by you) with one test function per genuinely distinct calling pattern you found`,
       '(skip near-duplicate callers rather than writing redundant tests) — realistic constructed inputs for each, not placeholders, so together',
       'they cover the real diversity of how this function is actually used, not just one path through it.',
       'Do not modify any files. Do not run any commands. Do not fix anything you find wrong — only write the tests.',
-      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained Python test file source',
-      `(including its own imports — it will be saved standalone and run with pytest exactly as you wrote it), importing ${tail} from`,
-      `${moduleName} exactly as shown above.`,
+      javaClassNameInstruction(language, `broadcoverage_${tail}`),
+      'Respond only in the given JSON schema: `testSource` must be the complete, valid, self-contained test file source',
+      `(including its own imports — it will be saved standalone and run exactly as you wrote it), importing ${tail} exactly as described above.`,
     ].join(' ');
-    const gen = await this.runClaudeTestGeneration(folder, prompt);
+    const gen = await this.runClaudeTestGeneration(folder, prompt, requestId);
     if (!gen.ok) {
       this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: gen.error, generationMs: gen.generationMs, output: gen.output });
       return;
     }
-    const relPath = await this.writeGeneratedTest(folder, `broadcoverage_${tail}`, gen.testSource);
+    const relPath = await this.writeGeneratedTest(folder, `broadcoverage_${tail}`, gen.testSource, generatedTestExtFor(file, language), language);
     this.post({
       type: 'broadCoverageTestResult',
       requestId,
@@ -6596,17 +7737,97 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         query,
         matchCount: Number(data.match_count || 0),
         target: targetCandidate,
-        matches: Array.isArray(data.matches) ? data.matches.slice(0, 5).map((m: any) => ({
-          file: String(m.file || ''),
-          testNames: Array.isArray(m.test_names) ? m.test_names.slice(0, 6).map((t: any) => ({
-            name: String(t.name || ''),
-            nodeId: String(t.nodeId || t.name || ''),
-            line: Number(t.line || 0) || 0,
-          })) : [],
-        })) : [],
+        matches: Array.isArray(data.matches) ? data.matches
+          .map((m: any) => {
+            const file = String(m.file || '');
+            const kind = generatorKindFromTestFileName(file);
+            return {
+              file,
+              kind,
+              kindLabel: TEST_KIND_LABELS[kind] || 'Test',
+              testNames: Array.isArray(m.test_names) ? m.test_names.slice(0, 6).map((t: any) => ({
+                name: String(t.name || ''),
+                nodeId: String(t.nodeId || t.name || ''),
+                line: Number(t.line || 0) || 0,
+              })) : [],
+            };
+          })
+          // Sort by importance/impact before truncating to 5, so a
+          // low-priority broad-coverage match can't bump a proven-broken
+          // contract/call-chain match out of the visible list.
+          .sort((a: { kind: string }, b: { kind: string }) => testKindRank(a.kind) - testKindRank(b.kind))
+          .slice(0, 5) : [],
       });
     } catch (err: any) {
       this.post({ type: 'testGapResult', requestId, ok: false, error: err?.message || String(err) });
+    }
+  }
+
+  /**
+   * Runs the existing test file(s) codemd_find_tests already discovers for a
+   * changed symbol, and reports real pass/fail + coverage-confirmation per
+   * match — the "regression-test selection" half of verification that static
+   * discovery alone doesn't cover. No Claude call (pure local search + pytest),
+   * so unlike the four Claude generators this is meant to be triggered
+   * automatically by the webview, not gated behind a button click.
+   */
+  private async runExistingTestsForResult(result: any, requestId: string): Promise<void> {
+    const query = String(result?.graphSymbol || result?.fullName || result?.symbol || result?.name || '').trim();
+    const file = String(result?.file || '');
+    const startLine = Number(result?.line || 0) || 0;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!query || !folder) {
+      this.post({ type: 'existingTestsResult', requestId, ok: false, error: 'No symbol to check.' });
+      return;
+    }
+    if (!file.toLowerCase().endsWith('.py')) {
+      this.post({ type: 'existingTestsResult', requestId, ok: false, error: 'Running existing tests currently only supports Python.' });
+      return;
+    }
+    const scriptPath = vscode.Uri.joinPath(this.context.extensionUri, 'scripts', 'codemd-mcp-server.js').fsPath;
+    if (!fs.existsSync(scriptPath)) {
+      this.post({ type: 'existingTestsResult', requestId, ok: false, error: 'Test lookup script not found in this build.' });
+      return;
+    }
+    try {
+      const { status, stdout, timedOut } = await execNodeCliAsync(
+        scriptPath,
+        ['--workspace', folder.uri.fsPath, '--cli', 'find_tests', '--query', query, '--limit', '5'],
+        folder.uri.fsPath,
+      );
+      if (timedOut || status !== 0) {
+        this.post({ type: 'existingTestsResult', requestId, ok: false, error: 'Test lookup timed out or failed.' });
+        return;
+      }
+      const data = JSON.parse(stdout);
+      const rawMatches = Array.isArray(data.matches) ? data.matches.slice(0, 3) : [];
+      if (!rawMatches.length) {
+        this.post({ type: 'existingTestsResult', requestId, ok: true, symbol: query, matches: [] });
+        return;
+      }
+      const matches = await Promise.all(rawMatches.map(async (m: any) => {
+        const matchFile = String(m.file || '');
+        const testNames = Array.isArray(m.test_names) ? m.test_names : [];
+        const nodeId = testNames[0] ? String(testNames[0].nodeId || testNames[0].name || '') : '';
+        const payload = await this.computePythonTestRunPayload(
+          { file: matchFile, nodeId, targetPath: file, targetStartLine: startLine, targetSymbol: query },
+          folder,
+        );
+        return {
+          file: matchFile,
+          ok: !!payload.ok,
+          error: payload.error,
+          passed: !!payload.passed,
+          coverageConfirmed: !!payload.coverageConfirmed,
+          executed: !!payload.executed,
+          executedInRange: payload.executedInRange,
+          trackedInRange: payload.trackedInRange,
+          output: payload.output,
+        };
+      }));
+      this.post({ type: 'existingTestsResult', requestId, ok: true, symbol: query, matches });
+    } catch (err: any) {
+      this.post({ type: 'existingTestsResult', requestId, ok: false, error: err?.message || String(err) });
     }
   }
 
@@ -6625,10 +7846,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    * orchestration stays independently readable. */
   private async runTestFileForResult(message: any): Promise<void> {
     const requestId = String(message?.requestId || '');
+    if (requestId) { this.testRunStartTimes.set(requestId, Date.now()); }
     const file = String(message?.file || '');
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || !file) {
-      this.postTestRunResult({ requestId, ok: false, error: 'No test file to run.' });
+      this.postTestRunResult({ requestId, ok: false, error: 'No test file to run.' }, message);
       return;
     }
     const lower = file.toLowerCase();
@@ -6641,13 +7863,22 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     if (lower.endsWith('.rs')) {
       return this.runRustTestFileForResult(message, folder);
     }
-    this.postTestRunResult({ requestId, ok: false, error: 'Running tests for this file type isn\'t supported directly yet — use "Ask Claude to run" instead.' });
+    if (lower.endsWith('.java')) {
+      return this.runJavaTestFileForResult(message, folder);
+    }
+    if (lower.endsWith('.cs')) {
+      return this.runCsharpTestFileForResult(message, folder);
+    }
+    if (lower.endsWith('.kt') || lower.endsWith('.kts')) {
+      return this.runKotlinTestFileForResult(message, folder);
+    }
+    this.postTestRunResult({ requestId, ok: false, error: 'Running tests for this file type isn\'t supported directly yet — use "Ask Claude to run" instead.' }, message);
   }
 
   private async runPythonTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
     const requestId = String(message?.requestId || '');
     const payload = await this.computePythonTestRunPayload(message, folder);
-    this.postTestRunResult({ requestId, ...payload });
+    this.postTestRunResult({ requestId, ...payload }, message);
   }
 
   /**
@@ -6661,17 +7892,18 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    */
   private async installTestDependencyAndRetry(message: any): Promise<void> {
     const requestId = String(message?.requestId || '');
+    if (requestId) { this.testRunStartTimes.set(requestId, Date.now()); }
     const pythonPath = String(message?.pythonPath || '');
     const packageName = String(message?.package || '');
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || !pythonPath || !packageName) {
-      this.postTestRunResult({ requestId, ok: false, error: 'Missing install target — nothing to install.' });
+      this.postTestRunResult({ requestId, ok: false, error: 'Missing install target — nothing to install.' }, message);
       return;
     }
     this.post({ type: 'status', text: `Installing ${packageName} into ${pythonPath}…` });
     const install = await execCommandAsync(pythonPath, ['-m', 'pip', 'install', packageName], folder.uri.fsPath, process.env);
     if (install.spawnError) {
-      this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "${pythonPath}" to install ${packageName}: ${install.spawnError}` });
+      this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "${pythonPath}" to install ${packageName}: ${install.spawnError}` }, message);
       return;
     }
     const installOutput = `${install.stdout}\n${install.stderr}`.trim();
@@ -6681,7 +7913,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         ok: false,
         error: `Failed to install ${packageName} into ${pythonPath} (exit ${install.status}). See output.`,
         output: installOutput.slice(-4000),
-      });
+      }, message);
       return;
     }
     this.post({ type: 'status', text: `Installed ${packageName} — re-running test…` });
@@ -6691,6 +7923,158 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       requestId,
       ...payload,
       output: `Installed ${packageName} into ${pythonPath}.\n\n${installOutput}\n\n${priorOutput}`.trim().slice(-4000),
+    }, message);
+  }
+
+  /**
+   * The opt-in "⚙ Set up test runner" action for a JS/TS repo that
+   * detectJsTestRunner found has none — the only place in this whole
+   * feature allowed to add a JS/TS test framework, and only on this exact,
+   * explicit click (never automatically, never as a side effect of Run or
+   * Fix — see the comments on those). Deliberately does NOT call Claude:
+   * selectJsTestRunner picks the framework and writes its config from a
+   * fixed template, so the outcome for a given repo shape is always the
+   * same and the diff stays small and predictable. `npm install --save-dev`
+   * (not --no-save, unlike the Fix flow's transient installs) so the
+   * addition is real, visible in package.json, and survives past this run.
+   */
+  private async setUpJsTestRunnerForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    if (this.isReadOnlyMode()) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: 'Read-only mode is on — CODEMD will not modify your repo. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' });
+      return;
+    }
+    const existing = detectJsTestRunner(folder, String(message?.file || ''));
+    if (existing.found) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: true, alreadyPresent: true, runner: existing.runner || '', summary: `${existing.runner || 'A test runner'} is already set up in this repo — nothing to install.` });
+      return;
+    }
+    const plan = selectJsTestRunner(folder);
+    this.post({ type: 'status', text: `Setting up ${plan.runner} — this repo has no JS/TS test runner yet…` });
+    const install = await execShellLineAsync(`npm install --save-dev ${plan.packages.join(' ')}`, folder.uri.fsPath, { ...process.env }, 180000);
+    const installOutput = `${install.stdout}\n${install.stderr}`.trim();
+    if (install.spawnError) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: `Couldn't launch npm: ${install.spawnError}`, output: installOutput.slice(-4000) });
+      return;
+    }
+    if (install.timedOut) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: 'npm install did not finish within 180s.', output: installOutput.slice(-4000) });
+      return;
+    }
+    if (install.status !== 0) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: `npm install exited with code ${install.status}. See output.`, output: installOutput.slice(-4000) });
+      return;
+    }
+    const configPath = path.join(folder.uri.fsPath, plan.configFile);
+    if (!fs.existsSync(configPath)) {
+      await fs.promises.writeFile(configPath, plan.configContents, 'utf8');
+    }
+    // Only the "test" script is ours to add here — devDependencies/lockfile
+    // are npm's own job above, already done and already using npm's exact
+    // formatting; hand-editing those too would just risk drifting from it.
+    let scriptAdded = false;
+    try {
+      const pkgPath = path.join(folder.uri.fsPath, 'package.json');
+      const pkg = JSON.parse(await fs.promises.readFile(pkgPath, 'utf8'));
+      const currentScript = String(pkg.scripts?.test || '');
+      if (!currentScript || /no test specified/i.test(currentScript)) {
+        pkg.scripts = { ...(pkg.scripts || {}), test: plan.testScript };
+        await fs.promises.writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+        scriptAdded = true;
+      }
+    } catch {
+      // package.json unreadable/malformed after npm's own write — the
+      // install itself already succeeded, so still report ok:true; the
+      // config file alone is enough to run tests with an explicit command.
+    }
+    this.post({
+      type: 'setUpTestRunnerResult',
+      requestId,
+      ok: true,
+      runner: plan.runner,
+      packagesInstalled: plan.packages,
+      configFile: plan.configFile,
+      scriptAdded,
+      summary: `Installed ${plan.packages.join(', ')} and wrote ${plan.configFile}${scriptAdded ? ' plus a "test" script in package.json' : ''}. ${plan.reason}`,
+      output: installOutput.slice(-4000),
+    });
+  }
+
+  /**
+   * Java's version of setUpJsTestRunnerForResult, same rule: no Claude call,
+   * one fixed coordinate (JUnit 5 — the uncontested default, no Jest-vs-
+   * Vitest-style choice to make here), a real edit to the project's own
+   * build file so it's visible and permanent, never a silent side effect of
+   * Run or Fix. Text-insertion, not a real XML/Groovy parse — see
+   * insertMavenJUnitDependency's doc comment for why. `mvn dependency:resolve`
+   * afterward is the verification step (equivalent to npm's install actually
+   * downloading something): if the coordinate were ever wrong, this is
+   * where it would fail, not silently deferred to the next test run.
+   */
+  private async setUpJavaTestRunnerForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    if (this.isReadOnlyMode()) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: 'Read-only mode is on — CODEMD will not modify your repo. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' });
+      return;
+    }
+    const buildRoot = findJavaBuildRootDir(folder);
+    if (!buildRoot) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: 'No pom.xml or build.gradle found at the workspace root.' });
+      return;
+    }
+    const existing = detectJavaTestRunner(folder);
+    if (existing.found) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: true, alreadyPresent: true, runner: existing.runner || '', summary: `${existing.runner || 'A test framework'} is already declared in this project — nothing to install.` });
+      return;
+    }
+    const buildFileName = buildRoot.tool === 'maven'
+      ? 'pom.xml'
+      : (fs.existsSync(path.join(buildRoot.root, 'build.gradle.kts')) ? 'build.gradle.kts' : 'build.gradle');
+    const buildFilePath = path.join(buildRoot.root, buildFileName);
+    let originalText: string;
+    try {
+      originalText = await fs.promises.readFile(buildFilePath, 'utf8');
+    } catch (err: any) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: `Could not read ${buildFileName}: ${err?.message || err}` });
+      return;
+    }
+    const updatedText = buildRoot.tool === 'maven' ? insertMavenJUnitDependency(originalText) : insertGradleJUnitDependency(originalText);
+    if (!updatedText) {
+      this.post({ type: 'setUpTestRunnerResult', requestId, ok: false, error: `Could not automatically edit ${buildFileName} (no <dependencies>/</project> anchor found) — add this dependency yourself: org.junit.jupiter:junit-jupiter:5.10.2 (test scope).` });
+      return;
+    }
+    this.post({ type: 'status', text: `Setting up JUnit 5 — this project has no test framework declared yet…` });
+    await fs.promises.writeFile(buildFilePath, updatedText, 'utf8');
+    // Verification step — resolves the dependency for real, same role
+    // npm install's actual download plays for the JS/TS path. On failure,
+    // roll the edit back rather than leaving a bad, uncommitted change in
+    // the user's build file for something that turned out not to resolve.
+    const verify = buildRoot.tool === 'maven'
+      ? await execCommandAsync('mvn', ['-q', '-B', 'dependency:resolve'], buildRoot.root, { ...process.env }, 120000)
+      : await execCommandAsync('gradle', ['-q', 'dependencies', '--configuration', 'testCompileClasspath'], buildRoot.root, { ...process.env }, 120000);
+    const verifyOutput = `${verify.stdout}\n${verify.stderr}`.trim();
+    if (verify.spawnError || verify.status !== 0) {
+      await fs.promises.writeFile(buildFilePath, originalText, 'utf8');
+      this.post({
+        type: 'setUpTestRunnerResult',
+        requestId,
+        ok: false,
+        error: verify.spawnError
+          ? `Wrote the dependency, but couldn't launch "${buildRoot.tool === 'maven' ? 'mvn' : 'gradle'}" to verify it resolves — reverted ${buildFileName}: ${verify.spawnError}`
+          : `The added dependency did not resolve — reverted ${buildFileName}. See output.`,
+        output: verifyOutput.slice(-4000),
+      });
+      return;
+    }
+    this.post({
+      type: 'setUpTestRunnerResult',
+      requestId,
+      ok: true,
+      runner: 'JUnit 5',
+      packagesInstalled: ['org.junit.jupiter:junit-jupiter:5.10.2'],
+      configFile: buildFileName,
+      summary: `Added org.junit.jupiter:junit-jupiter:5.10.2 (test scope) to ${buildFileName}${buildRoot.tool === 'gradle' ? ' and enabled useJUnitPlatform()' : ''}, verified it resolves.`,
+      output: verifyOutput.slice(-4000),
     });
   }
 
@@ -6742,6 +8126,76 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * When a generated test's `from <dotted.module> import X` fails to collect
+   * with "No module named ..." even though the target file genuinely exists,
+   * the usual cause is a self-contained subfolder (this extension's own
+   * bundled backend/ is exactly this shape) whose own internal imports are
+   * absolute relative to ITS OWN directory, not the workspace root — e.g.
+   * backend/main.py does `from features.core import helpers`, which only
+   * resolves once backend/ itself, not the repo root, is on sys.path.
+   * Confirmed empirically (see the bug this fixes) that adding the right
+   * ancestor directory to PYTHONPATH makes both "import backend.main" and a
+   * bare "import main" resolve, since the missing sibling package becomes
+   * reachable either way — so this reuses the test's existing dotted import
+   * name unchanged rather than needing to know which style was written.
+   * Probes ancestors between the target file and the workspace root,
+   * shallowest first (matches the common "self-contained sub-app root" case
+   * in one probe); returns the absolute directory to add to PYTHONPATH, or
+   * null if no candidate fixes it.
+   */
+  private async findPythonImportRootFix(
+    pythonPath: string,
+    folder: vscode.WorkspaceFolder,
+    targetPath: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<string | null> {
+    const dotted = pythonModuleNameFor(targetPath);
+    const relDir = path.dirname(targetPath.replace(/\\/g, '/'));
+    if (!relDir || relDir === '.') { return null; }
+    let candidateRel = '';
+    for (const segment of relDir.split('/').filter(Boolean)) {
+      candidateRel = candidateRel ? `${candidateRel}/${segment}` : segment;
+      const candidateAbs = path.join(folder.uri.fsPath, candidateRel);
+      const probeEnv = { ...env, PYTHONPATH: candidateAbs + (env.PYTHONPATH ? path.delimiter + env.PYTHONPATH : '') };
+      const probe = await execCommandAsync(pythonPath, ['-c', `import ${dotted}`], folder.uri.fsPath, probeEnv, 15000);
+      if (probe.status === 0) {
+        return candidateAbs;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Runs a pytest-family command and, only if it fails to collect at all
+   * with a "No module named" error, retries once with an extra PYTHONPATH
+   * entry from findPythonImportRootFix — see that method's doc comment.
+   * Cheap in the common case: the retry probe only runs after a genuine
+   * collection failure, never on an already-working test.
+   */
+  private async execPythonTestCommand(
+    pythonPath: string,
+    args: string[],
+    folder: vscode.WorkspaceFolder,
+    env: NodeJS.ProcessEnv,
+    targetPath: string,
+  ): Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean; spawnError?: string }> {
+    const run = await execCommandAsync(pythonPath, args, folder.uri.fsPath, env);
+    if (run.spawnError || run.timedOut || run.status === 0 || run.status === 1 || !targetPath) {
+      return run;
+    }
+    const combinedOutput = `${run.stdout}\n${run.stderr}`;
+    if (!/no module named ['"]?[\w.]+['"]?/i.test(combinedOutput)) {
+      return run;
+    }
+    const extraRoot = await this.findPythonImportRootFix(pythonPath, folder, targetPath, env);
+    if (!extraRoot) {
+      return run;
+    }
+    const retryEnv = { ...env, PYTHONPATH: extraRoot + (env.PYTHONPATH ? path.delimiter + env.PYTHONPATH : '') };
+    return execCommandAsync(pythonPath, args, folder.uri.fsPath, retryEnv);
+  }
+
+  /**
    * Core of the Python "Run" path, factored out so the Call Path Test flow
    * (generateCallPathTestForResult) can chain straight into it after writing
    * a new file — same exact logic the already-tested button uses, not a
@@ -6749,6 +8203,18 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    * result payload instead of posting it; callers decide how to present it.
    */
   private async computePythonTestRunPayload(message: any, folder: vscode.WorkspaceFolder): Promise<any> {
+    // Queues rather than firing unboundedly — see acquirePythonTestRunSlot's
+    // doc comment for why this exists (runExistingTestsForResult's auto-fire
+    // has no cap of its own and can otherwise flood the OS with processes).
+    await acquirePythonTestRunSlot();
+    try {
+      return await this.computePythonTestRunPayloadImpl(message, folder);
+    } finally {
+      releasePythonTestRunSlot();
+    }
+  }
+
+  private async computePythonTestRunPayloadImpl(message: any, folder: vscode.WorkspaceFolder): Promise<any> {
     const file = String(message?.file || '');
     const nodeId = String(message?.nodeId || '');
     const targetPath = String(message?.targetPath || '');
@@ -6762,15 +8228,16 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     const jsonFile = `${tmpBase}.json`;
     let output = '';
     try {
-      const covRun = await execCommandAsync(
+      const covRun = await this.execPythonTestCommand(
         pythonPath,
         // -v (not -q) so "View output" shows each test's actual name and
         // PASSED/FAILED line instead of collapsing every test to a single
         // dot — -q's failure tracebacks are just as verbose either way, but
         // its pass-path output has nothing else in it to show.
         ['-m', 'coverage', 'run', '--branch', `--data-file=${dataFile}`, '-m', 'pytest', target, '-v'],
-        folder.uri.fsPath,
+        folder,
         env,
+        targetPath,
       );
       output = `${covRun.stdout}\n${covRun.stderr}`.trim();
       if (covRun.spawnError) {
@@ -6795,7 +8262,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       if (noCoverage) {
         // Fall back to a plain pytest run (still a real pass/fail — just no
         // confirmed-execution data for the changed lines).
-        const plainRun = await execCommandAsync(pythonPath, ['-m', 'pytest', target, '-v'], folder.uri.fsPath, env);
+        const plainRun = await this.execPythonTestCommand(pythonPath, ['-m', 'pytest', target, '-v'], folder, env, targetPath);
         output = `${plainRun.stdout}\n${plainRun.stderr}`.trim();
         if (plainRun.timedOut) {
           return { ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) };
@@ -6977,11 +8444,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       const run = await execCommandAsync('go', args, folder.uri.fsPath, env);
       output = `${run.stdout}\n${run.stderr}`.trim();
       if (run.spawnError) {
-        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "go": ${run.spawnError}. Is the Go toolchain installed and on PATH?` });
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "go": ${run.spawnError}. Is the Go toolchain installed and on PATH?` }, message);
         return;
       }
       if (run.timedOut) {
-        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) });
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) }, message);
         return;
       }
       const combined = output.toLowerCase();
@@ -6996,7 +8463,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         || combined.includes('no test files')
         || combined.includes('no tests to run');
       if (couldNotRun) {
-        this.postTestRunResult({ requestId, ok: false, error: 'go test could not build/collect this test — see output.', output: output.slice(-4000) });
+        this.postTestRunResult({ requestId, ok: false, error: 'go test could not build/collect this test — see output.', output: output.slice(-4000) }, message);
         return;
       }
       const passed = run.status === 0;
@@ -7005,7 +8472,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           requestId, ok: true, passed, coverageConfirmed: false,
           reason: !fs.existsSync(profilePath) ? 'No coverage profile was produced.' : 'No target line range available to check.',
           output: output.slice(-4000),
-        });
+        }, message);
         return;
       }
       const absTargetPath = path.join(folder.uri.fsPath, targetPath);
@@ -7022,9 +8489,9 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         trackedInRange,
         reason: trackedInRange === 0 ? 'Coverage profile had no data for this line range.' : undefined,
         output: output.slice(-4000),
-      });
+      }, message);
     } catch (err: any) {
-      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) });
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) }, message);
     } finally {
       fs.promises.unlink(profilePath).catch(() => {});
     }
@@ -7073,11 +8540,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       output = `${run.stdout}\n${run.stderr}`.trim();
       if (run.spawnError) {
-        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "cargo": ${run.spawnError}. Is the Rust toolchain installed and on PATH?` });
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "cargo": ${run.spawnError}. Is the Rust toolchain installed and on PATH?` }, message);
         return;
       }
       if (run.timedOut) {
-        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 150s.', output: output.slice(-4000) });
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 150s.', output: output.slice(-4000) }, message);
         return;
       }
       const combined = output.toLowerCase();
@@ -7097,7 +8564,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         || zeroMatchedFilter
         || combined.includes('manifest path') && combined.includes('does not exist');
       if (couldNotRun) {
-        this.postTestRunResult({ requestId, ok: false, error: 'cargo could not build/collect this test — see output.', output: output.slice(-4000) });
+        this.postTestRunResult({ requestId, ok: false, error: 'cargo could not build/collect this test — see output.', output: output.slice(-4000) }, message);
         return;
       }
       const passed = run.status === 0;
@@ -7108,7 +8575,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
             ? 'cargo-llvm-cov is not installed in this environment (cargo install cargo-llvm-cov).'
             : (!fs.existsSync(lcovPath) ? 'No coverage report was produced.' : 'No target line range available to check.'),
           output: output.slice(-4000),
-        });
+        }, message);
         return;
       }
       const lcovText = fs.readFileSync(lcovPath, 'utf8');
@@ -7124,11 +8591,407 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         trackedInRange,
         reason: trackedInRange === 0 ? 'Coverage report had no data for this line range.' : undefined,
         output: output.slice(-4000),
-      });
+      }, message);
     } catch (err: any) {
-      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) });
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) }, message);
     } finally {
       fs.promises.unlink(lcovPath).catch(() => {});
+    }
+  }
+
+  /**
+   * Java's fourth direct-run tier alongside Python/Go/Rust. Unlike those
+   * three, a CODEMD-generated Java test can't just be handed to `mvn test` —
+   * it's saved flatly under .codemd/generated_tests/ (see
+   * generatedTestFileNameFor), not inside src/test/java where Maven's own
+   * test phase looks by convention, and teaching "Set up test runner" to
+   * rewrite pom.xml's compiled test-source roots felt like a bigger, riskier
+   * edit than this problem needs. Instead: compile the one generated file
+   * directly with javac against the project's real dependency classpath
+   * (from `mvn dependency:build-classpath`) plus its already-compiled
+   * main/test classes, then execute it with the JUnit Platform Console
+   * Launcher (fetched once via `mvn dependency:get` into the normal local
+   * ~/.m2 cache, same as any other Maven dependency) — the standard,
+   * documented way to run one ad-hoc JUnit 5 class outside a full build.
+   * Maven only for now (see findJavaBuildRootDir) — Gradle's classpath
+   * isn't a one-liner to extract the same way and is left as a clear,
+   * honest "not yet supported" rather than a fragile guess.
+   * NOTE: like the Rust runner above, this could not be empirically
+   * verified against a real Maven project in this session (no JDK/Maven
+   * available in this dev environment) — the invocation follows the
+   * standard, documented `dependency:build-classpath` / Console Launcher
+   * `execute` usage, but should be checked against a real project before
+   * relying on it in production.
+   */
+  private async runJavaTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const buildRoot = findJavaBuildRootDir(folder);
+    if (!buildRoot) {
+      this.postTestRunResult({ requestId, ok: false, error: 'No pom.xml or build.gradle found at the workspace root — CODEMD needs a Maven or Gradle project to run a Java test.' }, message);
+      return;
+    }
+    if (buildRoot.tool === 'gradle') {
+      this.postTestRunResult({ requestId, ok: false, error: 'Running a generated test directly isn\'t implemented yet for Gradle projects (Maven is supported). Open the file and run it from your IDE/Gradle for now.' }, message);
+      return;
+    }
+    // The generated test's own `import org.junit.jupiter.api.*` needs a real
+    // junit-jupiter jar on the compile classpath step 4 below builds from
+    // `mvn dependency:build-classpath` — if this project has never declared
+    // JUnit at all, that classpath won't have it and javac will fail with a
+    // confusing "package org.junit.jupiter.api does not exist". Check first,
+    // cheaply, same as the JS/TS path does before ever spending real time.
+    if (!detectJavaTestRunner(folder).found) {
+      this.postTestRunResult({
+        requestId,
+        ok: false,
+        noTestRunner: true,
+        error: 'No JUnit (or TestNG) dependency declared in pom.xml. CODEMD will not add one on its own — click "Set up test runner" or add one yourself, then Run again.',
+      }, message);
+      return;
+    }
+    const env = { ...process.env };
+    const absTestFile = path.join(folder.uri.fsPath, file);
+    const source = await fs.promises.readFile(absTestFile, 'utf8').catch(() => '');
+    const packageMatch = source.match(/^\s*package\s+([\w.]+)\s*;/m);
+    const className = path.basename(file, '.java');
+    const fqcn = packageMatch ? `${packageMatch[1]}.${className}` : className;
+    const classpathFile = path.join(os.tmpdir(), `codemd-javacp-${crypto.randomBytes(6).toString('hex')}.txt`);
+    const compileOutDir = path.join(os.tmpdir(), `codemd-javaout-${crypto.randomBytes(6).toString('hex')}`);
+    let output = '';
+    try {
+      // 1) Ensure main + existing test classes are actually compiled and up
+      // to date — the generated test may reference either.
+      const compileStep = await execCommandAsync('mvn', ['-q', '-B', 'test-compile'], buildRoot.root, env, 180000);
+      output += `${compileStep.stdout}\n${compileStep.stderr}`.trim();
+      if (compileStep.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "mvn": ${compileStep.spawnError}. Is Maven installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (compileStep.status !== 0) {
+        this.postTestRunResult({ requestId, ok: false, error: 'This project itself does not currently compile (`mvn test-compile` failed) — not something CODEMD generated. See output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      // 2) Resolve this project's real dependency classpath.
+      const cpStep = await execCommandAsync('mvn', ['-q', '-B', 'dependency:build-classpath', `-Dmdep.outputFile=${classpathFile}`], buildRoot.root, env, 120000);
+      output += `\n${cpStep.stdout}\n${cpStep.stderr}`.trim();
+      if (cpStep.status !== 0 || !fs.existsSync(classpathFile)) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Could not resolve this project\'s Maven dependency classpath (`mvn dependency:build-classpath` failed). See output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      const depClasspath = (await fs.promises.readFile(classpathFile, 'utf8')).trim();
+      const projectClasspath = [
+        depClasspath,
+        path.join(buildRoot.root, 'target', 'classes'),
+        path.join(buildRoot.root, 'target', 'test-classes'),
+      ].filter(Boolean).join(path.delimiter);
+      // 3) Fetch (or reuse the already-cached) JUnit Console Launcher — a
+      // normal Maven dependency resolve, so it lands in the user's own
+      // local ~/.m2 cache exactly like any other artifact this project uses.
+      const consoleVersion = '1.10.2';
+      const consoleCoord = `org.junit.platform:junit-platform-console-standalone:${consoleVersion}`;
+      const consoleJar = path.join(os.homedir(), '.m2', 'repository', 'org', 'junit', 'platform', 'junit-platform-console-standalone', consoleVersion, `junit-platform-console-standalone-${consoleVersion}.jar`);
+      if (!fs.existsSync(consoleJar)) {
+        const getStep = await execCommandAsync('mvn', ['-q', '-B', 'dependency:get', `-Dartifact=${consoleCoord}`], buildRoot.root, env, 120000);
+        output += `\n${getStep.stdout}\n${getStep.stderr}`.trim();
+        if (getStep.status !== 0 || !fs.existsSync(consoleJar)) {
+          this.postTestRunResult({ requestId, ok: false, error: `Could not fetch the JUnit Platform Console Launcher (${consoleCoord}) via Maven. See output.`, output: output.slice(-4000) }, message);
+          return;
+        }
+      }
+      // 4) Compile just the one generated file against that classpath.
+      await fs.promises.mkdir(compileOutDir, { recursive: true });
+      const javac = await execCommandAsync('javac', ['-cp', projectClasspath, '-d', compileOutDir, absTestFile], buildRoot.root, env, 60000);
+      output += `\n${javac.stdout}\n${javac.stderr}`.trim();
+      if (javac.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "javac": ${javac.spawnError}. Is a JDK installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (javac.status !== 0) {
+        this.postTestRunResult({ requestId, ok: false, error: 'The generated test does not compile — see output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      // 5) Execute it with the Console Launcher and read the real exit code.
+      const runClasspath = [projectClasspath, compileOutDir].join(path.delimiter);
+      const run = await execCommandAsync(
+        'java',
+        ['-jar', consoleJar, 'execute', '--class-path', runClasspath, '--select-class', fqcn, '--details=tree', '--fail-if-no-tests'],
+        buildRoot.root,
+        env,
+        90000,
+      );
+      output += `\n${run.stdout}\n${run.stderr}`.trim();
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "java": ${run.spawnError}. Is a JDK installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) }, message);
+        return;
+      }
+      const combined = output.toLowerCase();
+      const couldNotRun = combined.includes('no tests found') || combined.includes('0 tests found');
+      if (couldNotRun) {
+        this.postTestRunResult({ requestId, ok: false, error: `The Console Launcher found no tests in "${fqcn}" — see output.`, output: output.slice(-4000) }, message);
+        return;
+      }
+      // No coverage tool wired up for Java yet (would need JaCoCo, another
+      // dependency:get + javaagent flag) — same honest "best effort" tier
+      // Go/Rust fall back to when their own coverage tool isn't available.
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed: run.status === 0,
+        coverageConfirmed: false,
+        reason: 'No coverage tool wired up for Java yet.',
+        output: output.slice(-4000),
+      }, message);
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) }, message);
+    } finally {
+      fs.promises.unlink(classpathFile).catch(() => {});
+      fs.promises.rm(compileOutDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Kotlin's direct-run tier — a template copy of runJavaTestFileForResult
+   * above, not a new design: same Maven/Gradle root-finding
+   * (findJavaBuildRootDir is already language-agnostic despite its name —
+   * it just checks for pom.xml/build.gradle, which a Kotlin/JVM project
+   * uses identically to a Java one), same detectJavaTestRunner reuse for
+   * the "no test framework declared" check, same JUnit Platform Console
+   * Launcher execution. The one real difference: step 4 compiles the
+   * generated file with `kotlinc`, not `javac` — everything downstream
+   * (the compiled .class files, the classpath, the launcher invocation)
+   * doesn't care which compiler produced them, since JUnit runs JVM
+   * bytecode either way. This is also why Kotlin needed no
+   * setUpKotlinTestRunnerForResult of its own — see the 'kotlin' branch in
+   * the extension's setUpTestRunner message dispatch, which just routes
+   * straight to setUpJavaTestRunnerForResult unchanged.
+   * NOTE: like the Rust/Java/C# runners, this could not be empirically
+   * verified against a real Kotlin project — no Kotlin compiler available
+   * in this dev environment. Should be checked against a real project
+   * before relying on it in production.
+   */
+  private async runKotlinTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const buildRoot = findJavaBuildRootDir(folder);
+    if (!buildRoot) {
+      this.postTestRunResult({ requestId, ok: false, error: 'No pom.xml or build.gradle found at the workspace root — CODEMD needs a Maven or Gradle project to run a Kotlin test.' }, message);
+      return;
+    }
+    if (buildRoot.tool === 'gradle') {
+      this.postTestRunResult({ requestId, ok: false, error: 'Running a generated test directly isn\'t implemented yet for Gradle projects (Maven is supported). Open the file and run it from your IDE/Gradle for now.' }, message);
+      return;
+    }
+    if (!detectJavaTestRunner(folder).found) {
+      this.postTestRunResult({
+        requestId,
+        ok: false,
+        noTestRunner: true,
+        error: 'No JUnit (or TestNG) dependency declared in pom.xml. CODEMD will not add one on its own — click "Set up test runner" or add one yourself, then Run again.',
+      }, message);
+      return;
+    }
+    const env = { ...process.env };
+    const absTestFile = path.join(folder.uri.fsPath, file);
+    const source = await fs.promises.readFile(absTestFile, 'utf8').catch(() => '');
+    const packageMatch = source.match(/^\s*package\s+([\w.]+)/m);
+    const className = path.basename(file, '.kt');
+    const fqcn = packageMatch ? `${packageMatch[1]}.${className}` : className;
+    const classpathFile = path.join(os.tmpdir(), `codemd-kotlincp-${crypto.randomBytes(6).toString('hex')}.txt`);
+    const compileOutDir = path.join(os.tmpdir(), `codemd-kotlinout-${crypto.randomBytes(6).toString('hex')}`);
+    let output = '';
+    try {
+      // 1) Ensure main + existing test classes are actually compiled and up
+      // to date — relies on this project's own pom.xml already wiring the
+      // kotlin-maven-plugin into the standard compile/test-compile phases,
+      // same as any other Maven project's own build.
+      const compileStep = await execCommandAsync('mvn', ['-q', '-B', 'test-compile'], buildRoot.root, env, 180000);
+      output += `${compileStep.stdout}\n${compileStep.stderr}`.trim();
+      if (compileStep.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "mvn": ${compileStep.spawnError}. Is Maven installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (compileStep.status !== 0) {
+        this.postTestRunResult({ requestId, ok: false, error: 'This project itself does not currently compile (`mvn test-compile` failed) — not something CODEMD generated. See output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      // 2) Resolve this project's real dependency classpath.
+      const cpStep = await execCommandAsync('mvn', ['-q', '-B', 'dependency:build-classpath', `-Dmdep.outputFile=${classpathFile}`], buildRoot.root, env, 120000);
+      output += `\n${cpStep.stdout}\n${cpStep.stderr}`.trim();
+      if (cpStep.status !== 0 || !fs.existsSync(classpathFile)) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Could not resolve this project\'s Maven dependency classpath (`mvn dependency:build-classpath` failed). See output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      const depClasspath = (await fs.promises.readFile(classpathFile, 'utf8')).trim();
+      const projectClasspath = [
+        depClasspath,
+        path.join(buildRoot.root, 'target', 'classes'),
+        path.join(buildRoot.root, 'target', 'test-classes'),
+      ].filter(Boolean).join(path.delimiter);
+      // 3) Fetch (or reuse the already-cached) JUnit Console Launcher.
+      const consoleVersion = '1.10.2';
+      const consoleCoord = `org.junit.platform:junit-platform-console-standalone:${consoleVersion}`;
+      const consoleJar = path.join(os.homedir(), '.m2', 'repository', 'org', 'junit', 'platform', 'junit-platform-console-standalone', consoleVersion, `junit-platform-console-standalone-${consoleVersion}.jar`);
+      if (!fs.existsSync(consoleJar)) {
+        const getStep = await execCommandAsync('mvn', ['-q', '-B', 'dependency:get', `-Dartifact=${consoleCoord}`], buildRoot.root, env, 120000);
+        output += `\n${getStep.stdout}\n${getStep.stderr}`.trim();
+        if (getStep.status !== 0 || !fs.existsSync(consoleJar)) {
+          this.postTestRunResult({ requestId, ok: false, error: `Could not fetch the JUnit Platform Console Launcher (${consoleCoord}) via Maven. See output.`, output: output.slice(-4000) }, message);
+          return;
+        }
+      }
+      // 4) Compile just the one generated file against that classpath —
+      // kotlinc, not javac, is the one real difference from Java's version.
+      await fs.promises.mkdir(compileOutDir, { recursive: true });
+      const kotlinc = await execCommandAsync('kotlinc', ['-cp', projectClasspath, '-d', compileOutDir, absTestFile], buildRoot.root, env, 120000);
+      output += `\n${kotlinc.stdout}\n${kotlinc.stderr}`.trim();
+      if (kotlinc.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "kotlinc": ${kotlinc.spawnError}. Is the Kotlin compiler installed and on PATH? (It's a separate install from the JDK.)`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (kotlinc.status !== 0) {
+        this.postTestRunResult({ requestId, ok: false, error: 'The generated test does not compile — see output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      // 5) Execute it with the Console Launcher and read the real exit code.
+      const runClasspath = [projectClasspath, compileOutDir].join(path.delimiter);
+      const run = await execCommandAsync(
+        'java',
+        ['-jar', consoleJar, 'execute', '--class-path', runClasspath, '--select-class', fqcn, '--details=tree', '--fail-if-no-tests'],
+        buildRoot.root,
+        env,
+        90000,
+      );
+      output += `\n${run.stdout}\n${run.stderr}`.trim();
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "java": ${run.spawnError}. Is a JDK installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 90s.', output: output.slice(-4000) }, message);
+        return;
+      }
+      const combined = output.toLowerCase();
+      const couldNotRun = combined.includes('no tests found') || combined.includes('0 tests found');
+      if (couldNotRun) {
+        this.postTestRunResult({ requestId, ok: false, error: `The Console Launcher found no tests in "${fqcn}" — see output.`, output: output.slice(-4000) }, message);
+        return;
+      }
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed: run.status === 0,
+        coverageConfirmed: false,
+        reason: 'No coverage tool wired up for Kotlin yet.',
+        output: output.slice(-4000),
+      }, message);
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) }, message);
+    } finally {
+      fs.promises.unlink(classpathFile).catch(() => {});
+      fs.promises.rm(compileOutDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * C#'s direct-run tier — a genuinely different, simpler strategy than
+   * Java's javac+Console-Launcher approach, not the same trick ported over.
+   * Rather than resolving the TARGET project's own classpath and hoping it
+   * already has a test framework on it (Java's approach, which is why Java
+   * needed detectJavaTestRunner/setUpJavaTestRunnerForResult as a
+   * prerequisite), this builds one throwaway SDK-style project per run in a
+   * temp directory: a fresh `<PackageReference>` on xUnit (always added,
+   * regardless of what the target project has), plus a `<ProjectReference>`
+   * to the target project so the code under test is visible, plus a copy of
+   * the one generated test file (the only .cs file in that directory, so
+   * `dotnet test` unambiguously runs just it — no --filter/class-name
+   * guessing needed). This is why C# has no setUpCsharpTestRunnerForResult:
+   * the ad-hoc run path is self-sufficient and never depends on the user's
+   * own project already having a test framework declared. (A *permanent*,
+   * visible test project added to the user's own solution — the C#
+   * equivalent of Java's harness-install philosophy — remains a worthwhile
+   * but separate follow-up; see TODO.md.)
+   * NOTE: like the Rust and Java runners, this could not be empirically
+   * verified against a real .NET project in this session (no .NET SDK
+   * available in this dev environment) — the ephemeral-project structure
+   * follows standard, documented `dotnet test`/SDK-style-project conventions,
+   * but should be checked against a real project before relying on it in
+   * production.
+   */
+  private async runCsharpTestFileForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
+    const requestId = String(message?.requestId || '');
+    const file = String(message?.file || '');
+    const targetPath = String(message?.targetPath || '');
+    const absTestFile = path.join(folder.uri.fsPath, file);
+    const absTargetFile = path.join(folder.uri.fsPath, targetPath || file);
+    const targetCsproj = findCsprojFor(absTargetFile);
+    if (!targetCsproj) {
+      this.postTestRunResult({ requestId, ok: false, error: 'No .csproj found for the target file — CODEMD needs the code under test to belong to a real C# project to reference it.' }, message);
+      return;
+    }
+    const tfm = targetFrameworkFor(targetCsproj);
+    const workDir = path.join(os.tmpdir(), `codemd-csharp-${crypto.randomBytes(6).toString('hex')}`);
+    const env = { ...process.env };
+    let output = '';
+    try {
+      await fs.promises.mkdir(workDir, { recursive: true });
+      await fs.promises.copyFile(absTestFile, path.join(workDir, path.basename(absTestFile)));
+      const csprojContent = [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        '  <PropertyGroup>',
+        `    <TargetFramework>${tfm}</TargetFramework>`,
+        '    <IsPackable>false</IsPackable>',
+        '    <Nullable>enable</Nullable>',
+        '  </PropertyGroup>',
+        '  <ItemGroup>',
+        '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />',
+        '    <PackageReference Include="xunit" Version="2.9.2" />',
+        '    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />',
+        '  </ItemGroup>',
+        '  <ItemGroup>',
+        `    <ProjectReference Include="${targetCsproj}" />`,
+        '  </ItemGroup>',
+        '</Project>',
+        '',
+      ].join('\n');
+      await fs.promises.writeFile(path.join(workDir, 'CodemdGeneratedTest.csproj'), csprojContent, 'utf8');
+      const run = await execCommandAsync('dotnet', ['test', '-v', 'minimal'], workDir, env, 180000);
+      output = `${run.stdout}\n${run.stderr}`.trim();
+      if (run.spawnError) {
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "dotnet": ${run.spawnError}. Is the .NET SDK installed and on PATH?`, output: output.slice(-4000) }, message);
+        return;
+      }
+      if (run.timedOut) {
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 180s.', output: output.slice(-4000) }, message);
+        return;
+      }
+      const combined = output.toLowerCase();
+      const couldNotRun = combined.includes('build failed')
+        || combined.includes('error cs')
+        || combined.includes('no test is available');
+      if (couldNotRun) {
+        this.postTestRunResult({ requestId, ok: false, error: 'The generated test project did not build or collect any tests — see output.', output: output.slice(-4000) }, message);
+        return;
+      }
+      // No coverage tool wired up for C# yet (would need coverlet + an
+      // extra collect flag) — same honest "best effort" tier Go/Rust/Java
+      // fall back to when their own coverage tool isn't available.
+      this.postTestRunResult({
+        requestId,
+        ok: true,
+        passed: run.status === 0,
+        coverageConfirmed: false,
+        reason: 'No coverage tool wired up for C# yet.',
+        output: output.slice(-4000),
+      }, message);
+    } catch (err: any) {
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err), output: output.slice(-4000) }, message);
+    } finally {
+      fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 
@@ -7152,10 +9015,42 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
    */
   private async runTestViaClaudeForResult(message: any, folder: vscode.WorkspaceFolder): Promise<void> {
     const requestId = String(message?.requestId || '');
+    if (requestId) { this.testRunStartTimes.set(requestId, Date.now()); }
     const file = String(message?.file || '');
     const nodeId = String(message?.nodeId || '');
     const targetPath = String(message?.targetPath || '');
     const targetStartLine = Number(message?.targetStartLine || 0);
+    // A repo with zero JS/TS test tooling at all is the common case CODEMD
+    // exists for, not an edge case — check for that up front (no Claude
+    // call, just fs reads) instead of spending 90-120s asking Claude to
+    // "discover" a command that can only ever fail to exist. CODEMD never
+    // installs a test framework on your behalf (see detectJsTestRunner) —
+    // this only reports what's already there.
+    if (testLanguageFor(file) === 'javascript') {
+      // The generated test itself always lives under a fixed, workspace-root
+      // .codemd/generated_tests/ directory regardless of which package it's
+      // testing — scoping the search to `file` would walk up from THAT
+      // location and never reach the real package (e.g. apps/storefront) at
+      // all. targetPath (the actual source file under test) is what's really
+      // inside the right package directory in a monorepo; only fall back to
+      // `file` when there's no target (e.g. a hand-authored test).
+      const detected = detectJsTestRunner(folder, targetPath || file);
+      if (!detected.found) {
+        this.postTestRunResult({
+          requestId,
+          ok: false,
+          // Deliberately NOT environmentIssue — that flag offers a "Fix
+          // environment issue with Claude" button, and the whole point here
+          // is that Claude should not freelance a test-framework install as
+          // a "fix" (see fixTestFailureForResult's environment-issue prompt).
+          // noTestRunner suppresses the Fix button entirely instead.
+          noTestRunner: true,
+          error: 'No JS/TS test runner detected in this repo (checked package.json dependencies/scripts and jest/vitest/mocha/ava config files). '
+            + 'CODEMD will not install a test framework on its own — add one yourself (e.g. `npm install --save-dev vitest` plus a "test" script) and click Run again.',
+        }, message);
+        return;
+      }
+    }
     const testDescription = nodeId ? `the test "${nodeId}" in "${file}"` : `the test file "${file}"`;
     const discoveryPrompt = [
       `Determine the exact single command needed to run ${testDescription} using this project's own test tooling`,
@@ -7179,7 +9074,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
     // separately installed.
     const claudeCommand = await resolveCommand('claude');
     if (!claudeCommand) {
-      this.postTestRunResult({ requestId, ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' });
+      this.postTestRunResult({ requestId, ok: false, error: 'Claude Code CLI was not found on PATH or bundled with the Claude Code extension.' }, message);
       return;
     }
     let command = '';
@@ -7203,23 +9098,24 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       );
       const discoveryOutput = `${discover.stdout}\n${discover.stderr}`.trim().slice(-4000);
       if (discover.spawnError) {
-        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "claude": ${discover.spawnError}. Is Claude Code CLI installed and on PATH?` });
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch "claude": ${discover.spawnError}. Is Claude Code CLI installed and on PATH?` }, message);
         return;
       }
       if (discover.timedOut) {
-        this.postTestRunResult({ requestId, ok: false, error: 'Claude did not finish finding a test command within 90s.', output: discoveryOutput });
+        this.postTestRunResult({ requestId, ok: false, error: 'Claude did not finish finding a test command within 90s.', output: discoveryOutput }, message);
         return;
       }
       if (discover.status !== 0) {
         const budgetError = parseClaudeBudgetError(discover.stdout, costCapUsd);
-        this.postTestRunResult({ requestId, ok: false, error: budgetError || 'Claude Code CLI exited with an error — see output. It may not be logged in (run `claude` and sign in, then try again).', output: discoveryOutput });
+        const turnsError = parseClaudeMaxTurnsError(discover.stdout, 6);
+        this.postTestRunResult({ requestId, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — see output. It may not be logged in (run `claude` and sign in, then try again).', output: discoveryOutput }, message);
         return;
       }
       let envelope: any;
       try {
         envelope = JSON.parse(discover.stdout);
       } catch {
-        this.postTestRunResult({ requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', output: discoveryOutput });
+        this.postTestRunResult({ requestId, ok: false, error: 'Could not parse a response from Claude Code CLI.', output: discoveryOutput }, message);
         return;
       }
       const structured = envelope?.structured_output;
@@ -7227,11 +9123,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       cwdRel = typeof structured?.cwd === 'string' ? stripStrayClosingTag(structured.cwd).trim() : '';
       discoveryCostUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined;
       if (!command) {
-        this.postTestRunResult({ requestId, ok: false, error: 'Claude could not determine a test command for this project.', output: discoveryOutput });
+        this.postTestRunResult({ requestId, ok: false, error: 'Claude could not determine a test command for this project.', output: discoveryOutput }, message);
         return;
       }
     } catch (err: any) {
-      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) });
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) }, message);
       return;
     }
 
@@ -7259,11 +9155,11 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
       const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
       if (run.spawnError) {
-        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch the command Claude found: ${run.spawnError}`, output: rawOutput + claudeNote });
+        this.postTestRunResult({ requestId, ok: false, error: `Couldn't launch the command Claude found: ${run.spawnError}`, output: rawOutput + claudeNote }, message);
         return;
       }
       if (run.timedOut) {
-        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 120s.', output: rawOutput + claudeNote });
+        this.postTestRunResult({ requestId, ok: false, error: 'Test run timed out after 120s.', output: rawOutput + claudeNote }, message);
         return;
       }
       const passed = run.status === 0;
@@ -7272,7 +9168,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
           requestId, ok: true, passed, viaClaude: true, coverageConfirmed: false,
           reason: (!isJsTs ? 'No coverage tool wired up for this file type yet.' : 'No target line range available to check.'),
           output: rawOutput + claudeNote,
-        });
+        }, message);
         return;
       }
       const coverageJsonPath = path.join(reportDir, 'coverage-final.json');
@@ -7280,7 +9176,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.postTestRunResult({
           requestId, ok: true, passed, viaClaude: true, coverageConfirmed: false,
           reason: 'No coverage report was produced.', output: rawOutput + claudeNote,
-        });
+        }, message);
         return;
       }
       const absTargetPath = path.join(folder.uri.fsPath, targetPath);
@@ -7297,10 +9193,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         trackedInRange,
         reason: trackedInRange === 0 ? 'Coverage report had no data for this line range.' : undefined,
         output: rawOutput + claudeNote,
-      });
+      }, message);
       fs.promises.rm(reportDir, { recursive: true, force: true }).catch(() => {});
     } catch (err: any) {
-      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) });
+      this.postTestRunResult({ requestId, ok: false, error: err?.message || String(err) }, message);
     }
   }
 
@@ -7346,12 +9242,15 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         'Determine the correct command to run it yourself (check package.json, a Makefile, or other build files if needed) and run it',
         'once to confirm the same environment/setup problem yourself — do not trust the description alone, see it yourself first.',
         'This is a setup/dependency/config/import-path problem, NOT a logic bug — do not assume anything is wrong with',
-        `${targetDescription}'s own behavior or with the test's assertions. Fix ONLY the environment: install a missing dependency,`,
-        'correct an import path or sys.path/package setup, or fix test/build configuration. Only touch the test file itself if the',
-        'actual problem is in its import/setup lines (e.g. a wrong import path) — never change its assertions or add mocking to work',
-        "around the real issue. Do not fix unrelated code, do not refactor, do not add features. After fixing, rerun the same test",
-        'yourself to verify it now runs (pass or fail is fine — the goal here is just that it RUNS) before reporting back. If you',
-        'cannot make it run, say so honestly rather than reporting success.',
+        `${targetDescription}'s own behavior or with the test's assertions. Fix ONLY the environment: install a dependency that is`,
+        "ALREADY declared in this project's package.json/requirements/etc. but just not installed yet, correct an import path or",
+        'sys.path/package setup, or fix existing test/build configuration. Do NOT install a new test framework or runner that is not',
+        'already part of this project (e.g. do not add Jest/Vitest/pytest to a project that has none) — if no test runner is configured',
+        'for this project at all, that is not something to fix here; say so honestly in your summary and stop instead of installing one.',
+        'Only touch the test file itself if the actual problem is in its import/setup lines (e.g. a wrong import path) — never change its',
+        "assertions or add mocking to work around the real issue. Do not fix unrelated code, do not refactor, do not add features.",
+        'After fixing, rerun the same test yourself to verify it now runs (pass or fail is fine — the goal here is just that it RUNS)',
+        'before reporting back. If you cannot make it run, say so honestly rather than reporting success.',
         'Respond only in the given JSON schema.',
       ].join(' ')
       : [
@@ -7360,6 +9259,21 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         'any prior description of the failure, see it yourself first.',
         `Then decide whether the bug is in the test itself (wrong assumptions about ${targetDescription}, wrong setup/mocking,`,
         'stale expectations) or in the code under test, and make the smallest correct fix to whichever one is actually wrong.',
+        // Confirmed against a real run: without this, a failure that is
+        // actually structural (a monorepo with no test runner wired up for
+        // THIS specific package, code that calls a live backend/database
+        // that is not running here, missing secrets/network access) sent
+        // Claude down a 220s, ~24-turn spiral of `pnpm install`, hunting
+        // through unrelated packages' jest configs, and guessing at
+        // commands — then exiting with a generic "may not be logged in"
+        // error that had nothing to do with what actually happened. This
+        // mirrors the same honest-bailout permission the environment-kind
+        // prompt above already has for a missing test runner.
+        'If, after investigating, the real reason is that the code under test depends on infrastructure genuinely unavailable in this',
+        'environment — a backend/database server that is not running, external network access, unset secrets/env vars — and none of',
+        'that can reasonably be started or provided as part of this task, do NOT keep guessing at commands or installing things to work',
+        'around it. Stop, say so plainly in your summary (name the specific missing piece), and report passedAfterFix as false — this is',
+        'not a bug in the code and should not be reported as one.',
         'Do not fix unrelated code, do not refactor, do not add features. After fixing, rerun the same test yourself to verify',
         'it now passes before reporting back. If you cannot make it pass, say so honestly rather than reporting success.',
         'Respond only in the given JSON schema.',
@@ -7461,12 +9375,45 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: `Claude did not finish within ${FIX_TIMEOUT_MS / 1000}s.`, durationMs: durationMs(), output: rawOutput });
         return;
       }
+      const envelope = extractClaudeResultEnvelope(run.stdout);
       if (run.status !== 0) {
+        // Claude can finish the actual fix — edits landed on disk, its own
+        // rerun already confirmed pass/fail, structured_output already
+        // written — and the `claude` process itself still exits non-zero
+        // afterward (most commonly --max-turns/--max-budget-usd catching it
+        // right after that final turn, before it winds down cleanly).
+        // Confirmed against a real run: this fell through to the generic
+        // "not logged in" message below despite Claude having just spent
+        // 210s successfully installing deps, fixing an import, and getting
+        // the test to 5/5 passing — recover the real result from the
+        // envelope instead of reporting a hard failure that would make the
+        // user re-run this (expensive) fix from scratch for no reason.
+        const structured = envelope?.structured_output;
+        if (structured && typeof structured.summary === 'string') {
+          const filesChanged = Array.isArray(structured.filesChanged) ? structured.filesChanged.map((f: any) => String(f)) : [];
+          const budgetNote = parseClaudeBudgetError(run.stdout, costCapUsd);
+          outputChannel?.appendLine(`\n--- Fix with Claude (${kind}, ${testDescription}, process exited ${run.status} after finishing) ---\n${rawOutput}`);
+          this.post({
+            type: 'fixTestResult',
+            requestId,
+            kind,
+            targetPath,
+            targetSymbol,
+            ok: true,
+            filesChanged,
+            passedAfterFix: typeof structured.passedAfterFix === 'boolean' ? structured.passedAfterFix : null,
+            summary: stripStrayClosingTag(structured.summary) + (budgetNote ? ` (Claude reported this right as it hit its usage cap.)` : ''),
+            costUsd: typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : undefined,
+            durationMs: durationMs(),
+            output: rawOutput,
+          });
+          return;
+        }
         const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
-        this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: budgetError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', durationMs: durationMs(), output: rawOutput });
+        const turnsError = parseClaudeMaxTurnsError(run.stdout, 24);
+        this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', durationMs: durationMs(), output: rawOutput });
         return;
       }
-      const envelope = extractClaudeResultEnvelope(run.stdout);
       if (!envelope) {
         this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Could not parse a response from Claude Code CLI.', durationMs: durationMs(), output: rawOutput });
         return;
@@ -7882,12 +9829,14 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
       }
 
       const results = this.buildChangeResults(report, folder);
-      // Python-only (findSameCommitCallChains reads python_callgraph.json's
-      // ordered_calls) — a no-op elsewhere, so this never fails a non-Python repo.
+      // Covers Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin (findSameCommitCallChains
+      // reads whichever languages' callgraphs the changed results touch) —
+      // a no-op for any other language, so this never fails elsewhere.
       const callChains = await findSameCommitCallChains(folder, results);
       const testPlanLine = buildTestPlanSummaryLine(results, callChains);
       const answer = testPlanLine ? `${testPlanLine}\n${buildChangesAnswer(report)}` : buildChangesAnswer(report);
       const answerLinks = buildChangesAnswerLinks(report);
+      const summaryTiles = buildChangesSummaryTiles(report, results, callChains);
 
       const resultMessage = {
         type: 'searchResult',
@@ -7896,9 +9845,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         query: 'Uncommitted Edits',
         answer,
         answerLinks,
+        summaryTiles,
         defaultSort: 'impact',
         results,
-        callChains: serializeCallChains(callChains),
+        callChains: serializeCallChains(callChains, folder),
       };
       this.rememberSearchResult(resultMessage);
       this.post(resultMessage);
@@ -8061,6 +10011,7 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         ? `${header}\n${testPlanLine ? `${testPlanLine}\n` : ''}${buildChangesAnswer(report)}`
         : `${header} no impact detected in supported source files.`;
       const answerLinks = buildChangesAnswerLinks(report, diffRefs);
+      const summaryTiles = results.length ? buildChangesSummaryTiles(report, results, callChains) : [];
 
       const resultMessage = {
         type: 'searchResult',
@@ -8076,9 +10027,10 @@ class GraphsViewProvider implements vscode.WebviewViewProvider {
         query: `Commit ${hash}`,
         answer,
         answerLinks,
+        summaryTiles,
         defaultSort: 'impact',
         results,
-        callChains: serializeCallChains(callChains),
+        callChains: serializeCallChains(callChains, folder),
       };
       this.rememberSearchResult(resultMessage);
       this.post(resultMessage);
@@ -8347,6 +10299,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .testNoMatchNote { opacity: 0.85; font-style: italic; }
   .regressionTestNote { margin-top: 4px; }
   .callPathTestNote { margin-top: 4px; }
+  .testMatchKind { font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground); margin-bottom: 2px; }
   .testMatchFile { display: block; cursor: pointer; font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; color: var(--vscode-descriptionForeground); word-break: break-all; margin-bottom: 2px; }
   .testMatchFile:hover { color: var(--vscode-textLink-activeForeground); }
   .testMatchName { cursor: pointer; font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-foreground); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
@@ -8365,6 +10318,13 @@ function getHtml(host: string, port: number, cspSource: string): string {
      result sentences. ---- */
   .testCard { border: 1px solid var(--vscode-panel-border); background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); border-radius: 6px; padding: 9px 11px; margin-top: 6px; font-size: 12px; }
   .testCard + .testCard { margin-top: 8px; }
+  .verdictCard { margin-top: 6px; font-size: 11px; padding: 3px 0; }
+  .verdictCard:empty { display: none; }
+  .verdictLabel { font-weight: 700; }
+  .verdictDetail { opacity: 0.8; }
+  .verdict-high .verdictLabel { color: var(--vscode-terminal-ansiGreen, #2ea043); }
+  .verdict-medium .verdictLabel { color: var(--vscode-editorWarning-foreground); }
+  .verdict-low .verdictLabel { color: var(--vscode-descriptionForeground); }
   .testCardHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
   .testCardTitle { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; }
   .testCardMeta { font-size: 10.5px; opacity: 0.65; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -8418,10 +10378,18 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .fixBanner.is-bad { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 35%, transparent); }
   .fixBanner.is-bad .lede { color: var(--vscode-errorForeground); }
   .callChainsSection { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
-  .callChainsHeading { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
-  .callChainRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 3px 0; }
-  .callChainLabel { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; opacity: 0.9; }
-  .callChainBoundaryBadge { font-size: 10px; opacity: 0.8; border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 0 4px; }
+  .callChainsSection .changeSectionTitle { font-size: 12px; }
+  .callChainTable { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .callChainTableRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; background: var(--vscode-editor-background); }
+  .callChainInfo { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 260px; }
+  .callChainLabelRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .callChainLabel { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 600; opacity: 0.95; }
+  .callChainLabelClickable { cursor: pointer; }
+  .callChainLabelClickable:hover { text-decoration: underline; color: var(--vscode-textLink-foreground); }
+  .callChainDescription { font-size: 11px; line-height: 1.4; opacity: 0.78; }
+  .callChainBoundaryBadge { font-size: 10px; opacity: 0.8; border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 0 4px; flex: 0 0 auto; }
+  .callChainActions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .callChainExistsBadge { font-size: 10px; color: var(--vscode-terminal-ansiGreen, #3fb950); white-space: nowrap; }
   .resultToolbar label { opacity: 0.8; }
   .resultToolbar select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 2px 6px; font-size: 11px; }
   .result { font-size: 12px; padding: 6px 8px; border-radius: 3px; margin-bottom: 5px; cursor: pointer; background: var(--vscode-list-hoverBackground); }
@@ -8447,10 +10415,19 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .riskPill { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
   .risk-critical, .risk-high { color: var(--vscode-errorForeground); }
   .risk-medium { color: var(--vscode-editorWarning-foreground); }
-  .metricGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-  .metric { border: 1px solid var(--vscode-panel-border); padding: 4px; border-radius: 3px; }
-  .metricValue { display: block; font-size: 13px; font-weight: 700; }
-  .metricLabel { display: block; opacity: 0.72; overflow-wrap: anywhere; }
+  .metricGrid { display: flex; gap: 4px; }
+  .metric { flex: 1 1 0; min-width: 0; border: 1px solid var(--vscode-panel-border); padding: 3px 4px; border-radius: 3px; text-align: center; }
+  .metricValue { display: block; font-size: 12px; font-weight: 700; }
+  .metricLabel { display: block; font-size: 10px; opacity: 0.72; overflow-wrap: anywhere; }
+  .summaryTileGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 6px; margin-bottom: 10px; }
+  .summaryTile { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 6px 9px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  .summaryTileValue { font-size: 18px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .summaryTileLabel { font-size: 10px; opacity: 0.72; overflow-wrap: anywhere; }
+  .summaryTile-high { border-color: color-mix(in srgb, var(--vscode-errorForeground) 45%, var(--vscode-panel-border)); }
+  .summaryTile-high .summaryTileValue { color: var(--vscode-errorForeground); }
+  .summaryTile-primary { border-color: color-mix(in srgb, var(--vscode-focusBorder, #4daafc) 45%, var(--vscode-panel-border)); }
+  .summaryTile-primary .summaryTileValue { color: var(--vscode-focusBorder, #4daafc); }
+  .summaryTile-info .summaryTileValue { color: var(--vscode-charts-blue, #4daafc); }
   .changeSection { opacity: 0.88; line-height: 1.35; }
   .changeSectionTitle { font-weight: 700; opacity: 0.85; margin-bottom: 2px; }
   .signatureCompare { display: grid; gap: 5px; }
@@ -8472,6 +10449,18 @@ function getHtml(host: string, port: number, cspSource: string): string {
   .evidenceFileLink:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
   .detailsToggle { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 0 4px; font-size: 10px; line-height: 16px; cursor: pointer; }
   .detailsToggle:hover { background: var(--vscode-list-hoverBackground); }
+  /* Run/Write mode pills, styled after Claude Code's own mode indicator —
+     a compact, always-visible, click-to-cycle state rather than a setting
+     buried in Settings. Write gets the "primary" treatment when it's Auto
+     specifically because that's the one state that spends real Claude
+     usage without a click each time; every other combination stays quiet. */
+  #modeRow { display: flex; gap: 6px; margin-top: 4px; }
+  .modePill { font: inherit; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 2px 8px; font-size: 11px; cursor: pointer; opacity: 0.85; }
+  .modePill:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  .modePill.is-auto { opacity: 1; border-color: var(--vscode-button-background); }
+  .modePill.is-write-auto { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; font-weight: 600; }
+  .modePill.is-write-auto:hover { background: var(--vscode-button-hoverBackground); }
+  .modePill:disabled { cursor: default; opacity: 0.6; }
   .changeGroupBody { display: grid; gap: 5px; margin-top: 2px; }
   .changeGroupBody .result { margin-bottom: 0; }
   #searchForm { flex: 0 0 auto; position: relative; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
@@ -8557,6 +10546,10 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <div id="querySuggestionPanel" role="listbox"></div>
       <button type="submit">Search</button>
     </form>
+    <div id="modeRow">
+      <button id="runModePill" type="button" class="modePill" title="Run: whether existing tests are checked automatically. Free either way — no Claude call.">Run: Auto</button>
+      <button id="writeModePill" type="button" class="modePill" title="Write: whether new tests get generated automatically. Auto spends real Claude usage without a click each time.">Write: Manual</button>
+    </div>
   </div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -8958,11 +10951,21 @@ function getHtml(host: string, port: number, cspSource: string): string {
     restoreGraphHeight();
   });
 
+  // Disabled immediately (not just once the host acknowledges) so mashing
+  // the button while a run is already in flight can't fire a second
+  // 'generate' message — re-enabled on the 'generated'/error status that
+  // marks the host's runGenerate as finished.
+  function setGenerateButtonsBusy(busy) {
+    generateBtn.disabled = busy;
+    emptyStateRetryBtn.disabled = busy;
+  }
   generateBtn.addEventListener('click', () => {
+    setGenerateButtonsBusy(true);
     vscode.postMessage({ type: 'generate' });
   });
 
   emptyStateRetryBtn.addEventListener('click', () => {
+    setGenerateButtonsBusy(true);
     vscode.postMessage({ type: 'generate' });
   });
 
@@ -9571,7 +11574,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
     return sortedChangeResults(results || [], mode)[0] || null;
   }
 
-  // Both "Generate regression test" and "Ask Claude for a Call Path Test"
+  // Both "Generate regression test" and "Generate Test with Claude"
   // can legitimately take over a minute (the Claude path spawns a real CLI
   // subprocess with up to 16 tool-call turns) — without this, the chip just
   // says "Asking Claude…" the whole time with zero change, which is
@@ -9585,12 +11588,40 @@ function getHtml(host: string, port: number, cspSource: string): string {
     }, 1000);
   }
 
+  // requestId -> the live <pre> a testGenProgress chunk should be appended
+  // to. Shared by every "Claude write-only test generator" (call-path,
+  // new-function, call-chain, contract, broad-coverage) so they don't each
+  // reimplement the same live-transcript wiring the Fix-with-Claude flow
+  // already has (fixOutputPre/fixTestProgress) — a user asked why those
+  // generators only showed a static "Generating… Ns" with nothing else,
+  // wanting to see Claude's actual output scroll by the same way it does
+  // there, starting from the moment the button is clicked (not just once a
+  // result comes back).
+  const testGenOutputPreByRequestId = new Map();
+
+  // Creates and inserts the live output box right after afterEl, wires it
+  // up to receive testGenProgress chunks for requestId, and returns it so
+  // the caller can also clear it out of testGenOutputPreByRequestId once the
+  // matching *TestResult message lands (see resolveChipTestResult and the
+  // callPathTestResult handler below). Left visible (not collapsed) once the
+  // run finishes — same call as fixOutputPre makes — as a record of what
+  // actually happened, not just a spinner nobody can inspect afterward.
+  function attachLiveClaudeOutput(afterEl, requestId) {
+    const pre = document.createElement('pre');
+    pre.className = 'testRunOutput';
+    pre.style.display = 'block';
+    afterEl.insertAdjacentElement('afterend', pre);
+    testGenOutputPreByRequestId.set(requestId, pre);
+    return pre;
+  }
+
   const commitDetailRowsByRequestId = new Map();
   let commitDetailRequestSeq = 0;
   const testGapChipsByRequestId = new Map();
   let testGapRequestSeq = 0;
   const testRunRowsByRequestId = new Map();
   let testRunRequestSeq = 0;
+  const jsTestRunnerSetupByRequestId = new Map();
   const fixTestRowsByRequestId = new Map();
   let fixTestRequestSeq = 0;
   const regressionTestChipsByRequestId = new Map();
@@ -9611,11 +11642,95 @@ function getHtml(host: string, port: number, cspSource: string): string {
   // re-shows the "test written, run it" note instead of resetting to "Check
   // tests". Keyed by the same symbol string used for graphable below.
   const generatedTestsBySymbol = new Map();
+  // Last "Run" outcome per changed symbol (passed/coverageConfirmed/etc.) —
+  // feeds the verdict card below alongside generatedTestsBySymbol. Same
+  // survives-a-rebuild rationale as generatedTestsBySymbol.
+  const testRunsBySymbol = new Map();
+  // Live verdict-card DOM elements currently on screen, keyed by symbol —
+  // NOT meant to survive a rebuild (appendResultItems clears the parent and
+  // repopulates this on every render); lets an async result that arrives
+  // after the card is on screen find it again and update in place. A symbol
+  // not currently rendered is simply a no-op update — its data is still
+  // safe in generatedTestsBySymbol/testRunsBySymbol for next time it renders.
+  const verdictCardElsBySymbol = new Map();
+  // Existing-tests-found-automatically container per symbol (parallel to
+  // verdictCardElsBySymbol) plus the request bookkeeping needed since this
+  // check has no button to click — it's auto-triggered once per symbol per
+  // session (existingTestsRequestedSymbols guards against re-firing on every
+  // periodic auto-refresh re-render).
+  const existingTestsCardElsBySymbol = new Map();
+  const existingTestsRequestedSymbols = new Set();
+  const existingTestsRequestsByRequestId = new Map();
+  let existingTestsRequestSeq = 0;
+
+  // Run/Write mode — mirrors codemdGraphs.runMode / codemdGraphs.writeMode,
+  // synced from the host via the 'modesConfig' message (see
+  // markWebviewReady) and updated optimistically on click before the
+  // host's ack round-trips back.
+  let runMode = 'auto';
+  let writeMode = 'manual';
+  let maxAutoWritesPerBatch = 3;
+  // How many Claude test-writes Write:Auto has fired in the CURRENT
+  // top-level result render (Check Uncommitted Edits / Check Latest
+  // Commits / Analyze Commit) — reset in appendResultItems so one large
+  // batch can't silently fire a wall of Claude calls; capped by
+  // maxAutoWritesPerBatch.
+  let autoWriteBatchCount = 0;
+  // How many "Check existing tests" auto-fires (Run:Auto, local pytest —
+  // see fireExistingTestsCheck) have fired in the CURRENT top-level result
+  // render. Unlike Write:Auto's Claude calls, this was left uncapped on the
+  // assumption that a local-only check is cheap — but a large diff or a
+  // first-time scan can render hundreds of changed/added Python symbols in
+  // one batch, each firing automatically, each running up to 3 matched test
+  // files in parallel, which floods the OS with coverage-run/pytest
+  // processes. Capped by the same maxAutoWritesPerBatch setting; reset
+  // alongside autoWriteBatchCount in appendResultItems. Symbols beyond the
+  // cap fall back to the manual "Check existing tests" button instead of
+  // being silently skipped.
+  let autoRunBatchCount = 0;
+  // Write:Auto needs each symbol's existing-tests verdict before deciding
+  // whether it's even worth generating (skip if an existing test already
+  // covers it with HIGH confidence) — but that check resolves
+  // asynchronously and may not be in yet when a chip is first created, so
+  // queue the fire function here and run it once existingTestsResult
+  // arrives for that symbol. A symbol can queue more than one entry (e.g.
+  // both a contract and a broad-coverage chip on the same card).
+  const pendingAutoWrites = new Map();
+
+  const runModePill = document.getElementById('runModePill');
+  const writeModePill = document.getElementById('writeModePill');
+  function renderModePills() {
+    runModePill.textContent = 'Run: ' + (runMode === 'auto' ? 'Auto' : 'Manual');
+    runModePill.className = 'modePill' + (runMode === 'auto' ? ' is-auto' : '');
+    // Write:Auto needs Run:Auto's data (the existing-tests verdict) to
+    // decide whether a symbol already has coverage worth skipping for, so
+    // Run is locked to Auto — and shown as such — while Write is Auto.
+    runModePill.disabled = writeMode === 'auto';
+    runModePill.title = writeMode === 'auto'
+      ? 'Locked to Auto while Write is Auto — auto-writing depends on this check\\'s result.'
+      : 'Run: whether existing tests are checked automatically. Free either way — no Claude call.';
+    writeModePill.textContent = 'Write: ' + (writeMode === 'auto' ? 'Auto' : 'Manual');
+    writeModePill.className = 'modePill' + (writeMode === 'auto' ? ' is-write-auto' : '');
+  }
+  runModePill.addEventListener('click', () => {
+    if (runModePill.disabled) { return; }
+    runMode = runMode === 'auto' ? 'manual' : 'auto';
+    renderModePills();
+    vscode.postMessage({ type: 'setRunMode', value: runMode });
+  });
+  writeModePill.addEventListener('click', () => {
+    if (writeModePill.disabled) { return; }
+    writeMode = writeMode === 'auto' ? 'manual' : 'auto';
+    if (writeMode === 'auto') { runMode = 'auto'; }
+    renderModePills();
+    vscode.postMessage({ type: 'setWriteMode', value: writeMode });
+  });
+  renderModePills();
 
   // One row per runnable target (a named test if we found one, otherwise the
   // whole file) — built for both cases so "Run" behaves identically either
   // way; only the pytest node id passed back to the extension differs.
-  const DIRECT_RUN_EXTS = ['.py', '.go', '.rs'];
+  const DIRECT_RUN_EXTS = ['.py', '.go', '.rs', '.java', '.cs', '.kt', '.kts'];
 
   // onResult (optional) is called with the same msg a "Run" button's own
   // rendering logic reacts to — lets a batch runner (see "Run all" below)
@@ -9731,7 +11846,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       outputPre.style.display = 'none';
       outputPre.textContent = '';
       const installRequestId = 'testinstall_' + (testRunRequestSeq++) + '_' + Date.now();
-      testRunRowsByRequestId.set(installRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, isDirect, onResult });
+      testRunRowsByRequestId.set(installRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, isDirect, onResult, symbolKey: (targetInfo && targetInfo.symbol) || '' });
       vscode.postMessage({
         type: 'installTestDependency',
         requestId: installRequestId,
@@ -9743,6 +11858,30 @@ function getHtml(host: string, port: number, cspSource: string): string {
         targetStartLine: (targetInfo && targetInfo.startLine) || 0,
         targetSymbol: (targetInfo && targetInfo.symbol) || '',
       });
+    });
+
+    // Only shown when a run fails specifically because this JS/TS repo has
+    // no test runner at all (msg.noTestRunner — see testRunResult below).
+    // Deterministic, no Claude call: picks one lightweight framework from a
+    // fixed rule and installs it via "npm install --save-dev" (JS/TS) or a
+    // pom.xml/build.gradle dependency edit (Java), visibly, so it's a real,
+    // permanent addition rather than the kind of silent improvised install
+    // "Fix with Claude" is explicitly barred from doing.
+    const setupBtn = document.createElement('button');
+    setupBtn.type = 'button';
+    setupBtn.className = 'btn is-primary';
+    setupBtn.textContent = '⚙ Set up test runner';
+    setupBtn.title = 'This repo has no test runner for this language yet. Installs one lightweight, deterministically-chosen framework and minimal config — visibly, as a real project dependency, never guessed at by Claude. Only happens when you click this.';
+    setupBtn.style.display = 'none';
+
+    setupBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (setupBtn.dataset.pending === '1') { return; }
+      setupBtn.dataset.pending = '1';
+      const tickInterval = startPendingTicker(setupBtn, 'Setting up');
+      const setupRequestId = 'testsetup_' + (testRunRequestSeq++) + '_' + Date.now();
+      jsTestRunnerSetupByRequestId.set(setupRequestId, { setupBtn, runBtn, statusDetail, tickInterval, symbolKey: (targetInfo && targetInfo.symbol) || '', row });
+      vscode.postMessage({ type: 'setUpTestRunner', requestId: setupRequestId, file: (targetInfo && targetInfo.path) || file });
     });
 
     fixStopBtn.addEventListener('click', (event) => {
@@ -9799,7 +11938,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       event.stopPropagation();
       if (runBtn.dataset.pending === '1') { return; }
       runBtn.dataset.pending = '1';
-      runBtn.textContent = isDirect ? 'Running…' : 'Asking Claude…';
+      const tickInterval = startPendingTicker(runBtn, isDirect ? 'Running' : 'Asking Claude');
       statusPill.style.display = 'none';
       statusDetail.style.display = 'none';
       outputToggle.style.display = 'none';
@@ -9819,8 +11958,10 @@ function getHtml(host: string, port: number, cspSource: string): string {
       fixStopBtn.style.display = 'none';
       installBtn.style.display = 'none';
       installBtn.dataset.pending = '0';
+      setupBtn.style.display = 'none';
+      setupBtn.dataset.pending = '0';
       const runRequestId = 'testrun_' + (testRunRequestSeq++) + '_' + Date.now();
-      testRunRowsByRequestId.set(runRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, isDirect, onResult });
+      testRunRowsByRequestId.set(runRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, setupBtn, isDirect, onResult, tickInterval, symbolKey: (targetInfo && targetInfo.symbol) || '' });
       vscode.postMessage({
         type: isDirect ? 'runTestFile' : 'runTestViaClaude',
         requestId: runRequestId,
@@ -9835,6 +11976,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
     row.appendChild(runBtn);
     row.appendChild(statusPill);
     row.appendChild(installBtn);
+    row.appendChild(setupBtn);
     row.appendChild(fixBtn);
     row.appendChild(fixStopBtn);
     row.appendChild(outputToggle);
@@ -10007,19 +12149,186 @@ function getHtml(host: string, port: number, cspSource: string): string {
     container.style.display = '';
   }
 
+  // Rolls up every signal already collected for one changed symbol —
+  // which of the four Claude generators produced a test (generatedTestsBySymbol,
+  // keyed by the bare symbol plus one of '#newfunc'/'#contract'/'#broadcoverage';
+  // the bare key covers both the call-chain generator and the mechanical
+  // regression-test path) and the last "Run" outcome (testRunsBySymbol) —
+  // into one LOW/MEDIUM/HIGH confidence label. No Claude call and no new
+  // data: everything here was already being computed, just scattered.
+  function computeVerdictForSymbol(symbolKey) {
+    const kinds = [];
+    if (generatedTestsBySymbol.has(symbolKey)) { kinds.push('call-path'); }
+    if (generatedTestsBySymbol.has(symbolKey + '#newfunc')) { kinds.push('new-function'); }
+    if (generatedTestsBySymbol.has(symbolKey + '#contract')) { kinds.push('contract'); }
+    if (generatedTestsBySymbol.has(symbolKey + '#broadcoverage')) { kinds.push('broad-coverage'); }
+    const existing = generatedTestsBySymbol.get(symbolKey + '#existing');
+    if (existing && Array.isArray(existing.matches) && existing.matches.length) { kinds.push('existing'); }
+    const run = testRunsBySymbol.get(symbolKey) || null;
+    let confidence = 'LOW';
+    let detail = 'No test generated or found yet for this change.';
+    if (kinds.length && !run) {
+      confidence = 'MEDIUM';
+      detail = kinds.length + ' test(s) available (' + kinds.join(', ') + ') — not run yet.';
+    } else if (kinds.length && run) {
+      if (run.passed && run.coverageConfirmed && run.executed) {
+        confidence = 'HIGH';
+        detail = kinds.length + ' test(s) (' + kinds.join(', ') + ') · Executed ✓ · Coverage confirmed.';
+      } else if (run.passed) {
+        confidence = 'MEDIUM';
+        detail = kinds.length + ' test(s) (' + kinds.join(', ') + ') · Passed, but execution of the change was not confirmed.';
+      } else {
+        confidence = 'MEDIUM';
+        detail = kinds.length + ' test(s) (' + kinds.join(', ') + ') · Last run failed.';
+      }
+    }
+    return { kinds, run, confidence, detail };
+  }
+
+  function renderVerdictCardContent(el, symbolKey) {
+    const v = computeVerdictForSymbol(symbolKey);
+    el.className = 'verdictCard verdict-' + v.confidence.toLowerCase();
+    el.textContent = '';
+    const label = document.createElement('span');
+    label.className = 'verdictLabel';
+    label.textContent = 'Verification: ' + v.confidence;
+    const detail = document.createElement('span');
+    detail.className = 'verdictDetail';
+    detail.textContent = ' — ' + v.detail;
+    el.appendChild(label);
+    el.appendChild(detail);
+  }
+
+  // Called after any signal that could change a symbol's verdict (a test
+  // generated, a test run, an existing-tests check) finishes. A no-op if
+  // that symbol's card isn't currently on screen (e.g. a different panel is
+  // showing) — its data is still saved for whenever it renders again.
+  function updateVerdictCard(symbolKey) {
+    if (!symbolKey) { return; }
+    const el = verdictCardElsBySymbol.get(symbolKey);
+    if (el && el.isConnected) { renderVerdictCardContent(el, symbolKey); }
+  }
+
+  // Actually fires (or skips) a queued auto-write once we know the verdict
+  // for its symbol. Re-checks the batch cap here rather than only at
+  // queue time, since queueing happens synchronously while rendering a
+  // whole batch but firing happens later, one existingTestsResult at a
+  // time, in whatever order those round-trips land.
+  function tryAutoWrite(symbolKey, fireFn, actionsEl) {
+    if (autoWriteBatchCount >= maxAutoWritesPerBatch) { return; }
+    const verdict = computeVerdictForSymbol(symbolKey);
+    if (verdict.confidence === 'HIGH') {
+      if (actionsEl) {
+        const note = document.createElement('div');
+        note.className = 'plainSummary';
+        note.textContent = 'Write:Auto skipped this one — an existing test already covers it.';
+        actionsEl.insertAdjacentElement('afterend', note);
+      }
+      return;
+    }
+    autoWriteBatchCount++;
+    fireFn();
+  }
+
+  // Called right after each of the three unconditional Claude generator
+  // chips (New-Function / Contract / Broad-Coverage) is appended. Only
+  // acts when Write:Auto is on; otherwise the chip just sits there exactly
+  // as it does in Manual mode, waiting for a click. fireFn is the same
+  // function the chip's own click listener calls, so an auto-fire behaves
+  // identically to a manual one.
+  function maybeAutoWriteTest(symbolKey, savedKey, fireFn, actionsEl) {
+    if (writeMode !== 'auto') { return; }
+    if (generatedTestsBySymbol.has(savedKey)) { return; } // already generated/restored this session
+    const existing = generatedTestsBySymbol.get(symbolKey + '#existing');
+    if (existing) {
+      tryAutoWrite(symbolKey, fireFn, actionsEl);
+    } else {
+      const queued = pendingAutoWrites.get(symbolKey) || [];
+      queued.push(() => tryAutoWrite(symbolKey, fireFn, actionsEl));
+      pendingAutoWrites.set(symbolKey, queued);
+    }
+  }
+
+  // No Claude call (pure local search + pytest), so unlike the four
+  // generator notes above this renders quietly — one pill row per matched
+  // existing test file, same visual language as a "Run this test" row, but
+  // never a loading spinner the way a paid Claude call gets one.
+  function renderExistingTestsCard(el, matches) {
+    el.textContent = '';
+    if (!matches || !matches.length) { return; }
+    el.className = 'testCard';
+    const title = document.createElement('div');
+    title.className = 'testCardTitle';
+    title.textContent = 'Existing test(s) found for this change';
+    el.appendChild(title);
+    matches.forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'testRunRow';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'testMatchName';
+      nameEl.textContent = m.file;
+      nameEl.title = 'Open ' + m.file;
+      nameEl.addEventListener('click', (event) => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'openFile', file: m.file, line: '' });
+      });
+      row.appendChild(nameEl);
+      const pill = document.createElement('span');
+      const failed = !m.ok || !m.passed;
+      if (!m.ok) {
+        pill.className = 'statusPill is-warn';
+        pill.textContent = '⚠ ' + (m.error || 'Could not run');
+      } else {
+        pill.className = 'statusPill ' + (m.passed ? 'is-good' : 'is-bad');
+        pill.textContent = (m.passed ? '✓ Passed' : '✗ Failed')
+          + (m.coverageConfirmed ? (m.executed ? ' · exercises this change' : ' · does NOT exercise this change') : '');
+      }
+      row.appendChild(pill);
+      el.appendChild(row);
+      // The pill's own text ("see output") used to be a dead end — the
+      // pytest stdout/stderr this refers to never left the extension host.
+      // Only worth surfacing on a failure; a passing row has nothing to add.
+      if (failed && m.output) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'outputLink';
+        toggle.textContent = 'View output';
+        const pre = document.createElement('pre');
+        pre.className = 'testRunOutput';
+        pre.style.display = 'none';
+        pre.textContent = m.output;
+        toggle.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const showing = pre.style.display !== 'none';
+          pre.style.display = showing ? 'none' : 'block';
+          toggle.textContent = showing ? 'View output' : 'Hide output';
+        });
+        el.appendChild(toggle);
+        el.appendChild(pre);
+      }
+    });
+  }
+
   // Shared by every "Claude write-only test generator" result handler
   // (new-function, call-chain, contract, broader-coverage) — they all post
   // the exact same payload shape and need the exact same chip-reset/note-
   // insert/persist sequence, so this is the one place that logic lives
   // instead of being copy-pasted per generator.
-  function resolveChipTestResult(chipsByRequestId, msg, resetText) {
+  function resolveChipTestResult(chipsByRequestId, msg, resetText, successText) {
     const entry = chipsByRequestId.get(msg.requestId);
     chipsByRequestId.delete(msg.requestId);
+    testGenOutputPreByRequestId.delete(msg.requestId);
     if (!entry) { return; }
     const { chip, actionsEl, rowEl, tickInterval, symbolKey } = entry;
     if (tickInterval) { clearInterval(tickInterval); }
     chip.dataset.pending = '0';
-    chip.textContent = resetText;
+    // A successful generation means a test now exists where the button's
+    // original label ("Generate ...") implied none did — resetting straight
+    // back to that same label (the old behavior) made it look like nothing
+    // happened, even though the "Test written" note right below it says
+    // otherwise. successText (e.g. "Regenerate") is only passed by callers
+    // that have an equivalent post-success label; others keep resetText.
+    chip.textContent = (msg.ok && msg.path && successText) ? successText : resetText;
     const opts = {
       source: 'claude',
       ok: msg.ok,
@@ -10038,24 +12347,53 @@ function getHtml(host: string, port: number, cspSource: string): string {
     anchor.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
     if (msg.ok && msg.path && symbolKey) {
       generatedTestsBySymbol.set(symbolKey, opts);
+      updateVerdictCard(symbolKey.split('#')[0]);
     }
   }
 
-  // Revealed only after the mechanical generator reports it couldn't help —
-  // see the sequential-reveal comment where "Generate regression test" is
-  // built. genActions may already hold a leftover regressionTestNote from
-  // the failed attempt; this is appended after it, not in place of it, so
-  // the "why this appeared" message stays visible.
-  function appendClaudeFallbackChip(genActions, gapResult, symbol) {
+  // Revealed either after the mechanical generator reports it couldn't help
+  // (Python only — see the sequential-reveal comment where "Generate
+  // regression test" is built) or immediately for every other supported
+  // language, which has no mechanical path at all. genActions may already
+  // hold a leftover regressionTestNote from a failed mechanical attempt;
+  // this is appended after it, not in place of it, so the "why this
+  // appeared" message stays visible.
+  //
+  // What this button actually asks Claude to do differs by *kind*, not just
+  // wording, so the tooltip has to branch on it rather than use one
+  // generic blurb for every case:
+  //  - a REMOVED function no longer exists to read or test — Claude is
+  //    instead pointed at its former callers to confirm they still work
+  //    correctly now that the call is gone.
+  //  - everything else (an existing untested function, reached via "Check
+  //    tests" — a new function has its own dedicated "Generate test for new
+  //    function" chip elsewhere) is a direct test of the function itself,
+  //    grounded in a real caller.
+  function appendClaudeFallbackChip(genActions, gapResult, symbol, afterMechanicalFailure) {
     if (genActions.querySelector('.actionChipClaudeFallback')) { return; }
+    const isRemoved = !!(gapResult && gapResult.changeCard && gapResult.changeCard.kind === 'removed');
     const claudeChip = document.createElement('span');
     claudeChip.className = 'actionChip actionChipClickable actionChipPrimary actionChipClaudeFallback';
-    claudeChip.textContent = 'Ask Claude for a Call Path Test';
-    claudeChip.title = 'The mechanical generator\\'s real callers all pass a variable or computed '
-      + 'value, not a literal, so it couldn\\'t replay one. This spawns the local Claude Code CLI to '
-      + 'read the function and a real caller and write a test by hand. Usually 30-90s, can take up to '
-      + '3 minutes for a large file with many callers; the chip shows elapsed seconds while it runs, '
-      + 'and it is always safe to click again if it times out.';
+    claudeChip.textContent = '🤖 Generate Test with Claude';
+    if (isRemoved) {
+      claudeChip.title = 'This function was removed, so there is nothing left to test directly. '
+        + 'Instead, the local Claude Code CLI will read the code that used to call it and write a test '
+        + 'confirming that code still works correctly now the call is gone — e.g. no leftover reference '
+        + 'to the removed function, no broken fallback. Usually 30-90s, can take up to 3 minutes; the '
+        + 'chip shows elapsed seconds while it runs, and it is always safe to click again if it times out.';
+    } else if (afterMechanicalFailure) {
+      claudeChip.title = 'The mechanical generator\\'s real callers all pass a variable or computed '
+        + 'value, not a literal, so it couldn\\'t replay one. This spawns the local Claude Code CLI to '
+        + 'read the function and a real caller and write a test by hand. Usually 30-90s, can take up to '
+        + '3 minutes for a large file with many callers; the chip shows elapsed seconds while it runs, '
+        + 'and it is always safe to click again if it times out.';
+    } else {
+      claudeChip.title = 'This language has no free mechanical test generator, so this goes straight to '
+        + 'the local Claude Code CLI: it reads the function and a real caller and writes a test by hand, '
+        + 'grounded in how the function is actually called in this codebase. Usually 30-90s, can take up '
+        + 'to 3 minutes for a large file with many callers; the chip shows elapsed seconds while it runs, '
+        + 'and it is always safe to click again if it times out.';
+    }
     claudeChip.addEventListener('click', (event) => {
       event.stopPropagation();
       if (claudeChip.dataset.pending === '1') { return; }
@@ -10066,10 +12404,25 @@ function getHtml(host: string, port: number, cspSource: string): string {
         : null;
       if (existingNote) { existingNote.remove(); }
       const requestId = 'callpath_' + (callPathTestRequestSeq++) + '_' + Date.now();
+      const existingOutput = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('testRunOutput')
+        ? genActions.nextElementSibling
+        : null;
+      if (existingOutput) { existingOutput.remove(); }
+      attachLiveClaudeOutput(genActions, requestId);
       callPathTestChipsByRequestId.set(requestId, { chip: claudeChip, actionsEl: genActions, tickInterval, result: gapResult, symbol });
       vscode.postMessage({ type: 'generateCallPathTest', result: gapResult, requestId });
     });
     genActions.appendChild(claudeChip);
+  }
+
+  // Shared by the commit row's own click handler and its explicit "Analyze
+  // Commit" button — both need the exact same requestId/tracking-map dance
+  // so renderSearchResult can insert the result card directly below this
+  // row (commitDetailRowsByRequestId) rather than at the bottom of the panel.
+  function triggerAnalyzeCommit(item, hash) {
+    const requestId = 'commitdetail_' + (commitDetailRequestSeq++) + '_' + Date.now();
+    commitDetailRowsByRequestId.set(requestId, item);
+    vscode.postMessage({ type: 'analyzeCommit', hash, requestId });
   }
 
   function appendResultItem(parent, r) {
@@ -10111,6 +12464,23 @@ function getHtml(host: string, port: number, cspSource: string): string {
       labelSpan.className = 'label';
       labelSpan.textContent = r.label || '';
       labelRow.appendChild(labelSpan);
+      if (r.commitHash) {
+        // The row itself is also clickable (see the commitHash handler
+        // below) to run the same analysis, but that wasn't discoverable —
+        // this makes it an explicit, visible action instead of a hidden
+        // whole-row click.
+        const analyzeBtn = document.createElement('button');
+        analyzeBtn.type = 'button';
+        analyzeBtn.className = 'actionChip actionChipClickable actionChipPrimary';
+        analyzeBtn.style.font = 'inherit';
+        analyzeBtn.textContent = 'Analyze Commit';
+        analyzeBtn.title = 'Show this commit\\'s impact graph and diff.';
+        analyzeBtn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          triggerAnalyzeCommit(item, r.commitHash);
+        });
+        labelRow.appendChild(analyzeBtn);
+      }
       item.appendChild(labelRow);
     } else {
       const loc = r.file ? (r.file + (r.line ? ':' + r.line : '')) : '';
@@ -10154,12 +12524,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
     if (r.commitHash) {
       item.title = 'Click to analyze this commit\\'s impact graph and diff.';
       item.addEventListener('click', () => {
-        // requestId lets renderSearchResult insert the result card directly
-        // below THIS row instead of at the bottom of the whole panel — see
-        // commitDetailRowsByRequestId below.
-        const requestId = 'commitdetail_' + (commitDetailRequestSeq++) + '_' + Date.now();
-        commitDetailRowsByRequestId.set(requestId, item);
-        vscode.postMessage({ type: 'analyzeCommit', hash: r.commitHash, requestId });
+        triggerAnalyzeCommit(item, r.commitHash);
       });
     }
     // A commit row's own .symbol/.name are the commit hash/subject text
@@ -10233,8 +12598,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
         newFuncChip.className = 'actionChip actionChipClickable actionChipPrimary';
         newFuncChip.textContent = '🆕 Generate test for new function';
         newFuncChip.title = 'Finds this new function\\'s real caller (if any) in the current callgraph and asks Claude to write a test grounded in that real usage.';
-        newFuncChip.addEventListener('click', (event) => {
-          event.stopPropagation();
+        const fireNewFuncTest = () => {
           if (newFuncChip.dataset.pending === '1') { return; }
           newFuncChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(newFuncChip, 'Generating');
@@ -10243,10 +12607,16 @@ function getHtml(host: string, port: number, cspSource: string): string {
             : null;
           if (existingNote) { existingNote.remove(); }
           const requestId = 'newfunctest_' + (newFunctionTestRequestSeq++) + '_' + Date.now();
+          attachLiveClaudeOutput(actions, requestId);
           newFunctionTestChipsByRequestId.set(requestId, { chip: newFuncChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#newfunc' });
           vscode.postMessage({ type: 'generateNewFunctionTest', result: r, requestId });
+        };
+        newFuncChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          fireNewFuncTest();
         });
         actions.appendChild(newFuncChip);
+        maybeAutoWriteTest(graphable, graphable + '#newfunc', fireNewFuncTest, actions);
       }
 
       // A signature change with statically-proven broken call sites
@@ -10258,8 +12628,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
         contractChip.className = 'actionChip actionChipClickable actionChipPrimary';
         contractChip.textContent = '⚠ Generate contract test(s)';
         contractChip.title = 'Writes one test per statically-proven broken caller (' + r.changeCard.callSiteIssues.length + '), each showing the corrected call against the new signature.';
-        contractChip.addEventListener('click', (event) => {
-          event.stopPropagation();
+        const fireContractTest = () => {
           if (contractChip.dataset.pending === '1') { return; }
           contractChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(contractChip, 'Generating');
@@ -10268,22 +12637,33 @@ function getHtml(host: string, port: number, cspSource: string): string {
             : null;
           if (existingNote) { existingNote.remove(); }
           const requestId = 'contracttest_' + (contractTestRequestSeq++) + '_' + Date.now();
+          attachLiveClaudeOutput(actions, requestId);
           contractTestChipsByRequestId.set(requestId, { chip: contractChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#contract' });
           vscode.postMessage({ type: 'generateContractTest', result: r, requestId });
+        };
+        contractChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          fireContractTest();
         });
         actions.appendChild(contractChip);
+        maybeAutoWriteTest(graphable, graphable + '#contract', fireContractTest, actions);
       }
 
       // A function with several confirmed real callers (not just one) has
       // genuinely different calling patterns worth covering together — the
-      // regular Call Path Test only ever reads one caller.
-      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && Array.isArray(r.changeCard.impactedFunctions) && r.changeCard.impactedFunctions.length >= 2) {
+      // regular Call Path Test only ever reads one caller. Caller count
+      // alone isn't a good enough signal on its own, though — a Low-risk
+      // function (e.g. a couple of trivial call sites) can easily clear
+      // "2+ callers" while still being genuinely low-value to spend a
+      // Claude call on, so this also requires the card's own risk bucket to
+      // agree it's worth the spend.
+      const broadCoverageRiskOk = r.changeCard && ['medium', 'high', 'critical'].includes(r.changeCard.riskLevel);
+      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && broadCoverageRiskOk && Array.isArray(r.changeCard.impactedFunctions) && r.changeCard.impactedFunctions.length >= 2) {
         const broadChip = document.createElement('span');
         broadChip.className = 'actionChip actionChipClickable';
-        broadChip.textContent = '📊 Generate broader coverage';
-        broadChip.title = 'Reads multiple of this function\\'s ' + r.changeCard.impactedFunctions.length + ' confirmed real callers and writes one test per genuinely distinct calling pattern found, not just one.';
-        broadChip.addEventListener('click', (event) => {
-          event.stopPropagation();
+        broadChip.textContent = '🔀 Generate Broader-Coverage Test(s)';
+        broadChip.title = 'Reads multiple of this function\\'s ' + r.changeCard.impactedFunctions.length + ' confirmed real callers and writes one test per genuinely distinct calling pattern found (e.g. different argument shapes or edge cases), not just one caller\\'s usage.';
+        const fireBroadCoverageTest = () => {
           if (broadChip.dataset.pending === '1') { return; }
           broadChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(broadChip, 'Generating');
@@ -10292,10 +12672,16 @@ function getHtml(host: string, port: number, cspSource: string): string {
             : null;
           if (existingNote) { existingNote.remove(); }
           const requestId = 'broadcoveragetest_' + (broadCoverageTestRequestSeq++) + '_' + Date.now();
+          attachLiveClaudeOutput(actions, requestId);
           broadCoverageTestChipsByRequestId.set(requestId, { chip: broadChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#broadcoverage' });
           vscode.postMessage({ type: 'generateBroadCoverageTest', result: r, requestId });
+        };
+        broadChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          fireBroadCoverageTest();
         });
         actions.appendChild(broadChip);
+        maybeAutoWriteTest(graphable, graphable + '#broadcoverage', fireBroadCoverageTest, actions);
       }
 
       item.appendChild(actions);
@@ -10314,12 +12700,70 @@ function getHtml(host: string, port: number, cspSource: string): string {
           item.appendChild(buildGeneratedTestNote(saved));
         }
       });
+      // Only changed functions (not files/blastRadius/commit rows) get a
+      // verdict / existing-tests check — both roll up signals that only
+      // exist for an actual changed function.
+      if (symbolic && r.changeCard && (r.changeCard.kind === 'modified' || r.changeCard.kind === 'added')) {
+        const existingEl = document.createElement('div');
+        existingTestsCardElsBySymbol.set(graphable, existingEl);
+        const savedExisting = generatedTestsBySymbol.get(graphable + '#existing');
+        if (savedExisting) {
+          renderExistingTestsCard(existingEl, savedExisting.matches);
+        } else if (r.file && String(r.file).toLowerCase().endsWith('.py') && !existingTestsRequestedSymbols.has(graphable)) {
+          const fireExistingTestsCheck = () => {
+            if (existingTestsRequestedSymbols.has(graphable)) { return; }
+            existingTestsRequestedSymbols.add(graphable);
+            const requestId = 'existingtests_' + (existingTestsRequestSeq++) + '_' + Date.now();
+            existingTestsRequestsByRequestId.set(requestId, { symbol: graphable });
+            vscode.postMessage({ type: 'runExistingTestsForResult', result: r, requestId });
+          };
+          const renderCheckExistingTestsButton = () => {
+            const checkBtn = document.createElement('button');
+            checkBtn.type = 'button';
+            checkBtn.className = 'actionChip actionChipClickable';
+            checkBtn.textContent = 'Check existing tests';
+            checkBtn.title = 'Look for and run any existing test(s) covering ' + graphable + ' (local pytest, no Claude call).';
+            checkBtn.addEventListener('click', (event) => {
+              event.stopPropagation();
+              checkBtn.remove();
+              fireExistingTestsCheck();
+            });
+            existingEl.appendChild(checkBtn);
+          };
+          if (runMode === 'auto' && autoRunBatchCount < maxAutoWritesPerBatch) {
+            // No button — this is pure local search + pytest (no Claude
+            // call), so it's safe to fire automatically the first time this
+            // symbol renders rather than waiting on a click — but only up to
+            // the batch cap; a large diff or first-time scan can otherwise
+            // render hundreds of these in one batch and flood the OS with
+            // coverage-run/pytest processes (see acquirePythonTestRunSlot
+            // and autoRunBatchCount above). Symbols beyond the cap get the
+            // manual button instead of being silently skipped.
+            autoRunBatchCount++;
+            fireExistingTestsCheck();
+          } else {
+            renderCheckExistingTestsButton();
+          }
+        }
+        item.appendChild(existingEl);
+
+        const verdictEl = document.createElement('div');
+        verdictCardElsBySymbol.set(graphable, verdictEl);
+        renderVerdictCardContent(verdictEl, graphable);
+        item.appendChild(verdictEl);
+      }
     }
     parent.appendChild(item);
   }
 
   function appendResultItems(parent, results) {
     parent.textContent = '';
+    // A fresh top-level render (Check Uncommitted Edits / Check Latest
+    // Commits / Analyze Commit) is its own batch for the auto-write cap —
+    // a big commit shouldn't get fewer auto-writes just because an earlier,
+    // unrelated batch already used up the count this session.
+    autoWriteBatchCount = 0;
+    autoRunBatchCount = 0;
     (results || []).forEach((r) => appendResultItem(parent, r));
   }
 
@@ -10525,38 +12969,132 @@ function getHtml(host: string, port: number, cspSource: string): string {
     */
   }
 
+  // At-a-glance counts (see buildChangesSummaryTiles on the extension host)
+  // rendered as tiles instead of a prose bullet list, so the handful of
+  // numbers worth knowing before scrolling don't require reading sentences.
+  function renderSummaryTiles(parent, tiles) {
+    const grid = document.createElement('div');
+    grid.className = 'summaryTileGrid';
+    tiles.forEach((tile) => {
+      const cell = document.createElement('div');
+      cell.className = 'summaryTile summaryTile-' + (tile.tone || 'neutral');
+      const value = document.createElement('span');
+      value.className = 'summaryTileValue';
+      value.textContent = String(tile.value);
+      const label = document.createElement('span');
+      label.className = 'summaryTileLabel';
+      label.textContent = tile.label;
+      cell.appendChild(value);
+      cell.appendChild(label);
+      grid.appendChild(cell);
+    });
+    parent.appendChild(grid);
+  }
+
+  // A plain-English restatement of exactly what generateCallChainTestForResult's
+  // prompt asks Claude to do (see that function's doc comment on the extension
+  // host) — so a user deciding whether to click "Generate Call-Path Test" knows
+  // what test they're about to get without reading the prompt itself.
+  function describeCallChainTest(chain) {
+    const callerTail = String(chain.callerLabel || chain.callerSymbol || '').split('.').pop() || '';
+    const calleeTail = String(chain.calleeLabel || chain.calleeSymbol || '').split('.').pop() || '';
+    const boundaryNote = chain.crossesModuleBoundary
+      ? ' "' + calleeTail + '" is treated as a public contract here (the call crosses a module boundary), not an internal detail.'
+      : '';
+    return 'Writes one test that calls "' + callerTail + '" the way it is really used, then asserts on an effect that only shows up '
+      + 'after it reaches "' + calleeTail + '" — catching an interaction bug a unit test on either function alone would miss.' + boundaryNote;
+  }
+
+  // Opens a graph focused on both functions in a call-chain row, reusing the
+  // same /search-result-graph flow a single result's "View impact graph"
+  // action uses (see runResultGraph on the extension host): the caller is the
+  // graph root/highlight, the callee is passed as an impact node so it's
+  // pulled into the same subgraph and highlighted too.
+  function openCallChainGraph(chain) {
+    vscode.postMessage({
+      type: 'graphForResult',
+      result: {
+        graphSymbol: chain.callerSymbol,
+        fullName: chain.callerSymbol,
+        symbol: chain.callerLabel || chain.callerSymbol,
+        name: chain.callerLabel || chain.callerSymbol,
+        file: chain.callerFile,
+        impactNodes: chain.calleeSymbol ? [chain.calleeSymbol] : [],
+        impactFiles: chain.calleeFile ? [chain.calleeFile] : [],
+      },
+    });
+  }
+
   // Two functions that BOTH changed in this diff and are directly connected
   // by a real call edge (see findSameCommitCallChains on the extension host)
   // — a unit test on either one alone would miss a break in how they
   // interact, so this is surfaced as its own callout above the change list
   // rather than buried inside either function's own card.
   function renderCallChainsSection(parent, chains) {
-    const section = document.createElement('div');
-    section.className = 'callChainsSection';
-    const heading = document.createElement('div');
-    heading.className = 'callChainsHeading';
-    heading.textContent = '🔗 Call-Path Opportunities — functions changed together on the same call chain';
-    section.appendChild(heading);
+    const table = document.createElement('div');
+    table.className = 'callChainTable';
     chains.forEach((chain) => {
       const row = document.createElement('div');
-      row.className = 'callChainRow';
-      const label = document.createElement('span');
-      label.className = 'callChainLabel';
-      label.textContent = (chain.callerLabel || chain.callerSymbol) + ' → ' + (chain.calleeLabel || chain.calleeSymbol);
-      label.title = (chain.callText ? 'Calls it as ' + chain.callText + '(...) ' : '') + 'at ' + chain.file + ':' + chain.line;
-      row.appendChild(label);
+      row.className = 'callChainTableRow';
 
+      const info = document.createElement('div');
+      info.className = 'callChainInfo';
+
+      const labelRow = document.createElement('div');
+      labelRow.className = 'callChainLabelRow';
+      const label = document.createElement('span');
+      label.className = 'callChainLabel callChainLabelClickable';
+      label.textContent = (chain.callerLabel || chain.callerSymbol) + ' → ' + (chain.calleeLabel || chain.calleeSymbol);
+      label.title = 'View both functions in the graph — '
+        + (chain.callText ? 'calls it as ' + chain.callText + '(...) ' : '') + 'at ' + chain.file + ':' + chain.line;
+      label.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openCallChainGraph(chain);
+      });
+      labelRow.appendChild(label);
       if (chain.crossesModuleBoundary) {
         const boundaryBadge = document.createElement('span');
         boundaryBadge.className = 'callChainBoundaryBadge';
         boundaryBadge.textContent = '🧩 cross-module';
         boundaryBadge.title = 'This call crosses a module boundary — a public-contract change, not an internal detail, so it is disproportionately worth a test.';
-        row.appendChild(boundaryBadge);
+        labelRow.appendChild(boundaryBadge);
+      }
+      info.appendChild(labelRow);
+
+      const description = document.createElement('div');
+      description.className = 'callChainDescription';
+      description.textContent = describeCallChainTest(chain);
+      info.appendChild(description);
+      row.appendChild(info);
+
+      const actions = document.createElement('div');
+      actions.className = 'callChainActions';
+
+      // The generator's output filename is fully deterministic (see
+      // existingCallChainTestFile on the extension host) — if it already
+      // exists, lead with opening it instead of burying "a test already
+      // covers this" behind another 10-100+s regeneration.
+      if (chain.existingTestPath) {
+        const existsBadge = document.createElement('span');
+        existsBadge.className = 'callChainExistsBadge';
+        existsBadge.textContent = '✓ Test already generated';
+        existsBadge.title = chain.existingTestPath;
+        actions.appendChild(existsBadge);
+
+        const viewChip = document.createElement('span');
+        viewChip.className = 'actionChip actionChipClickable actionChipPrimary';
+        viewChip.textContent = 'View Test';
+        viewChip.title = 'Open ' + chain.existingTestPath;
+        viewChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          vscode.postMessage({ type: 'openFile', file: chain.existingTestPath, line: '' });
+        });
+        actions.appendChild(viewChip);
       }
 
       const chip = document.createElement('span');
-      chip.className = 'actionChip actionChipClickable actionChipPrimary';
-      chip.textContent = 'Generate Call-Path Test';
+      chip.className = chain.existingTestPath ? 'actionChip actionChipClickable' : 'actionChip actionChipClickable actionChipPrimary';
+      chip.textContent = chain.existingTestPath ? 'Regenerate' : 'Generate Call-Path Test';
       chip.title = 'Asks Claude to write one integration test exercising both functions together, using this real call edge — catches interaction bugs a unit test on either one alone would miss.';
       chip.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -10568,12 +13106,24 @@ function getHtml(host: string, port: number, cspSource: string): string {
           : null;
         if (existingNote) { existingNote.remove(); }
         const requestId = 'chaintest_' + (chainTestRequestSeq++) + '_' + Date.now();
-        chainTestChipsByRequestId.set(requestId, { chip, rowEl: row, tickInterval });
+        attachLiveClaudeOutput(row, requestId);
+        chainTestChipsByRequestId.set(requestId, { chip, rowEl: row, tickInterval, symbolKey: chain.callerSymbol });
         vscode.postMessage({ type: 'generateChainTest', chain, requestId });
       });
-      row.appendChild(chip);
-      section.appendChild(row);
+      actions.appendChild(chip);
+      row.appendChild(actions);
+
+      table.appendChild(row);
     });
+    const section = document.createElement('div');
+    section.className = 'callChainsSection';
+    appendCollapsibleSection(
+      section,
+      '🔗 Call-Path Opportunities — functions changed together on the same call chain',
+      table,
+      chains.length,
+      true,
+    );
     parent.appendChild(section);
   }
 
@@ -10591,26 +13141,50 @@ function getHtml(host: string, port: number, cspSource: string): string {
       // stacked above or below it.
       wrapper.classList.add('msg-boxed');
     }
+    // A query header doubles as a collapse toggle for everything below it in
+    // this one result block (summary tiles, the answer, Call-Path
+    // Opportunities, the result list itself) — "Check Uncommitted Edits" in
+    // particular can return a long batch of change cards with nothing to
+    // shrink it down to one line once you're done reading it, short of
+    // collapsing every card inside it one at a time. Starts expanded so
+    // nothing that used to be visible by default becomes hidden by this
+    // change; Call-Path Opportunities keeps its own nested collapse toggle
+    // underneath, independent of this outer one.
+    const body = document.createElement('div');
     if (msg.query) {
-      const q = document.createElement('div');
-      q.className = 'query';
-      q.textContent = msg.query;
+      const q = document.createElement('button');
+      q.type = 'button';
+      q.className = 'query expandToggle';
+      q.setAttribute('aria-expanded', 'true');
+      const queryLabel = () => msg.query + ' ' + (q.getAttribute('aria-expanded') === 'true' ? 'v' : '>');
+      q.textContent = queryLabel();
+      q.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const expanded = q.getAttribute('aria-expanded') === 'true';
+        q.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        body.style.display = expanded ? 'none' : '';
+        q.textContent = queryLabel();
+      });
       wrapper.appendChild(q);
     }
+    wrapper.appendChild(body);
     if (msg.error) {
       const errEl = document.createElement('div');
       errEl.className = 'error';
       errEl.textContent = msg.error;
-      wrapper.appendChild(errEl);
+      body.appendChild(errEl);
     } else {
+      if (Array.isArray(msg.summaryTiles) && msg.summaryTiles.length) {
+        renderSummaryTiles(body, msg.summaryTiles);
+      }
       if (msg.answer) {
         const a = document.createElement('div');
         a.className = 'answer';
         renderAnswerTextWithLinks(a, msg.answer, msg.answerLinks || []);
-        wrapper.appendChild(a);
+        body.appendChild(a);
       }
       if (Array.isArray(msg.callChains) && msg.callChains.length) {
-        renderCallChainsSection(wrapper, msg.callChains);
+        renderCallChainsSection(body, msg.callChains);
       }
       const resultList = document.createElement('div');
       const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius' || msg.kind === 'commitDetail';
@@ -10634,12 +13208,12 @@ function getHtml(host: string, port: number, cspSource: string): string {
         });
         toolbar.appendChild(label);
         toolbar.appendChild(select);
-        wrapper.appendChild(toolbar);
+        body.appendChild(toolbar);
         appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value), select.value);
       } else {
         appendResultItems(resultList, msg.results || []);
       }
-      wrapper.appendChild(resultList);
+      body.appendChild(resultList);
     }
     // A commit-detail result that came from clicking a specific row (see
     // commitDetailRowsByRequestId above) belongs directly under that row —
@@ -10678,6 +13252,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
 	    if (msg.type === 'status') {
       statusLine.textContent = msg.text;
       const isError = /^Error:/.test(String(msg.text || ''));
+      if (isError) { setGenerateButtonsBusy(false); }
       // Only overwrite the big centered pane while it's still the one showing
       // (i.e. no graph has loaded yet) — once a graph is up, background
       // regenerate status belongs in the small statusLine only.
@@ -10686,6 +13261,16 @@ function getHtml(host: string, port: number, cspSource: string): string {
         emptyStateText.classList.toggle('emptyStateError', isError);
         emptyStateRetryBtn.style.display = isError ? '' : 'none';
       }
+    } else if (msg.type === 'modesConfig') {
+      runMode = msg.runMode === 'manual' ? 'manual' : 'auto';
+      writeMode = msg.writeMode === 'auto' ? 'auto' : 'manual';
+      maxAutoWritesPerBatch = Number.isFinite(msg.maxAutoWritesPerBatch) && msg.maxAutoWritesPerBatch > 0
+        ? msg.maxAutoWritesPerBatch : 3;
+      writeModePill.disabled = !!msg.readOnlyMode;
+      writeModePill.title = msg.readOnlyMode
+        ? 'Read-only mode is on (codemdGraphs.readOnlyMode) — CODEMD will not invoke Claude to write tests regardless of this setting.'
+        : 'Write: whether new tests get generated automatically. Auto spends real Claude usage without a click each time.';
+      renderModePills();
     } else if (msg.type === 'mcpUsage') {
       const total = Number(msg.totalCalls || 0);
       const configured = Boolean(msg.configured);
@@ -10709,6 +13294,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
         'codemd_search_artifacts',
         'codemd_semantic_search',
         'codemd_read_artifact',
+        'codemd_find_tests',
+        'codemd_review_changes',
       ]);
       const statusTools = new Set([
         'codemd_status',
@@ -10731,7 +13318,16 @@ function getHtml(host: string, port: number, cspSource: string): string {
           + (Number(tools?.codemd_get_callers || 0) * 15)
           + (Number(tools?.codemd_get_callees || 0) * 15)
           + (Number(tools?.codemd_get_call_paths || 0) * 30)
-          + (Number(tools?.codemd_get_impact_radius || 0) * 30), 0);
+          + (Number(tools?.codemd_get_impact_radius || 0) * 30)
+          // Overview/discovery calls (search, read, semantic search, find
+          // tests, review changes) are cheaper to hand-replicate than a
+          // callgraph traversal, but still real time saved over grepping/
+          // reading files by hand — weight them lightly rather than zeroing
+          // them out. codemd_status is a pure health check, not work, and
+          // stays excluded.
+          + (Object.entries(tools || {})
+              .filter(([toolName]) => overviewTools.has(toolName))
+              .reduce((overviewSum, [, calls]) => overviewSum + Number(calls || 0), 0) * 5), 0);
       const estimatedGraphMinutes = Math.round(estimatedGraphSeconds / 60);
       const estimatedGraphText = estimatedGraphMinutes > 0
         ? 'Est. time saved by coding agents: ~' + estimatedGraphMinutes + ' min'
@@ -10766,7 +13362,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       // headline stat should stay visible there just like the call counts.
       mcpUsageTimeSaved.textContent = total > 0 ? estimatedGraphText : '';
       mcpUsageSubtitle.textContent = usageTitle;
-      mcpUsageCard.title = usageTitle + ' Conservative estimate: callers/callees = 15s, call paths/impact radius = 30s. Search/read/status calls excluded. Not directly measured.';
+      mcpUsageCard.title = usageTitle + ' Conservative estimate: callers/callees = 15s, call paths/impact radius = 30s, search/read/semantic-search/find-tests/review-changes = 5s. Status calls excluded. Not directly measured.';
       mcpSetupStatus.textContent = '';
       if (!allSupportedConfigured) {
         addMcpChip('Add CODEMD MCP Server', 'missing', 'Write MCP config before starting a client.');
@@ -10853,6 +13449,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
 	      }, 8000);
 	    } else if (msg.type === 'generated') {
       // graph message (if any) already handled separately
+      setGenerateButtonsBusy(false);
     } else if (msg.type === 'featureCatalog') {
       renderFeatureList(msg.data || {}, msg.repoStats || {});
     } else if (msg.type === 'searchHistory') {
@@ -10960,9 +13557,19 @@ function getHtml(host: string, port: number, cspSource: string): string {
 
         matches.forEach((match) => {
           const file = typeof match === 'string' ? match : String(match.file || '');
+          const kindLabel = (match && typeof match === 'object' && match.kindLabel) ? String(match.kindLabel) : 'Test';
           const testNames = (match && Array.isArray(match.testNames)) ? match.testNames : [];
           const group = document.createElement('div');
           group.className = 'testMatchGroup testCard';
+
+          // Category first (what kind of evidence this is, ranked by
+          // importance server-side) — the raw generated-tests file path is
+          // real but means nothing to skim, so it's a click-to-open detail
+          // under the label rather than the heading itself.
+          const kindEl = document.createElement('div');
+          kindEl.className = 'testMatchKind';
+          kindEl.textContent = kindLabel;
+          group.appendChild(kindEl);
 
           const fileEl = document.createElement('span');
           fileEl.className = 'testMatchFile';
@@ -11013,16 +13620,43 @@ function getHtml(host: string, port: number, cspSource: string): string {
           noteEl.textContent = note;
           matchList.appendChild(noteEl);
 
-          // Python only, matching the two generators' own gating
-          // (deletion-report.py's literal-replay path and the Claude call-path
-          // path both currently only understand Python). Only the mechanical
-          // chip is shown up front: it's free, instant, and requires no AI
-          // call. The Claude fallback is revealed only once the mechanical
-          // one actually reports it can't help (its real callers all pass a
-          // variable/computed value instead of a literal) — that failure
-          // message is itself the explanation for why the fallback just
-          // appeared, instead of dumping both options on the user at once.
-          if (gapResult && String(gapResult.file || '').toLowerCase().endsWith('.py')) {
+          // The mechanical chip (deletion-report.py's literal-replay path)
+          // only understands Python — shown up front there since it's free,
+          // instant, and requires no AI call, with the Claude fallback
+          // revealed only once it actually reports it can't help (its real
+          // callers all pass a variable/computed value instead of a
+          // literal), so that failure message explains why the fallback
+          // just appeared instead of dumping both options at once. Every
+          // other language has no mechanical replay generator, so it goes
+          // straight to the Claude fallback (generateCallPathTestForResult
+          // on the host) — deliberately NOT gated by a client-side
+          // extension check here: the host's own testLanguageFor is already
+          // the single source of truth for which languages are supported
+          // (Python, JS/TS, Java, C#, Go, Rust, Kotlin as of this writing),
+          // and it reports a clear error if this ever gets clicked for a
+          // genuinely unsupported one (C++, PHP, ...) rather than this list
+          // silently drifting out of sync with the host's own list, which is
+          // exactly what happened here before: this used to hardcode a
+          // JS/TS-only regex, so Java/C#/Go/Rust/Kotlin files got no
+          // generate-test affordance at all despite the host fully
+          // supporting them.
+          const gapFile = String(gapResult && gapResult.file || '');
+          if (isNewFunction) {
+            // A new function already gets its own always-visible "🆕
+            // Generate test for new function" chip in the result's own
+            // action row (see the r.changeCard.kind === 'added' branch
+            // above) — that chip calls Claude the same way the generic
+            // fallback below would, from a prompt that is effectively the
+            // same request. Adding a second, differently-labeled
+            // Claude-calling button here duplicated that exact job with no
+            // real distinction (neither is "mechanical" — both are Claude),
+            // which just left two buttons doing the same thing side by
+            // side. Point back at the existing one instead of duplicating it.
+            const pointerEl = document.createElement('div');
+            pointerEl.className = 'testNoMatchNote';
+            pointerEl.textContent = 'Use the "🆕 Generate test for new function" button above — it already does this, grounded in this function\'s real caller if it has one.';
+            matchList.appendChild(pointerEl);
+          } else if (gapResult && gapFile.toLowerCase().endsWith('.py')) {
             const symbol = String(gapResult.fullName || gapResult.graphSymbol || gapResult.symbol || gapResult.name || msg.query || '');
             const genActions = document.createElement('div');
             genActions.className = 'actionRow';
@@ -11051,6 +13685,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
             genActions.appendChild(mechChip);
             genActions.dataset.symbol = symbol;
             matchList.appendChild(genActions);
+          } else if (gapResult) {
+            const symbol = String(gapResult.fullName || gapResult.graphSymbol || gapResult.symbol || gapResult.name || msg.query || '');
+            const genActions = document.createElement('div');
+            genActions.className = 'actionRow';
+            genActions.style.marginTop = '4px';
+            genActions.dataset.symbol = symbol;
+            matchList.appendChild(genActions);
+            appendClaudeFallbackChip(genActions, gapResult, symbol, false);
           }
         }
       }
@@ -11058,11 +13700,13 @@ function getHtml(host: string, port: number, cspSource: string): string {
       const row = testRunRowsByRequestId.get(msg.requestId);
       testRunRowsByRequestId.delete(msg.requestId);
       if (!row) { return; }
-      const { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, installBtn } = row;
+      const { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, installBtn, setupBtn, symbolKey, tickInterval } = row;
+      if (tickInterval) { clearInterval(tickInterval); }
       runBtn.dataset.pending = '0';
       runBtn.textContent = '↻ Run again';
       runBtn.className = 'btn is-outline';
       if (installBtn) { installBtn.dataset.pending = '0'; }
+      if (setupBtn) { setupBtn.style.display = msg.noTestRunner ? '' : 'none'; setupBtn.dataset.pending = '0'; }
       if (msg.output) {
         outputPre.textContent = msg.output;
         outputToggle.style.display = '';
@@ -11075,7 +13719,14 @@ function getHtml(host: string, port: number, cspSource: string): string {
         statusDetail.className = 'statusDetail';
         statusDetail.style.display = '';
         if (fixBtn) {
-          fixBtn.style.display = '';
+          // "No test runner at all" isn't something "Fix with Claude" should
+          // ever get a crack at — its whole job when environmentIssue is set
+          // includes "install a missing dependency", which for this specific
+          // failure would mean freelancing an entire test framework into the
+          // repo, exactly what CODEMD is deliberately not doing here. Hide
+          // the button (setupBtn above offers the real, deterministic fix
+          // instead) rather than let one more click reopen that loophole.
+          fixBtn.style.display = msg.noTestRunner ? 'none' : '';
           fixBtn.dataset.lastError = String(msg.error || '');
           if (msg.environmentIssue) {
             // The test never even started (missing package, bad pytest
@@ -11155,12 +13806,53 @@ function getHtml(host: string, port: number, cspSource: string): string {
       statusDetail.textContent = detailText + claudeNote;
       statusDetail.className = 'statusDetail' + (detailNotable ? ' is-notable' : '');
       statusDetail.style.display = '';
+      if (symbolKey) {
+        testRunsBySymbol.set(symbolKey, {
+          passed: !!msg.passed,
+          coverageConfirmed: !!msg.coverageConfirmed,
+          executed: !!msg.executed,
+          executedInRange: msg.executedInRange,
+          trackedInRange: msg.trackedInRange,
+        });
+        updateVerdictCard(symbolKey);
+      }
       if (row.onResult) { row.onResult(msg); }
+    } else if (msg.type === 'setUpTestRunnerResult') {
+      const entry = jsTestRunnerSetupByRequestId.get(msg.requestId);
+      jsTestRunnerSetupByRequestId.delete(msg.requestId);
+      if (!entry) { return; }
+      const { setupBtn, runBtn, statusDetail, tickInterval } = entry;
+      if (tickInterval) { clearInterval(tickInterval); }
+      setupBtn.dataset.pending = '0';
+      if (msg.ok) {
+        // Leave the button visible but done — "Run again" below is the next
+        // real step, and re-clicking Set up would just no-op against
+        // detectJsTestRunner now finding what this just installed.
+        setupBtn.textContent = msg.alreadyPresent ? '✓ Already set up' : ('✓ ' + (msg.runner || 'Test runner') + ' installed');
+        setupBtn.className = 'btn is-outline';
+        statusDetail.textContent = msg.summary || 'Done — click "Run again" to try the test now.';
+        statusDetail.className = 'statusDetail';
+        statusDetail.style.display = '';
+      } else {
+        setupBtn.textContent = '⚙ Set up test runner';
+        statusDetail.textContent = msg.error || 'Could not set up a test runner.';
+        statusDetail.className = 'statusDetail is-notable';
+        statusDetail.style.display = '';
+      }
+      if (runBtn) {
+        runBtn.textContent = '↻ Run again';
+        runBtn.className = 'btn is-outline';
+      }
     } else if (msg.type === 'fixTestProgress') {
       const entry = fixTestRowsByRequestId.get(msg.requestId);
       if (!entry || !entry.fixOutputPre) { return; }
       entry.fixOutputPre.textContent += msg.chunk;
       entry.fixOutputPre.scrollTop = entry.fixOutputPre.scrollHeight;
+    } else if (msg.type === 'testGenProgress') {
+      const pre = testGenOutputPreByRequestId.get(msg.requestId);
+      if (!pre) { return; }
+      pre.textContent += msg.chunk;
+      pre.scrollTop = pre.scrollHeight;
     } else if (msg.type === 'fixTestResult') {
       const entry = fixTestRowsByRequestId.get(msg.requestId);
       fixTestRowsByRequestId.delete(msg.requestId);
@@ -11259,6 +13951,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       actionsEl.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
       if (msg.ok && msg.generated && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
+        updateVerdictCard(symbol);
       } else if (symbol) {
         // Mechanical couldn't help — this is exactly the case the Claude
         // fallback exists for, so reveal it now rather than up front.
@@ -11267,11 +13960,12 @@ function getHtml(host: string, port: number, cspSource: string): string {
     } else if (msg.type === 'callPathTestResult') {
       const entry = callPathTestChipsByRequestId.get(msg.requestId);
       callPathTestChipsByRequestId.delete(msg.requestId);
+      testGenOutputPreByRequestId.delete(msg.requestId);
       if (!entry) { return; }
       const { chip, actionsEl, tickInterval, symbol } = entry;
       if (tickInterval) { clearInterval(tickInterval); }
       chip.dataset.pending = '0';
-      chip.textContent = 'Ask Claude for a Call Path Test';
+      chip.textContent = '🤖 Generate Test with Claude';
       const opts = {
         source: 'claude',
         ok: msg.ok,
@@ -11289,15 +13983,49 @@ function getHtml(host: string, port: number, cspSource: string): string {
       actionsEl.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
       if (msg.ok && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
+        updateVerdictCard(symbol);
+      }
+    } else if (msg.type === 'existingTestsResult') {
+      const entry = existingTestsRequestsByRequestId.get(msg.requestId);
+      existingTestsRequestsByRequestId.delete(msg.requestId);
+      if (!entry) { return; }
+      if (msg.ok) {
+        const matches = Array.isArray(msg.matches) ? msg.matches : [];
+        generatedTestsBySymbol.set(entry.symbol + '#existing', { matches });
+        // Feed a real pass into testRunsBySymbol too — computeVerdictForSymbol
+        // only reaches HIGH confidence with both a test AND a recorded run,
+        // and this check already ran pytest for real (unlike the manual "Run"
+        // button, nothing else populates testRunsBySymbol for it otherwise).
+        const confirmedMatch = matches.find((m) => m.ok && m.passed && m.coverageConfirmed && m.executed);
+        if (confirmedMatch) {
+          testRunsBySymbol.set(entry.symbol, {
+            passed: true,
+            coverageConfirmed: true,
+            executed: true,
+            executedInRange: confirmedMatch.executedInRange,
+            trackedInRange: confirmedMatch.trackedInRange,
+          });
+        }
+        const el = existingTestsCardElsBySymbol.get(entry.symbol);
+        if (el && el.isConnected) { renderExistingTestsCard(el, matches); }
+        updateVerdictCard(entry.symbol);
+      }
+      // Unblock any Write:Auto chip(s) waiting on this symbol's verdict —
+      // even on a failed lookup, so a pytest hiccup can't strand a queued
+      // auto-write forever. See maybeAutoWriteTest.
+      const queuedAutoWrites = pendingAutoWrites.get(entry.symbol);
+      if (queuedAutoWrites) {
+        pendingAutoWrites.delete(entry.symbol);
+        queuedAutoWrites.forEach((fn) => fn());
       }
     } else if (msg.type === 'newFunctionTestResult') {
       resolveChipTestResult(newFunctionTestChipsByRequestId, msg, '🆕 Generate test for new function');
     } else if (msg.type === 'callChainTestResult') {
-      resolveChipTestResult(chainTestChipsByRequestId, msg, 'Generate Call-Path Test');
+      resolveChipTestResult(chainTestChipsByRequestId, msg, 'Generate Call-Path Test', 'Regenerate');
     } else if (msg.type === 'contractTestResult') {
       resolveChipTestResult(contractTestChipsByRequestId, msg, '⚠ Generate contract test(s)');
     } else if (msg.type === 'broadCoverageTestResult') {
-      resolveChipTestResult(broadCoverageTestChipsByRequestId, msg, '📊 Generate broader coverage');
+      resolveChipTestResult(broadCoverageTestChipsByRequestId, msg, '🔀 Generate Broader-Coverage Test(s)');
     } else if (msg.type === 'criticalFunctionsResult') {
       criticalFunctionsDetails.textContent = '';
       if (!msg.ok) {

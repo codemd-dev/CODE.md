@@ -37,12 +37,26 @@ output*/**
 # extension.
 AGENTS.md
 CLAUDE.md
+TODO.md
 MarketingTODO.MD
 pscommit.bat
 psVSCE.bat
 video-walkthrough-script.html
 trace_output.log
 *.vsix
+
+# This extension's own dev-only test config/runner (for backend/extension
+# unit tests during development) — not something end users need shipped
+# inside the packaged extension.
+vitest.config.mts
+
+# The repo's own GitHub-facing README (includes the architecture diagram) —
+# `npm run package`/`npm run publish` pass --readme-path MARKETPLACE.md,
+# which vsce substitutes in as the package's displayed readme regardless.
+# Without this exclusion, packaging fails outright: vsce still bundles the
+# real README.md file alongside the substituted one, and the two collide as
+# the same case-insensitive path inside the VSIX (README.md vs readme.md).
+README.md
 
 # Only undici is imported by the compiled extension at runtime. The rest of
 # node_modules is extraneous/dev tooling and should not inflate the VSIX.

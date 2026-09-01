@@ -1,8 +1,8 @@
 {
   "name": "codemd-graphs",
   "displayName": "CODEMD",
-  "description": "Traces the callgraph, writes the missing test, and blocks unsafe commits — before an AI agent's edit ships.",
-  "version": "0.0.111",
+  "description": "The auto test harness for AI-written code. CODEMD traces your callgraph to find exactly what changed, instantly re-runs the existing tests that cover it, and has Claude write the ones you're missing — one click, always under your control.",
+  "version": "0.0.131",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -186,6 +186,30 @@
           "minimum": 0.05,
           "description": "Caps how much API-equivalent usage a single Claude action (writing a test, fixing a failure, or finding how to run a test) can use, in USD. On a Claude Pro/Max subscription this isn't a real charge — it's the same usage figure the CLI reports internally — but the cap still protects your rate-limited 5-hour/7-day quota from one runaway action. Claude stops as soon as it crosses this between turns and the action is reported as failed rather than applied; since the check happens between turns, not mid-turn, actual usage can run slightly over this for one expensive turn. Raise it if you want to allow heavier actions."
         },
+        "codemdGraphs.runMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "manual"
+          ],
+          "default": "auto",
+          "description": "Whether the panel checks and runs existing tests for a changed function automatically (Auto, the default — pure local pytest, no Claude call) or only when you click Check existing tests (Manual). Forced to auto whenever codemdGraphs.writeMode is auto, since auto-write relies on this check's result."
+        },
+        "codemdGraphs.writeMode": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "auto"
+          ],
+          "default": "manual",
+          "description": "Whether the panel invokes Claude to write New-Function/Contract/Broad-Coverage tests automatically as changed functions are found (Auto) or only when you click their chip (Manual, the default). Auto spends real Claude usage without a click each time, capped by codemdGraphs.maxAutoWritesPerBatch and codemdGraphs.maxCostPerActionUsd; has no effect while codemdGraphs.readOnlyMode is on."
+        },
+        "codemdGraphs.maxAutoWritesPerBatch": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Caps how many tests codemdGraphs.writeMode: auto will generate within one Check Uncommitted Changes / Check Latest Commits / Analyze Commit result set. Functions beyond the cap keep their normal manual chip instead of auto-firing, so one large commit can't silently trigger a wall of Claude calls."
+        },
         "codemdGraphs.excludeGlobs": {
           "type": "array",
           "items": {
@@ -201,12 +225,16 @@
     "vscode:prepublish": "npm run compile",
     "copy-backend": "node scripts/copy-backend.js",
     "compile": "npm run copy-backend && tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "vitest run",
+    "package": "vsce package --readme-path MARKETPLACE.md",
+    "publish": "vsce publish --readme-path MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "undici": "^8.7.0"
