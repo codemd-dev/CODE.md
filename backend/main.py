@@ -7798,6 +7798,9 @@ def combined_callgraph_source_paths(output_repo_dir, results=None):
         results.get("java_merged_json_path"),
         results.get("tree_sitter_java_json_path"),
         results.get("callgraph_javalang_json_path"),
+        results.get("tree_sitter_go_json_path"),
+        results.get("tree_sitter_rust_json_path"),
+        results.get("tree_sitter_kotlin_json_path"),
         results.get("reduced_joern_callgraph_json_path"),
         results.get("joern_callgraph.json"),
         output_repo_dir / "html_ui" / "html_ui_graph.json",
@@ -7807,6 +7810,9 @@ def combined_callgraph_source_paths(output_repo_dir, results=None):
         output_repo_dir / "java_merged" / "java_merged_callgraph.json",
         output_repo_dir / "tree_sitter_java" / "tree_sitter_java_callgraph.json",
         output_repo_dir / "javalang" / "javalang_callgraph.json",
+        output_repo_dir / "tree_sitter_go" / "tree_sitter_go_callgraph.json",
+        output_repo_dir / "tree_sitter_rust" / "tree_sitter_rust_callgraph.json",
+        output_repo_dir / "tree_sitter_kotlin" / "tree_sitter_kotlin_callgraph.json",
         output_repo_dir / "joern" / "reduced_joern_callgraph.json",
         output_repo_dir / "joern" / "joern_callgraph.json",
     ]
@@ -28773,6 +28779,497 @@ def run_tree_sitter_java_callgraph_isolated(repo_src, output_dir, timeout_second
     return result
 
 
+def _generic_tree_sitter_language(pip_module_name):
+    """Same load pattern as _tree_sitter_java_language, parameterized by
+    which grammar package to import — tree-sitter-go/-rust/-kotlin all
+    expose the identical `language()` factory function convention."""
+    from tree_sitter import Language, Parser
+    import importlib
+
+    mod = importlib.import_module(pip_module_name)
+    language_fn = getattr(mod, "language", None)
+    if not language_fn:
+        raise RuntimeError(f"{pip_module_name}.language() is unavailable")
+    language = Language(language_fn())
+    parser = Parser()
+    if hasattr(parser, "set_language"):
+        parser.set_language(language)
+    else:
+        parser.language = language
+    return parser
+
+
+def _generic_callee_tail_name(callee):
+    """The bare function/method name off the end of a callee string,
+    whichever separator produced it. Rust mixes separators even within one
+    file (`self.init()` via field access -> '.', `Type::new()` via path ->
+    '::'), unlike Go/Kotlin's single '.' convention throughout, so this
+    always splits on the last occurrence of either rather than assuming one
+    fixed separator per language."""
+    parts = re.split(r"::|\.", callee)
+    return parts[-1]
+
+
+def _resolve_generic_language_calls(raw_calls, user_funcs, sep):
+    """Shared call-resolution pass for the Go/Rust/Kotlin tree-sitter
+    builders below — verified against real sample source for all three
+    before being wired in here. Mirrors build_tree_sitter_java_callgraph's
+    own strategy (same-owner match first, then a global unique-name match,
+    dropping anything ambiguous or unresolved) rather than trusting raw
+    callee text directly, which would otherwise include stdlib/third-party
+    calls with no corresponding user-defined function. `raw_calls` entries
+    are {caller, callee, file, line, call_text}; `user_funcs` is the set of
+    known full names, each shaped like 'owner<sep>name'.
+    """
+    name_index = defaultdict(set)
+    owner_of = {}
+    for full in user_funcs:
+        if sep in full:
+            owner, _, name = full.rpartition(sep)
+        else:
+            owner, name = "", full
+        name_index[name].add(full)
+        owner_of[full] = owner
+
+    def unique_match(matches):
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    edges = set()
+    ordered_calls = []
+    for call in raw_calls:
+        callee = call["callee"]
+        caller = call["caller"]
+        caller_owner = owner_of.get(caller, "")
+        name = _generic_callee_tail_name(callee)
+        target = None
+        # 1) exact same-owner call (self.x() / bare x() inside the same type)
+        same_owner_candidate = f"{caller_owner}{sep}{name}" if caller_owner else name
+        if same_owner_candidate in user_funcs:
+            target = same_owner_candidate
+        # 2) the raw callee string already IS a full, known name verbatim
+        elif callee in user_funcs:
+            target = callee
+        # 3) unique global match by bare method/function name
+        else:
+            target = unique_match(name_index.get(name, set()))
+        if target and target != caller:
+            edge = (caller, target)
+            if edge not in edges:
+                edges.add(edge)
+                ordered_calls.append({
+                    "caller": caller,
+                    "callee": target,
+                    "file": call.get("file", ""),
+                    "line": call.get("line"),
+                    "order": len(ordered_calls) + 1,
+                    "call_text": call.get("call_text", ""),
+                })
+    return edges, ordered_calls
+
+
+def _write_generic_tree_sitter_graph(output_dir, filename_stem, parser_label, files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls, include_isolated_limit=150):
+    """Shared final-output step for the Go/Rust/Kotlin builders — same
+    shape/fields as build_tree_sitter_java_callgraph's own graph dict and
+    write_ordered_call_sequence call, just parameterized by filename stem
+    and parser label instead of hardcoding "java" throughout."""
+    clean_edges = [[str(src), str(dst)] for src, dst in sorted(edges)]
+    connected_nodes = {node for edge in clean_edges for node in edge[:2]}
+    include_isolated = len(user_funcs) <= include_isolated_limit
+    graph = {
+        "mode": "tree_sitter_all_user_functions" if include_isolated else "tree_sitter_connected_user_functions",
+        "parser": parser_label,
+        "files_seen": files_seen,
+        "parse_error_count": parse_error_count,
+        "node_count_total": len(user_funcs),
+        "node_limit_for_isolated": include_isolated_limit,
+        "function_files": func_files,
+        "nodes": sorted(user_funcs if include_isolated else connected_nodes),
+        "edges": clean_edges,
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(output_dir, f"{filename_stem}_callgraph.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(graph, f, separators=(",", ":"))
+    ordered_out = os.path.join(output_dir, f"{filename_stem}_ordered_call_sequence.json")
+    write_ordered_call_sequence(ordered_calls, ordered_out, parser=parser_label, source_callgraph=os.path.basename(out))
+    logger.info(
+        "Tree-sitter %s graph written: %s files=%s functions=%s edges=%s",
+        parser_label, out, files_seen, len(user_funcs), len(clean_edges),
+    )
+    return out
+
+
+def build_tree_sitter_go_callgraph(repo_src, output_dir):
+    """Go's tree-sitter callgraph builder — same shape as
+    build_tree_sitter_java_callgraph, adapted for Go's grammar (verified
+    against tree-sitter-go 0.25.0 directly: method_declaration's receiver
+    type is read via its `receiver` field -> parameter_declaration's `type`
+    field -> either a bare type_identifier or a pointer_type wrapping one;
+    call_expression's `function` field is either a bare identifier for a
+    same-package free-function call, or a selector_expression whose
+    `operand`/`field` fields give "x.y" for both real method calls and
+    package-qualified calls like fmt.Println, which the resolution pass
+    below naturally drops since "fmt" is never a user-defined owner)."""
+    parser = _generic_tree_sitter_language("tree_sitter_go")
+    user_funcs = set()
+    func_files = {}
+    raw_calls = []
+    files_seen = 0
+    parse_error_count = 0
+
+    def package_name_of(source_bytes, root):
+        for c in root.children:
+            if c.type == "package_clause":
+                for gc in c.children:
+                    if gc.type == "package_identifier":
+                        return source_bytes[gc.start_byte:gc.end_byte].decode("utf-8", "ignore")
+        return ""
+
+    def receiver_type_of(source_bytes, method_decl_node):
+        recv = method_decl_node.child_by_field_name("receiver")
+        if recv is None:
+            return ""
+        for pd in recv.children:
+            if pd.type != "parameter_declaration":
+                continue
+            type_node = pd.child_by_field_name("type")
+            if type_node is None:
+                continue
+            if type_node.type == "pointer_type":
+                inner = next((c for c in type_node.children if c.type == "type_identifier"), None)
+                if inner is not None:
+                    return source_bytes[inner.start_byte:inner.end_byte].decode("utf-8", "ignore")
+            elif type_node.type == "type_identifier":
+                return source_bytes[type_node.start_byte:type_node.end_byte].decode("utf-8", "ignore")
+        return ""
+
+    def resolve_call_name(source_bytes, call_node):
+        fn = call_node.child_by_field_name("function")
+        if fn is None:
+            return ""
+        if fn.type == "selector_expression":
+            operand = fn.child_by_field_name("operand")
+            field = fn.child_by_field_name("field")
+            operand_text = source_bytes[operand.start_byte:operand.end_byte].decode("utf-8", "ignore") if operand else ""
+            field_text = source_bytes[field.start_byte:field.end_byte].decode("utf-8", "ignore") if field else ""
+            return f"{operand_text}.{field_text}" if operand_text and field_text else field_text
+        return source_bytes[fn.start_byte:fn.end_byte].decode("utf-8", "ignore")
+
+    def walk(source_bytes, node, package_name, rel_path, current_func):
+        next_func = current_func
+        if node.type in ("function_declaration", "method_declaration"):
+            receiver_type = receiver_type_of(source_bytes, node) if node.type == "method_declaration" else ""
+            name_node = node.child_by_field_name("name")
+            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
+            owner = f"{package_name}.{receiver_type}" if receiver_type else package_name
+            full_name = f"{owner}.{func_name}" if owner else func_name
+            if func_name:
+                user_funcs.add(full_name)
+                func_files[full_name] = rel_path
+                next_func = {"full_name": full_name}
+        if current_func and node.type == "call_expression":
+            callee = resolve_call_name(source_bytes, node)
+            if callee:
+                raw_calls.append({
+                    "caller": current_func["full_name"],
+                    "callee": callee,
+                    "file": rel_path,
+                    "line": node.start_point[0] + 1,
+                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
+                })
+        for child in node.children:
+            walk(source_bytes, child, package_name, rel_path, next_func)
+
+    for path in iter_supported_repo_files(repo_src, {".go"}):
+        files_seen += 1
+        with open(path, "rb") as fh:
+            source_bytes = fh.read()
+        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
+        tree = parser.parse(source_bytes)
+        if tree.root_node.has_error:
+            parse_error_count += 1
+        package_name = package_name_of(source_bytes, tree.root_node)
+        walk(source_bytes, tree.root_node, package_name, rel_path, None)
+
+    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, ".")
+    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_go", "tree-sitter-go", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
+
+
+def build_tree_sitter_rust_callgraph(repo_src, output_dir):
+    """Rust's tree-sitter callgraph builder — verified against
+    tree-sitter-rust 0.24.2 directly: function_item's `name` field gives the
+    function name regardless of whether it's free or inside an impl_item
+    (Rust has no separate "method" node type the way Go does); impl_item's
+    `type` field gives the struct/enum name for owner-tracking, mod_item's
+    `name` field nests module paths the same way. call_expression's
+    `function` field is one of: scoped_identifier ("Type::method" —
+    resolves its own `path`/`name` fields), field_expression ("value.field"
+    — e.g. self.init(), resolves its own `value`/`field` fields), or a bare
+    identifier for a same-scope free-function call. Unlike Go/Kotlin, Rust
+    genuinely mixes '.' and '::' separators in callee text even within one
+    file, which is why the resolution pass below always splits on whichever
+    separator actually produced the callee string (_generic_callee_tail_name)
+    rather than assuming one fixed separator per language."""
+    parser = _generic_tree_sitter_language("tree_sitter_rust")
+    user_funcs = set()
+    func_files = {}
+    raw_calls = []
+    files_seen = 0
+    parse_error_count = 0
+
+    def resolve_call_name(source_bytes, call_node):
+        fn = call_node.child_by_field_name("function")
+        if fn is None:
+            return ""
+        if fn.type == "scoped_identifier":
+            path = fn.child_by_field_name("path")
+            name = fn.child_by_field_name("name")
+            path_text = source_bytes[path.start_byte:path.end_byte].decode("utf-8", "ignore") if path else ""
+            name_text = source_bytes[name.start_byte:name.end_byte].decode("utf-8", "ignore") if name else ""
+            return f"{path_text}::{name_text}" if path_text and name_text else name_text
+        if fn.type == "field_expression":
+            value = fn.child_by_field_name("value")
+            field = fn.child_by_field_name("field")
+            value_text = source_bytes[value.start_byte:value.end_byte].decode("utf-8", "ignore") if value else ""
+            field_text = source_bytes[field.start_byte:field.end_byte].decode("utf-8", "ignore") if field else ""
+            return f"{value_text}.{field_text}" if value_text and field_text else field_text
+        return source_bytes[fn.start_byte:fn.end_byte].decode("utf-8", "ignore")
+
+    def walk(source_bytes, node, mod_stack, rel_path, current_func):
+        next_mod_stack = mod_stack
+        next_func = current_func
+        if node.type == "mod_item":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                next_mod_stack = mod_stack + [source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore")]
+        if node.type == "impl_item":
+            type_node = node.child_by_field_name("type")
+            if type_node is not None:
+                next_mod_stack = mod_stack + [source_bytes[type_node.start_byte:type_node.end_byte].decode("utf-8", "ignore")]
+        if node.type == "function_item":
+            name_node = node.child_by_field_name("name")
+            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
+            owner = "::".join(mod_stack)
+            full_name = f"{owner}::{func_name}" if owner else func_name
+            if func_name:
+                user_funcs.add(full_name)
+                func_files[full_name] = rel_path
+                next_func = {"full_name": full_name}
+        if current_func and node.type == "call_expression":
+            callee = resolve_call_name(source_bytes, node)
+            if callee:
+                raw_calls.append({
+                    "caller": current_func["full_name"],
+                    "callee": callee,
+                    "file": rel_path,
+                    "line": node.start_point[0] + 1,
+                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
+                })
+        for child in node.children:
+            walk(source_bytes, child, next_mod_stack, rel_path, next_func)
+
+    for path in iter_supported_repo_files(repo_src, {".rs"}):
+        files_seen += 1
+        with open(path, "rb") as fh:
+            source_bytes = fh.read()
+        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
+        tree = parser.parse(source_bytes)
+        if tree.root_node.has_error:
+            parse_error_count += 1
+        walk(source_bytes, tree.root_node, [], rel_path, None)
+
+    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, "::")
+    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_rust", "tree-sitter-rust", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
+
+
+def build_tree_sitter_kotlin_callgraph(repo_src, output_dir):
+    """Kotlin's tree-sitter callgraph builder — verified against
+    tree-sitter-kotlin 1.1.0 directly, and genuinely NOT a config swap on
+    Java's builder despite both targeting the JVM: Kotlin's grammar uses
+    entirely different node types throughout (function_declaration for both
+    top-level and member functions -- no separate "method" node the way
+    Java splits method_declaration from constructor_declaration;
+    class_declaration's `name` field for owner tracking; companion_object
+    nests as its own scope, tracked here as a synthetic ".Companion" owner
+    segment; package_header's qualified_identifier for the package name).
+    call_expression exposes no named "function" field in this grammar
+    (confirmed directly, unlike Go/Rust) -- the callee is always the node's
+    first child: either a bare `identifier` (direct call) or a
+    `navigation_expression` (dotted call like `s.start()`/`Server.create()`),
+    whose own text is already in the right "qualifier.name" shape, so no
+    further field extraction is needed for that case."""
+    parser = _generic_tree_sitter_language("tree_sitter_kotlin")
+    user_funcs = set()
+    func_files = {}
+    raw_calls = []
+    files_seen = 0
+    parse_error_count = 0
+
+    def package_name_of(source_bytes, root):
+        for c in root.children:
+            if c.type == "package_header":
+                for gc in c.children:
+                    if gc.type == "qualified_identifier":
+                        return source_bytes[gc.start_byte:gc.end_byte].decode("utf-8", "ignore")
+        return ""
+
+    def resolve_call_name(source_bytes, call_node):
+        if not call_node.children:
+            return ""
+        first = call_node.children[0]
+        if first.type in ("identifier", "navigation_expression"):
+            return source_bytes[first.start_byte:first.end_byte].decode("utf-8", "ignore")
+        return ""
+
+    def walk(source_bytes, node, package_name, class_stack, rel_path, current_func):
+        next_class_stack = class_stack
+        next_func = current_func
+        if node.type == "class_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                next_class_stack = class_stack + [source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore")]
+        if node.type == "companion_object":
+            next_class_stack = class_stack + ["Companion"]
+        if node.type == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
+            owner = ".".join(([package_name] if package_name else []) + class_stack)
+            full_name = f"{owner}.{func_name}" if owner else func_name
+            if func_name:
+                user_funcs.add(full_name)
+                func_files[full_name] = rel_path
+                next_func = {"full_name": full_name}
+        if current_func and node.type == "call_expression":
+            callee = resolve_call_name(source_bytes, node)
+            if callee:
+                raw_calls.append({
+                    "caller": current_func["full_name"],
+                    "callee": callee,
+                    "file": rel_path,
+                    "line": node.start_point[0] + 1,
+                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
+                })
+        for child in node.children:
+            walk(source_bytes, child, package_name, next_class_stack, rel_path, next_func)
+
+    for path in iter_supported_repo_files(repo_src, {".kt", ".kts"}):
+        files_seen += 1
+        with open(path, "rb") as fh:
+            source_bytes = fh.read()
+        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
+        tree = parser.parse(source_bytes)
+        if tree.root_node.has_error:
+            parse_error_count += 1
+        package_name = package_name_of(source_bytes, tree.root_node)
+        walk(source_bytes, tree.root_node, package_name, [], rel_path, None)
+
+    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, ".")
+    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_kotlin", "tree-sitter-kotlin", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
+
+
+TREE_SITTER_GENERIC_TIMEOUT_SECONDS = int(os.getenv("CODEVAL_TREE_SITTER_GENERIC_TIMEOUT_SECONDS", "90") or 90)
+
+
+def _generic_tree_sitter_worker(builder_fn, repo_src, output_dir, filename_stem, result_queue):
+    try:
+        graph_path = builder_fn(repo_src, output_dir)
+        ordered_path = os.path.join(output_dir, f"{filename_stem}_ordered_call_sequence.json")
+        result_queue.put({
+            "ok": True,
+            "graph_path": graph_path,
+            "ordered_path": ordered_path if os.path.exists(ordered_path) else "",
+        })
+    except BaseException as exc:
+        result_queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+def run_generic_tree_sitter_callgraph_isolated(builder_fn, repo_src, output_dir, filename_stem, language_label, timeout_seconds=None):
+    """Same isolation strategy as run_tree_sitter_java_callgraph_isolated
+    (a subprocess with a hard timeout, so one pathological file can't hang
+    the whole analysis run) — shared here across Go/Rust/Kotlin instead of
+    three near-identical copies of the multiprocessing boilerplate, since
+    only the builder function and output filenames differ between them."""
+    timeout_seconds = timeout_seconds or TREE_SITTER_GENERIC_TIMEOUT_SECONDS
+    result_queue = multiprocessing.Queue(maxsize=1)
+    process = multiprocessing.Process(
+        target=_generic_tree_sitter_worker,
+        args=(builder_fn, repo_src, output_dir, filename_stem, result_queue),
+        name=f"codeval-tree-sitter-{language_label}",
+    )
+    process.start()
+    process.join(timeout_seconds)
+
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        result_queue.close()
+        result_queue.join_thread()
+        raise TimeoutError(f"tree-sitter {language_label} analysis timed out after {timeout_seconds}s")
+
+    try:
+        result = result_queue.get(timeout=2)
+    except queue.Empty:
+        exit_code = process.exitcode
+        raise RuntimeError(f"tree-sitter {language_label} analysis worker exited without a result (exit code {exit_code})")
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+
+    if process.exitcode not in (0, None):
+        raise RuntimeError(f"tree-sitter {language_label} analysis worker exited with code {process.exitcode}")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or f"tree-sitter {language_label} analysis failed")
+    return result
+
+
+def build_tree_sitter_go_outputs(repo_src, output_repo_dir, results):
+    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_go")
+    os.makedirs(tree_sitter_path, exist_ok=True)
+    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_go_callgraph, repo_src, tree_sitter_path, "tree_sitter_go", "go")
+    tree_sitter_json_path = worker_result.get("graph_path", "")
+    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
+        raise RuntimeError("tree-sitter Go analysis completed without a callgraph JSON artifact")
+    results["tree_sitter_go_json_path"] = tree_sitter_json_path
+    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_go_ordered_call_sequence.json")
+    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
+        results["tree_sitter_go_ordered_call_sequence_path"] = tree_sitter_ordered_path
+    logger.info("DONE build_tree_sitter_go_callgraph %s", results["tree_sitter_go_json_path"])
+    return results
+
+
+def build_tree_sitter_rust_outputs(repo_src, output_repo_dir, results):
+    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_rust")
+    os.makedirs(tree_sitter_path, exist_ok=True)
+    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_rust_callgraph, repo_src, tree_sitter_path, "tree_sitter_rust", "rust")
+    tree_sitter_json_path = worker_result.get("graph_path", "")
+    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
+        raise RuntimeError("tree-sitter Rust analysis completed without a callgraph JSON artifact")
+    results["tree_sitter_rust_json_path"] = tree_sitter_json_path
+    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_rust_ordered_call_sequence.json")
+    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
+        results["tree_sitter_rust_ordered_call_sequence_path"] = tree_sitter_ordered_path
+    logger.info("DONE build_tree_sitter_rust_callgraph %s", results["tree_sitter_rust_json_path"])
+    return results
+
+
+def build_tree_sitter_kotlin_outputs(repo_src, output_repo_dir, results):
+    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_kotlin")
+    os.makedirs(tree_sitter_path, exist_ok=True)
+    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_kotlin_callgraph, repo_src, tree_sitter_path, "tree_sitter_kotlin", "kotlin")
+    tree_sitter_json_path = worker_result.get("graph_path", "")
+    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
+        raise RuntimeError("tree-sitter Kotlin analysis completed without a callgraph JSON artifact")
+    results["tree_sitter_kotlin_json_path"] = tree_sitter_json_path
+    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_kotlin_ordered_call_sequence.json")
+    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
+        results["tree_sitter_kotlin_ordered_call_sequence_path"] = tree_sitter_ordered_path
+    logger.info("DONE build_tree_sitter_kotlin_callgraph %s", results["tree_sitter_kotlin_json_path"])
+    return results
+
+
 JS_SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 JS_MAX_TREE_SITTER_PARSE_BYTES = int(os.getenv("CODEVAL_JS_MAX_PARSE_BYTES", "1500000"))
 JS_TREE_SITTER_ENABLED = os.getenv("CODEVAL_JS_TREE_SITTER", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -33060,6 +33557,39 @@ def dispatch_parsers(lang_map, repo_src, output_repo_dir, progress_callback=None
         except Exception as e:
             logger.warning("C# analysis failed; continuing with available graphs: %s", e)
             results["csharp_error"] = str(e)
+
+    # Go/Rust/Kotlin: same tree-sitter-per-language pattern as Java/C# above
+    # (a pip-installed grammar, no external binary) rather than depending on
+    # Joern (see should_try_joern below, which already lists go/kotlin) --
+    # Joern treats its own missing executable as a routine, expected outcome
+    # (an info-level log, not a warning), so it's an optional bonus data
+    # source here, not the reliable baseline these three get from tree-sitter.
+    if lang_map["go"]:
+        try:
+            progress("Analyzing Go code structure...")
+            build_tree_sitter_go_outputs(repo_src, output_repo_dir, results)
+            progress("Go code structure analysis complete.")
+        except Exception as e:
+            logger.warning("Go analysis failed; continuing with available graphs: %s", e)
+            results["tree_sitter_go_error"] = str(e)
+
+    if lang_map["rust"]:
+        try:
+            progress("Analyzing Rust code structure...")
+            build_tree_sitter_rust_outputs(repo_src, output_repo_dir, results)
+            progress("Rust code structure analysis complete.")
+        except Exception as e:
+            logger.warning("Rust analysis failed; continuing with available graphs: %s", e)
+            results["tree_sitter_rust_error"] = str(e)
+
+    if lang_map["kotlin"]:
+        try:
+            progress("Analyzing Kotlin code structure...")
+            build_tree_sitter_kotlin_outputs(repo_src, output_repo_dir, results)
+            progress("Kotlin code structure analysis complete.")
+        except Exception as e:
+            logger.warning("Kotlin analysis failed; continuing with available graphs: %s", e)
+            results["tree_sitter_kotlin_error"] = str(e)
 
     logger.info("Dispatching parsers: repo_src=%s output_repo_dir=%s", repo_src, output_repo_dir)
     output_joern_dir = os.path.join(output_repo_dir, f"joern")

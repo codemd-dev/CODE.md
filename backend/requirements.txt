@@ -18,6 +18,9 @@ tree-sitter
 tree-sitter-java
 tree-sitter-javascript
 tree-sitter-typescript
+tree-sitter-go
+tree-sitter-rust
+tree-sitter-kotlin
 
 networkx
 pydot
