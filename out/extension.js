@@ -13067,7 +13067,7 @@ function getHtml(host, port, cspSource) {
             // side. Point back at the existing one instead of duplicating it.
             const pointerEl = document.createElement('div');
             pointerEl.className = 'testNoMatchNote';
-            pointerEl.textContent = 'Use the "🆕 Generate test for new function" button above — it already does this, grounded in this function\'s real caller if it has one.';
+            pointerEl.textContent = 'Use the "🆕 Generate test for new function" button above — it already does this, grounded in this function\\'s real caller if it has one.';
             matchList.appendChild(pointerEl);
           } else if (gapResult && gapFile.toLowerCase().endsWith('.py')) {
             const symbol = String(gapResult.fullName || gapResult.graphSymbol || gapResult.symbol || gapResult.name || msg.query || '');

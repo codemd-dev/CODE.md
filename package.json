@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "The auto test harness for AI-written code. CODEMD traces your callgraph to find exactly what changed, instantly re-runs the existing tests that cover it, and has Claude write the ones you're missing — one click, always under your control.",
-  "version": "0.0.131",
+  "version": "0.0.132",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
