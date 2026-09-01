@@ -29,10 +29,10 @@ The core problem, as you said, is awareness + positioning — not product qualit
 - [ ] Expand `categories` beyond `["Other"]` — add whichever of `Linters`, `Testing`, `Visualization`, `Machine Learning` genuinely fit; this is what browse/filter surfaces use.
 - [ ] Add a `galleryBanner` (color + theme) to package.json for a branded Marketplace header instead of the default blank one.
 - [ ] Tighten the Marketplace short `description` field to name Claude/Cursor/Codex explicitly — those are searchable terms your buyers actually type.
-- [ ] Add an in-extension, non-annoying ratings nudge (e.g. after the 3rd successful "Check Uncommitted Edits" run, a one-time prompt) — 0 reviews today, and the first few reviews matter disproportionately for conversion.
+- [ ] Add an in-extension, non-annoying ratings nudge (e.g. after the 3rd successful "Check Uncommitted Changes" run, a one-time prompt) — 0 reviews today, and the first few reviews matter disproportionately for conversion.
 
 ### 1b. GitHub README / repo
-- [ ] Record one 20-30s GIF or short screen capture of the real flow: open a repo → **Generate CODEMD** → **Check Uncommitted Edits** → blast radius report → click into a caller. This is the single highest-leverage asset — reuse it in the README hero, Marketplace, Reddit/HN/PH posts, and LinkedIn.
+- [ ] Record one 20-30s GIF or short screen capture of the real flow: open a repo → **Generate CODEMD** → **Check Uncommitted Changes** → blast radius report → click into a caller. This is the single highest-leverage asset — reuse it in the README hero, Marketplace, Reddit/HN/PH posts, and LinkedIn.
 - [ ] Move that GIF above the fold in [README.md](README.md) (currently the two JPGs are static and appear after several paragraphs of text).
 - [ ] Add badges to the README top: Marketplace version/install count, license, "Works with Claude Code / Cursor / Codex."
 - [ ] Add a short "Why CODEMD" section that contrasts it with (a) grep/manual review and (b) generic AI repo-summarizer tools — the differentiator is local-first + MCP-native + pre-commit risk scoring, not just "a map file."
