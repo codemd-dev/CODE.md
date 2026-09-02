@@ -10505,6 +10505,8 @@ function getHtml(host: string, port: number, cspSource: string): string {
   #mcpUsageByClient { margin: 4px 0 0 18px; font-size: 12px; opacity: 0.85; }
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
+  #mcpRegressionNote { margin: 8px 0 0 18px; padding: 6px 8px; font-size: 11px; line-height: 1.5; border-left: 2px solid var(--vscode-terminal-ansiGreen, #3fb950); opacity: 0.9; max-width: 60ch; }
+  #checkChangesNote { font-size: 11px; opacity: 0.7; margin: 2px 0 0 2px; max-width: 70ch; line-height: 1.4; }
   #mcpUsageCard.is-collapsed #mcpUsageDetails { display: none; }
   #mcpUsageCard.is-collapsed #mcpActionRow { display: none; }
   #setupMcpBtn { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
@@ -10781,6 +10783,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
     </div>
+    <p id="checkChangesNote">Checking your changes doesn't just show what changed — CODEMD traces the callgraph to work out which real test(s) actually cover each changed function, so you (or Claude/Codex, via MCP below) know exactly what to rerun instead of guessing or retesting everything.</p>
     <div id="messages"></div>
     <div id="mcpUsageCard" class="is-collapsed" title="Claude/Codex CODEMD MCP usage observed by the MCP wrapper.">
       <div id="mcpUsageContent">
@@ -10797,6 +10800,7 @@ function getHtml(host: string, port: number, cspSource: string): string {
           <div id="mcpUsageSubtitle"></div>
           <div id="mcpSetupStatus"></div>
           <div id="mcpUsageByClient"></div>
+          <div id="mcpRegressionNote">Two of these tools go further than answering questions: <code>codemd_review_changes</code> and <code>codemd_find_tests</code> work out which real test file(s) actually cover the code Claude/Codex just changed, and hand back that exact list — not just "what changed." A 2026 study of this same approach (test-impact analysis handed to a coding agent as concrete context — see TDAD, evaluated on SWE-bench Verified) measured about a 70% cut in regressions: tests that used to pass started breaking 6.08% of the time normally, versus 1.82% with the impacted-test list in hand. Telling the agent "write more tests" without that concrete list barely helped on its own (it actually rose to 9.94%). This is why CODEMD hands the agent the list instead of just the instruction.</div>
         </div>
       </div>
       <div id="mcpActionRow">

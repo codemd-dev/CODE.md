@@ -38,6 +38,7 @@ const SERVER_INSTRUCTIONS = [
   '- For direct semantic code lookup, call codemd_semantic_search.',
   '- For "what tests cover X?" questions, call codemd_find_tests before claiming coverage is present or absent.',
   '- For "what changed?" or "what should I review?" questions, call codemd_review_changes to inspect the actual local git diff instead of searching for code that implements change review.',
+  '- Before ending a turn that edited code, call codemd_review_changes once more: it also resolves tests_to_verify (the actual test file(s) covering each changed function and, via the callgraph, its callers) — run and pass those before considering the change done, and treat any changed function whose covering_tests comes back empty as an untested change worth flagging, not silently ignoring.',
   '- For a repository overview, call codemd_read_artifact (defaults to CODE.md).',
   'These artifacts are generated static analysis: some edges are regex-inferred rather than AST-resolved, and content can go stale if source changed since generation. Treat results as a fast lead, and verify against the actual source file before finalizing a change.',
 ].join('\n');
@@ -1302,6 +1303,60 @@ function reviewChanges(args = {}) {
     String(a.symbol).localeCompare(String(b.symbol)),
   );
 
+  // Regression-prevention step: resolve which test(s) actually cover each
+  // changed function — the same lookup codemd_find_tests does on its own —
+  // and roll them into one list the caller must verify before considering
+  // the change done. This is what turns "here's what changed" into "here's
+  // what to check," instead of leaving the agent to remember to ask a
+  // separate question. Capped independently of `limit` above (a real
+  // test-file scan per symbol, via findTests, is not free) and skipped
+  // entirely once the diff is too large for a per-function scan to be worth
+  // it. Modeled on TDAD ("Test-Driven Agentic Development", Alonso 2026),
+  // which measured this exact mechanism — handing an agent the concrete
+  // impacted-test list rather than a general "add tests" instruction —
+  // cutting AI-agent regressions on SWE-bench Verified from 6.08% to 1.82%
+  // (~70% fewer previously-passing tests broken), evaluated with Qwen3-Coder
+  // 30B. That number is TDAD's own reported result, not a measurement of
+  // this tool; it's cited here as the reason this lookup exists.
+  const TEST_LOOKUP_CAP = 15;
+  const testScores = new Map();
+  let changedFunctionsWithoutTests = 0;
+  changedFunctions.slice(0, TEST_LOOKUP_CAP).forEach((fn) => {
+    let coveringTests = [];
+    try {
+      const parsed = JSON.parse(findTests({ query: fn.symbol, limit: 5 }));
+      // findTests' raw matches include a low-confidence tier scored purely
+      // from generic short-token overlap (no import/name/symbol match at
+      // all — empty `reasons`) — real enough to be worth surfacing when a
+      // human is browsing "what tests might touch this," too noisy to trust
+      // as "this change is covered." A meaningful match is score >= 70 (a
+      // real name mention, symbol mention, or import), matching findTests'
+      // own scoring tiers.
+      coveringTests = (Array.isArray(parsed.matches) ? parsed.matches : [])
+        .filter((m) => Number(m.score || 0) >= 70)
+        .map((m) => ({
+          file: String(m.file || ''),
+          score: Number(m.score || 0),
+          reasons: Array.isArray(m.reasons) ? m.reasons.slice(0, 2) : [],
+        }));
+    } catch {
+      coveringTests = [];
+    }
+    fn.covering_tests = coveringTests;
+    if (!coveringTests.length) {
+      changedFunctionsWithoutTests++;
+    }
+    for (const t of coveringTests) {
+      const prevScore = testScores.get(t.file);
+      if (prevScore === undefined || t.score > prevScore) {
+        testScores.set(t.file, t.score);
+      }
+    }
+  });
+  const testsToVerify = Array.from(testScores.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([file]) => file);
+
   return JSON.stringify({
     available: true,
     changed_file_count: allChangedFiles.length,
@@ -1310,8 +1365,12 @@ function reviewChanges(args = {}) {
     diff_stat: stat.stdout.trim(),
     changed_function_count: changedFunctions.length,
     changed_functions: changedFunctions.slice(0, limit),
+    tests_to_verify: testsToVerify,
+    changed_functions_without_tests: changedFunctionsWithoutTests,
     note: allChangedFiles.length
-      ? 'Review priority is based on changed source symbols plus direct callers/callees from cached static analysis. Verify the diff and tests before merging.'
+      ? (testsToVerify.length
+        ? `Run and pass every file in tests_to_verify (${testsToVerify.length}) before considering this change done.` + (changedFunctionsWithoutTests ? ` ${changedFunctionsWithoutTests} changed function(s) above have an empty covering_tests — no test was found for them at all, which is itself worth flagging rather than ignoring.` : '')
+        : (changedFunctionsWithoutTests ? `No covering test was found for any of the ${changedFunctionsWithoutTests} changed function(s) checked (covering_tests scan capped at the top ${TEST_LOOKUP_CAP} by review_priority) — this change looks untested.` : 'Review priority is based on changed source symbols plus direct callers/callees from cached static analysis.'))
       : 'No tracked local git diff was found. Untracked files are intentionally excluded by default.',
   }, null, 2);
 }
@@ -2057,7 +2116,7 @@ const tools = [
   },
   {
     name: 'codemd_review_changes',
-    description: 'Summarize the actual local git diff and identify changed indexed functions plus direct callers/callees to guide code review. Use for questions like "what changed?" and "what should I review?".',
+    description: 'Summarize the actual local git diff, identify changed indexed functions plus direct callers/callees, and resolve the real test file(s) covering each one into a single tests_to_verify list — the concrete regression check to run before considering a change done, not just a caller/callee listing. Use for "what changed?"/"what should I review?" questions, and call it again right before ending a turn that edited code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2262,6 +2321,9 @@ if (cliMode) {
   if (cliMode === 'find_tests') {
     const limitArg = argValue('--limit');
     output = findTests({ query: argValue('--query'), limit: limitArg ? Number(limitArg) : undefined });
+  } else if (cliMode === 'review_changes') {
+    const limitArg = argValue('--limit');
+    output = reviewChanges({ limit: limitArg ? Number(limitArg) : undefined });
   } else {
     output = JSON.stringify({ error: `Unknown --cli mode: ${cliMode}` });
   }
