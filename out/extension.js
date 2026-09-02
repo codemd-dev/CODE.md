@@ -4818,6 +4818,17 @@ class GraphsViewProvider {
     // Fix has Bash access and can run for minutes, so "just wait it out" isn't
     // an acceptable answer if they realize partway through it's not going well.
     activeFixCancelers = new Map();
+    // Auto Mode (see runAutoMode) drives existing server methods — the same
+    // ones a manual button click invokes — directly and in sequence, awaiting
+    // each one's own posted result instead of duplicating their logic. Every
+    // one of those methods already ends by calling post({type, requestId,
+    // ...}); this map lets a caller register to be woken up the moment a
+    // specific requestId's result goes out, without changing what any of
+    // those methods do for the normal webview-round-trip case.
+    pendingAutoAwaits = new Map();
+    autoModeRunning = false;
+    autoModeCancelRequested = false;
+    autoModeRequestSeq = 0;
     initialGraphPosted = false;
     initialGraphPostWaiters = [];
     // Set when a caller asks to focus the highest-impact change while a check
@@ -5295,6 +5306,28 @@ class GraphsViewProvider {
         // through ~20 call sites. Never awaited — must not make post() (called
         // from deep inside synchronous-looking result-building code) async.
         this.maybeAppendReportEntry(message);
+        // Same reasoning, for Auto Mode: every existing*/generate*/run*/fix*
+        // method already posts its result keyed by requestId — this just also
+        // wakes up whichever awaitPostedResult call (if any) is waiting on this
+        // exact requestId, so Auto Mode can drive those methods directly without
+        // a webview round trip or any duplicated result-handling logic.
+        const requestId = message?.requestId;
+        if (requestId && this.pendingAutoAwaits.has(requestId)) {
+            const resolve = this.pendingAutoAwaits.get(requestId);
+            this.pendingAutoAwaits.delete(requestId);
+            resolve(message);
+        }
+    }
+    awaitPostedResult(requestId, timeoutMs = 300000) {
+        return new Promise((resolve) => {
+            this.pendingAutoAwaits.set(requestId, resolve);
+            setTimeout(() => {
+                if (this.pendingAutoAwaits.has(requestId)) {
+                    this.pendingAutoAwaits.delete(requestId);
+                    resolve({ ok: false, error: 'Timed out waiting for a result.' });
+                }
+            }, timeoutMs);
+        });
     }
     reportsNoticeShown = false;
     reportWriteQueue = Promise.resolve();
@@ -5819,6 +5852,12 @@ class GraphsViewProvider {
         }
         else if (message.type === 'blastRadius') {
             this.runBlastRadiusCheck();
+        }
+        else if (message.type === 'startAutoMode') {
+            this.runAutoMode();
+        }
+        else if (message.type === 'cancelAutoMode') {
+            this.autoModeCancelRequested = true;
         }
         else if (message.type === 'checkCommits') {
             this.runLatestCommitsCheck();
@@ -9581,6 +9620,219 @@ class GraphsViewProvider {
         }
     }
     /**
+     * ⚡ Auto Mode — one click processes every medium/high-priority uncommitted
+     * change SERIALLY: check existing tests (local, free) → if not already
+     * covered, generate the one applicable test (new-function for an added
+     * symbol, contract for a Python function with proven-broken callers,
+     * broad-coverage for one with 2+ confirmed callers — a modified function
+     * fitting none of those is skipped, not forced) → run it → if it genuinely
+     * fails, ask Claude to fix it, then re-run once → move on. Every step
+     * reuses the exact same server method a manual button click would call
+     * (via awaitPostedResult, see post() above), so behavior — including
+     * defect recording via recordDefectIfGenuine/markDefectStatus inside
+     * postTestRunResult/fixTestFailureForResult — is identical to doing it by
+     * hand, just sequenced instead of requiring N clicks.
+     *
+     * "Low priority" (excluded) = cosmeticOnly changes and anything that isn't
+     * modified/added (removed functions, file/blastRadius summary rows).
+     * Among the rest, blast-radius-qualifying changes (see
+     * blastRadiusEntriesFromReport) are processed first.
+     *
+     * Cost/quota guardrails, reusing existing settings rather than inventing
+     * new ones: requires claudeAgentConsent (prompts once via the same picker
+     * as any other Claude action) and !isReadOnlyMode; every Claude-invoking
+     * step (generate, Claude-assisted run, fix) counts against
+     * codemdGraphs.maxAutoWritesPerBatch for this one run — once reached,
+     * remaining changes are marked skipped rather than continuing to spend.
+     * Each individual Claude call still separately respects
+     * codemdGraphs.maxCostPerActionUsd, same as every other Claude action.
+     */
+    async runAutoMode() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this.post({ type: 'autoModeProgress', done: true, error: 'No workspace folder open.' });
+            return;
+        }
+        if (this.autoModeRunning) {
+            return;
+        }
+        if (this.isReadOnlyMode()) {
+            this.post({ type: 'autoModeProgress', done: true, error: 'Read-only mode is on — CODEMD will not invoke Claude or write files. Turn off codemdGraphs.readOnlyMode in Settings to use Auto Mode.' });
+            return;
+        }
+        if (!(await this.ensureClaudeAgentConsent())) {
+            this.post({ type: 'autoModeProgress', done: true, error: 'Claude wasn\'t allowed to run — click Auto Mode again to be asked.' });
+            return;
+        }
+        this.autoModeRunning = true;
+        this.autoModeCancelRequested = false;
+        const config = vscode.workspace.getConfiguration('codemdGraphs');
+        const maxClaudeActions = Math.max(1, config.get('maxAutoWritesPerBatch', 3));
+        let claudeActionsUsed = 0;
+        const summary = [];
+        try {
+            this.post({ type: 'autoModeProgress', stage: 'scanning', text: 'Auto Mode: scanning uncommitted changes…' });
+            const { report } = await this.runDeletionReportScript(folder);
+            if (report.error) {
+                this.post({ type: 'autoModeProgress', done: true, error: `Could not analyze changes: ${report.error}` });
+                return;
+            }
+            const allResults = this.buildChangeResults(report, folder);
+            const highPrioritySymbols = new Set(blastRadiusEntriesFromReport(report).map((e) => e.symbol));
+            const queue = allResults
+                .filter((r) => r.changeCard && (r.changeCard.kind === 'modified' || r.changeCard.kind === 'added') && !r.changeCard.cosmeticOnly)
+                .sort((a, b) => {
+                const aHigh = highPrioritySymbols.has(String(a.fullName || a.graphSymbol || '')) ? 1 : 0;
+                const bHigh = highPrioritySymbols.has(String(b.fullName || b.graphSymbol || '')) ? 1 : 0;
+                return bHigh - aHigh;
+            });
+            if (!queue.length) {
+                this.post({ type: 'autoModeProgress', done: true, text: 'Auto Mode: no medium/high-priority uncommitted changes to process.', summary: [] });
+                return;
+            }
+            for (let i = 0; i < queue.length; i++) {
+                if (this.autoModeCancelRequested) {
+                    summary.push({ symbol: '(stopped)', file: '', status: 'stopped', steps: [`Stopped by user after ${i}/${queue.length}.`] });
+                    break;
+                }
+                const r = queue[i];
+                const symbol = String(r.fullName || r.graphSymbol || r.symbol || r.name || '');
+                const file = String(r.file || '');
+                const startLine = Number(r.line || 0) || 0;
+                const progress = (text) => this.post({ type: 'autoModeProgress', stage: 'change', index: i + 1, total: queue.length, symbol, text: `[${i + 1}/${queue.length}] ${text}` });
+                const entry = { symbol, file, status: 'unknown', steps: [] };
+                // Step 1 — existing tests: local pytest only today (same limitation
+                // as the manual "Existing test(s) found" feature), free, no Claude
+                // call, so this always runs regardless of the Claude-action cap.
+                let covered = false;
+                if (file.toLowerCase().endsWith('.py')) {
+                    progress(`Checking existing tests for ${symbol}…`);
+                    const existingReqId = 'automode_existing_' + (this.autoModeRequestSeq++) + '_' + Date.now();
+                    void this.runExistingTestsForResult(r, existingReqId);
+                    const existingMsg = await this.awaitPostedResult(existingReqId, 120000);
+                    if (existingMsg?.ok && Array.isArray(existingMsg.matches)) {
+                        const confirmed = existingMsg.matches.find((m) => m.ok && m.passed && m.coverageConfirmed && m.executed);
+                        if (confirmed) {
+                            covered = true;
+                            entry.status = 'already-covered';
+                            entry.steps.push(`Existing test ${confirmed.file} already passes and confirms coverage — nothing to do.`);
+                        }
+                    }
+                }
+                if (covered) {
+                    summary.push(entry);
+                    continue;
+                }
+                // Step 2 — pick the one applicable generator (never forced).
+                if (claudeActionsUsed >= maxClaudeActions) {
+                    entry.status = 'skipped-cap';
+                    entry.steps.push(`Skipped — this run's Claude-action cap (${maxClaudeActions}, codemdGraphs.maxAutoWritesPerBatch) was already reached.`);
+                    summary.push(entry);
+                    continue;
+                }
+                const kind = r.changeCard.kind;
+                const hasBrokenCallers = Array.isArray(r.changeCard.callSiteIssues) && r.changeCard.callSiteIssues.length > 0;
+                const impactedCount = Array.isArray(r.changeCard.impactedFunctions) ? r.changeCard.impactedFunctions.length : 0;
+                let genType = null;
+                if (kind === 'added') {
+                    genType = 'new';
+                }
+                else if (file.toLowerCase().endsWith('.py') && hasBrokenCallers) {
+                    genType = 'contract';
+                }
+                else if (impactedCount >= 2) {
+                    genType = 'broad';
+                }
+                if (!genType) {
+                    entry.status = 'skipped-no-generator';
+                    entry.steps.push('No generator applies here (not newly added, no proven-broken callers, and fewer than 2 confirmed callers) — nothing safe to auto-generate.');
+                    summary.push(entry);
+                    continue;
+                }
+                progress(`Generating a ${genType === 'new' ? 'new-function' : genType} test for ${symbol}…`);
+                const genReqId = 'automode_gen_' + (this.autoModeRequestSeq++) + '_' + Date.now();
+                claudeActionsUsed++;
+                if (genType === 'new') {
+                    void this.generateNewFunctionTestForResult(r, genReqId);
+                }
+                else if (genType === 'contract') {
+                    void this.generateContractTestForResult(r, genReqId);
+                }
+                else {
+                    void this.generateBroadCoverageTestForResult(r, genReqId);
+                }
+                const genMsg = await this.awaitPostedResult(genReqId, 300000);
+                if (!genMsg?.ok || !genMsg.path) {
+                    entry.status = 'generation-failed';
+                    entry.steps.push(`Could not generate a test: ${genMsg?.error || 'unknown error'}`);
+                    summary.push(entry);
+                    continue;
+                }
+                entry.testFile = genMsg.path;
+                entry.steps.push(`Generated a ${genType} test: ${genMsg.path}`);
+                // Step 3 — run it, same per-language dispatch a manual Run click uses.
+                const testFileLower = String(genMsg.path).toLowerCase();
+                const isDirect = ['.py', '.go', '.rs', '.java', '.cs', '.kt', '.kts'].some((ext) => testFileLower.endsWith(ext));
+                const runOnce = async () => {
+                    const runReqId = 'automode_run_' + (this.autoModeRequestSeq++) + '_' + Date.now();
+                    const runMessage = { requestId: runReqId, file: genMsg.path, targetPath: file, targetStartLine: startLine, targetSymbol: symbol };
+                    if (isDirect) {
+                        void this.runTestFileForResult(runMessage);
+                    }
+                    else {
+                        claudeActionsUsed++;
+                        void this.runTestViaClaudeForResult(runMessage, folder);
+                    }
+                    return this.awaitPostedResult(runReqId, 180000);
+                };
+                progress(`Running ${genMsg.path}…`);
+                let runMsg = await runOnce();
+                entry.steps.push(runMsg?.ok === false ? `Run failed: ${runMsg.error}` : (runMsg?.passed ? 'Test passed.' : 'Test ran and genuinely failed.'));
+                // Step 4 — a real (not environment/couldn't-run) failure gets one
+                // Fix-with-Claude attempt, then one re-run to confirm.
+                if (runMsg?.ok === true && runMsg?.passed === false && !runMsg?.environmentIssue && claudeActionsUsed < maxClaudeActions) {
+                    progress(`Test failed — asking Claude to fix ${symbol}…`);
+                    const fixReqId = 'automode_fix_' + (this.autoModeRequestSeq++) + '_' + Date.now();
+                    claudeActionsUsed++;
+                    void this.fixTestFailureForResult({
+                        requestId: fixReqId,
+                        environmentIssue: false,
+                        file: genMsg.path,
+                        targetPath: file,
+                        targetStartLine: startLine,
+                        targetSymbol: symbol,
+                    }, folder);
+                    const fixMsg = await this.awaitPostedResult(fixReqId, 300000);
+                    if (fixMsg?.ok) {
+                        entry.steps.push(`Fix with Claude: ${fixMsg.summary || (Array.isArray(fixMsg.filesChanged) && fixMsg.filesChanged.length ? 'changed ' + fixMsg.filesChanged.join(', ') : 'no change made')}.`);
+                        progress(`Re-running ${genMsg.path} after fix…`);
+                        runMsg = await runOnce();
+                        entry.steps.push(runMsg?.ok === false ? `Re-run failed: ${runMsg.error}` : (runMsg?.passed ? 'Re-run passed.' : 'Re-run still failing.'));
+                    }
+                    else {
+                        entry.steps.push(`Fix with Claude could not fix it: ${fixMsg?.error || 'unknown error'}`);
+                    }
+                }
+                entry.status = runMsg?.passed ? 'passed' : (runMsg?.ok === false ? 'couldnt-run' : 'still-failing');
+                summary.push(entry);
+            }
+            const passedCount = summary.filter((s) => s.status === 'passed' || s.status === 'already-covered').length;
+            this.post({
+                type: 'autoModeProgress',
+                done: true,
+                text: `Auto Mode finished — ${summary.length} change(s) processed, ${passedCount} covered/passing.`,
+                summary,
+            });
+        }
+        catch (err) {
+            this.post({ type: 'autoModeProgress', done: true, error: err?.message || String(err) });
+        }
+        finally {
+            this.autoModeRunning = false;
+            this.postDefects();
+        }
+    }
+    /**
      * Blast Radius Report: the same diff/callgraph data as runChangesCheck, but
      * filtered down to only the changed functions whose caller footprint
      * crosses BLAST_RADIUS_DIRECT_CALLER_THRESHOLD /
@@ -10156,6 +10408,20 @@ function getHtml(host, port, cspSource) {
   .modePill.is-auto { opacity: 1; border-color: var(--vscode-button-background); background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: 600; }
   .modePill.is-auto:hover { background: var(--vscode-button-hoverBackground); }
   .modePill:disabled { cursor: default; opacity: 0.6; }
+  .autoPipelineBtn { font: inherit; font-weight: 700; border: 1px solid #d29922; border-radius: 3px; background: transparent; color: #d29922; padding: 2px 9px; font-size: 11px; cursor: pointer; }
+  .autoPipelineBtn:hover { background: color-mix(in srgb, #d29922 15%, transparent); }
+  .autoPipelineBtn:disabled, .autoPipelineBtn.is-running { cursor: default; background: color-mix(in srgb, #d29922 22%, transparent); }
+  #autoPipelineProgress { margin: 6px 8px 0; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); font-size: 11px; }
+  #autoPipelineProgressText { font-weight: 600; }
+  .autoPipelineRow { padding: 3px 0; border-top: 1px solid var(--vscode-panel-border); }
+  .autoPipelineRow:first-child { border-top: none; }
+  .autoPipelineRowHead { display: flex; align-items: baseline; gap: 6px; }
+  .autoPipelineRowSymbol { font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .autoPipelineRowStatus { font-size: 10px; padding: 0 6px; border-radius: 999px; white-space: nowrap; }
+  .autoPipelineRowStatus.is-good { color: #3fb950; }
+  .autoPipelineRowStatus.is-bad { color: var(--vscode-errorForeground); }
+  .autoPipelineRowStatus.is-warn { color: var(--vscode-editorWarning-foreground); }
+  .autoPipelineRowSteps { margin: 2px 0 0 0; padding-left: 16px; opacity: 0.8; font-size: 10.5px; }
   .changeGroupBody { display: grid; gap: 5px; margin-top: 2px; }
   .changeGroupBody .result { margin-bottom: 0; }
   #searchForm { flex: 0 0 auto; position: relative; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
@@ -10253,7 +10519,10 @@ function getHtml(host, port, cspSource) {
     <div id="modeRow">
       <button id="autoModeBtn" type="button" class="modePill" aria-pressed="false" title="Off: nothing runs without a click. On: existing tests for Python/Go/Rust/Java/C#/Kotlin are found and run automatically via their local toolchains — never Claude, and never for any other language.">Mode: Manual</button>
       <button id="claudeConsentBtn" type="button" class="modePill" aria-pressed="false" title="Whether this panel is allowed to invoke Claude (writing tests, discovering a test command, fixing a failure). Click to change — opens the same choice you saw the first time.">✋ Manual</button>
+      <button id="autoPipelineBtn" type="button" class="autoPipelineBtn" title="For every medium/high-priority uncommitted change, one at a time: check existing tests, generate one if needed, run it, and ask Claude to fix a genuine failure — then move to the next. Requires Claude to be allowed to run (pill above) and stays under this workspace's usage caps (codemdGraphs.maxAutoWritesPerBatch / maxCostPerActionUsd).">⚡ <b>Auto Mode</b></button>
+      <button id="autoPipelineStopBtn" type="button" class="btn is-outline" style="display:none;">Stop</button>
     </div>
+    <div id="autoPipelineProgress" style="display:none;"></div>
   </div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -11661,6 +11930,74 @@ function getHtml(host, port, cspSource) {
     vscode.postMessage({ type: 'openClaudeAgentConsentPicker' });
   });
   renderModePills();
+
+  // ⚡ Auto Mode — one click, the whole pipeline (check existing tests ->
+  // generate if needed -> run -> fix a genuine failure -> re-run) runs
+  // serially for every medium/high-priority uncommitted change, driven
+  // entirely on the extension-host side (see runAutoMode); this side just
+  // renders the autoModeProgress messages it posts along the way.
+  const autoPipelineBtn = document.getElementById('autoPipelineBtn');
+  const autoPipelineStopBtn = document.getElementById('autoPipelineStopBtn');
+  const autoPipelineProgress = document.getElementById('autoPipelineProgress');
+  let autoPipelineRunning = false;
+  autoPipelineBtn.addEventListener('click', () => {
+    if (autoPipelineRunning) { return; }
+    autoPipelineRunning = true;
+    autoPipelineBtn.disabled = true;
+    autoPipelineBtn.classList.add('is-running');
+    autoPipelineBtn.innerHTML = '⚡ <b>Auto Mode running…</b>';
+    autoPipelineStopBtn.style.display = '';
+    autoPipelineStopBtn.disabled = false;
+    autoPipelineStopBtn.textContent = 'Stop';
+    autoPipelineProgress.style.display = '';
+    autoPipelineProgress.textContent = 'Starting…';
+    vscode.postMessage({ type: 'startAutoMode' });
+  });
+  autoPipelineStopBtn.addEventListener('click', () => {
+    autoPipelineStopBtn.disabled = true;
+    autoPipelineStopBtn.textContent = 'Stopping after current change…';
+    vscode.postMessage({ type: 'cancelAutoMode' });
+  });
+  const AUTO_PIPELINE_STATUS_LABEL = {
+    'already-covered': ['✓ Already covered', 'is-good'],
+    'passed': ['✓ Fixed & passing', 'is-good'],
+    'still-failing': ['✗ Still failing', 'is-bad'],
+    'couldnt-run': ['⚠ Could not run', 'is-warn'],
+    'generation-failed': ['⚠ Could not generate a test', 'is-warn'],
+    'skipped-no-generator': ['– Skipped (no generator applies)', 'is-warn'],
+    'skipped-cap': ['– Skipped (usage cap reached)', 'is-warn'],
+    'stopped': ['– Stopped', 'is-warn'],
+  };
+  function renderAutoPipelineSummary(summary) {
+    (summary || []).forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'autoPipelineRow';
+      const head = document.createElement('div');
+      head.className = 'autoPipelineRowHead';
+      const name = document.createElement('span');
+      name.className = 'autoPipelineRowSymbol';
+      name.textContent = entry.symbol;
+      name.title = entry.file || '';
+      head.appendChild(name);
+      const statusInfo = AUTO_PIPELINE_STATUS_LABEL[entry.status] || [entry.status, ''];
+      const status = document.createElement('span');
+      status.className = 'autoPipelineRowStatus ' + statusInfo[1];
+      status.textContent = statusInfo[0];
+      head.appendChild(status);
+      row.appendChild(head);
+      if (entry.steps && entry.steps.length) {
+        const steps = document.createElement('ul');
+        steps.className = 'autoPipelineRowSteps';
+        entry.steps.forEach((step) => {
+          const li = document.createElement('li');
+          li.textContent = step;
+          steps.appendChild(li);
+        });
+        row.appendChild(steps);
+      }
+      autoPipelineProgress.appendChild(row);
+    });
+  }
 
   // One row per runnable target (a named test if we found one, otherwise the
   // whole file) — built for both cases so "Run" behaves identically either
@@ -13289,6 +13626,29 @@ function getHtml(host, port, cspSource) {
         ? msg.maxAutoWritesPerBatch : 3;
       claudeAgentConsent = Boolean(msg.claudeAgentConsent);
       renderModePills();
+    } else if (msg.type === 'autoModeProgress') {
+      autoPipelineProgress.style.display = '';
+      if (msg.done) {
+        autoPipelineRunning = false;
+        autoPipelineBtn.disabled = false;
+        autoPipelineBtn.classList.remove('is-running');
+        autoPipelineBtn.innerHTML = '⚡ <b>Auto Mode</b>';
+        autoPipelineStopBtn.style.display = 'none';
+        if (msg.error) {
+          autoPipelineProgress.textContent = '⚠ ' + msg.error;
+        } else if (Array.isArray(msg.summary) && msg.summary.length) {
+          const headline = document.createElement('div');
+          headline.id = 'autoPipelineProgressText';
+          headline.textContent = msg.text || 'Auto Mode finished.';
+          autoPipelineProgress.textContent = '';
+          autoPipelineProgress.appendChild(headline);
+          renderAutoPipelineSummary(msg.summary);
+        } else {
+          autoPipelineProgress.textContent = msg.text || 'Auto Mode finished — nothing to do.';
+        }
+      } else {
+        autoPipelineProgress.textContent = msg.text || 'Auto Mode running…';
+      }
     } else if (msg.type === 'mcpUsage') {
       const total = Number(msg.totalCalls || 0);
       const configured = Boolean(msg.configured);
