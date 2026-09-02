@@ -5364,42 +5364,103 @@ class GraphsViewProvider {
     /**
      * Current Run/Write mode + read-only/batch-cap state, as read fresh from
      * configuration — sent to the webview on load (markWebviewReady) and
-     * again after every setRunMode/setWriteMode so both the panel and
-     * sidebar surfaces (and both mode pills) always reflect the same
-     * authoritative values rather than trusting the webview's own optimistic
-     * update.
+     * again after every setAutoMode so both the panel and sidebar surfaces
+     * always reflect the same authoritative value rather than trusting the
+     * webview's own optimistic update.
      */
     postModesConfig() {
         const config = vscode.workspace.getConfiguration('codemdGraphs');
         const maxAutoWritesPerBatch = config.get('maxAutoWritesPerBatch', 3);
         this.post({
             type: 'modesConfig',
-            runMode: config.get('runMode', 'auto') === 'manual' ? 'manual' : 'auto',
-            writeMode: config.get('writeMode', 'manual') === 'auto' ? 'auto' : 'manual',
+            autoMode: config.get('autoMode', 'manual') === 'localOnly' ? 'localOnly' : 'manual',
             readOnlyMode: this.isReadOnlyMode(),
             maxAutoWritesPerBatch: Number.isFinite(maxAutoWritesPerBatch) && maxAutoWritesPerBatch > 0 ? maxAutoWritesPerBatch : 3,
+            claudeAgentConsent: config.get('claudeAgentConsent', false) === true,
         });
     }
-    /**
-     * Write:Auto needs Run:Auto's data (the existing-tests verdict) to decide
-     * whether a symbol already has coverage worth skipping for, so turning
-     * Write on also forces Run on — enforced here, not just in the webview's
-     * own click handler, so the persisted setting stays consistent even if a
-     * stale webview posts an inconsistent pair.
-     */
-    async setRunOrWriteMode(which, value) {
+    async setAutoMode(value) {
         const config = vscode.workspace.getConfiguration('codemdGraphs');
-        if (which === 'run') {
-            const runMode = value === 'manual' ? 'manual' : 'auto';
-            await config.update('runMode', runMode, vscode.ConfigurationTarget.Workspace);
+        const autoMode = value === 'localOnly' ? 'localOnly' : 'manual';
+        await config.update('autoMode', autoMode, vscode.ConfigurationTarget.Workspace);
+        this.postModesConfig();
+    }
+    /**
+     * Gate in front of every Claude CLI invocation (test generation, run-command
+     * discovery, Fix). The first time any of those is actually about to run,
+     * this shows a one-time popup — mirroring pickMcpSetupTargets's QuickPick —
+     * instead of spending a Claude call on implicit consent. Picking "Use
+     * Coding Agent" persists approval so every future Claude action (this one
+     * and all the others) proceeds without asking again; picking Manual (or
+     * dismissing) only skips this one click and deliberately does NOT persist
+     * a refusal, so the next Claude-powered click asks again rather than
+     * silently blocking the feature forever — same "don't remember no" choice
+     * requestClaudeMcpApproval already makes for MCP approval.
+     */
+    async ensureClaudeAgentConsent() {
+        const config = vscode.workspace.getConfiguration('codemdGraphs');
+        if (config.get('claudeAgentConsent', false) === true) {
+            return true;
         }
-        else {
-            const writeMode = value === 'auto' ? 'auto' : 'manual';
-            await config.update('writeMode', writeMode, vscode.ConfigurationTarget.Workspace);
-            if (writeMode === 'auto') {
-                await config.update('runMode', 'auto', vscode.ConfigurationTarget.Workspace);
-            }
+        const items = [
+            {
+                label: '✋ Manual',
+                description: 'Recommended',
+                detail: 'Nothing runs — this click is skipped for now, and CODEMD asks again next time you click a Claude-powered action.',
+                allow: false,
+            },
+            {
+                label: '🤖 Use Coding Agent (Claude)',
+                detail: 'Allows this panel to invoke Claude for writing tests, discovering how to run a test, and fixing failures — from now on, without asking again.',
+                allow: true,
+            },
+        ];
+        const picked = await vscode.window.showQuickPick(items, {
+            title: 'CODEMD: allow Claude to run this action?',
+            placeHolder: 'For a CODEMD UI, Manual is the safer default — it clearly contrasts with Use Coding Agent (Claude).',
+            ignoreFocusOut: true,
+        });
+        if (!picked?.allow) {
+            return false;
         }
+        await config.update('claudeAgentConsent', true, vscode.ConfigurationTarget.Workspace);
+        this.postModesConfig();
+        return true;
+    }
+    /**
+     * The visible, always-reconsiderable counterpart to ensureClaudeAgentConsent's
+     * one-time implicit gate — opened from the "Coding Agent" pill next to the
+     * Mode pill (never fires automatically, and never short-circuits on an
+     * already-granted consent the way the implicit gate does), so the user can
+     * both see the current state at a glance and change their mind either
+     * direction later, including revoking a prior "Use Coding Agent" choice.
+     */
+    async openClaudeAgentConsentPicker() {
+        const config = vscode.workspace.getConfiguration('codemdGraphs');
+        const current = config.get('claudeAgentConsent', false) === true;
+        const items = [
+            {
+                label: '✋ Manual',
+                description: current ? undefined : 'Currently selected',
+                detail: 'CODEMD will not invoke Claude for any action (writing tests, discovering a test command, or fixing a failure) until you allow it here.',
+                allow: false,
+            },
+            {
+                label: '🤖 Use Coding Agent (Claude)',
+                description: current ? 'Currently selected' : undefined,
+                detail: 'Allows this panel to invoke Claude for writing tests, discovering how to run a test, and fixing failures — until you disable it here again.',
+                allow: true,
+            },
+        ];
+        const picked = await vscode.window.showQuickPick(items, {
+            title: 'CODEMD: allow Claude to run actions?',
+            placeHolder: current ? 'Currently: Use Coding Agent (Claude) — pick Manual to turn this off.' : 'Currently: Manual — pick Use Coding Agent (Claude) to turn this on.',
+            ignoreFocusOut: true,
+        });
+        if (!picked || picked.allow === current) {
+            return;
+        }
+        await config.update('claudeAgentConsent', picked.allow, vscode.ConfigurationTarget.Workspace);
         this.postModesConfig();
     }
     /**
@@ -5439,6 +5500,58 @@ class GraphsViewProvider {
             defectRecorded: defectRecorded || undefined,
         });
     }
+    defectStatusFilePath(folder) {
+        return path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'defects', '_status.json');
+    }
+    // One logical bug = one (targetPath, targetSymbol) pair, regardless of how
+    // many times the generated test covering it has been (re-)run — see
+    // postDefects, which groups raw per-run records onto this same key.
+    defectKey(targetPath, targetSymbol) {
+        return `${targetPath.replace(/\\/g, '/')}::${targetSymbol}`;
+    }
+    readDefectStatusIndex(folder) {
+        try {
+            const parsed = JSON.parse(fs.readFileSync(this.defectStatusFilePath(folder), 'utf8'));
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        }
+        catch {
+            return {};
+        }
+    }
+    writeDefectStatusIndex(folder, data) {
+        try {
+            const statusPath = this.defectStatusFilePath(folder);
+            fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+            fs.writeFileSync(statusPath, JSON.stringify(data, null, 2), 'utf8');
+        }
+        catch (err) {
+            outputChannel?.appendLine(`[defects] Failed to write status index: ${err?.message || err}`);
+        }
+    }
+    /**
+     * Sets one bug's status — 'active' (newly seen, or resurfaced because the
+     * same generated test failed again after being marked fixed) or 'fixed'
+     * (Fix with Claude resolved it, or the user marked it fixed by hand).
+     * Keyed by target symbol+path (defectKey) so this never needs a re-run to
+     * confirm: a status here is the user's/Claude's own judgment call, not a
+     * verification result.
+     */
+    markDefectStatus(folder, targetPath, targetSymbol, status, kind) {
+        if (!targetPath || !targetSymbol) {
+            return;
+        }
+        const data = this.readDefectStatusIndex(folder);
+        const key = this.defectKey(targetPath, targetSymbol);
+        const now = new Date().toISOString();
+        const prev = data[key] || { status: 'active' };
+        data[key] = {
+            status,
+            kind: kind || prev.kind,
+            fixedAt: status === 'fixed' ? now : undefined,
+            lastSeenAt: status === 'active' ? now : prev.lastSeenAt,
+        };
+        this.writeDefectStatusIndex(folder, data);
+    }
     /**
      * Logs a defect record under ARTIFACT_OUTPUT_DIR/defects/ when — and only
      * when — a CODEMD-*generated* test actually ran and a real assertion
@@ -5448,7 +5561,10 @@ class GraphsViewProvider {
      * test that isn't one of ours (found via find_tests, or hand-written) —
      * this is meant to answer "how often do CODEMD's own generated tests
      * catch a real bug," not "how often does any test fail." One JSON file
-     * per defect so records are easy to diff/grep/aggregate later.
+     * per failing run so records are easy to diff/grep/aggregate later; the
+     * bug this belongs to is also (re-)marked 'active' in the status index —
+     * see markDefectStatus — so a bug previously marked fixed but still (or
+     * again) failing resurfaces instead of staying silently closed.
      *
      * Returns the defect file's workspace-relative path on success (also fed
      * into the activity.md entry via postTestRunResult's defectRecorded), or
@@ -5488,6 +5604,7 @@ class GraphsViewProvider {
                 output: typeof payload?.output === 'string' ? payload.output.slice(-8000) : '',
             };
             fs.writeFileSync(outPath, JSON.stringify(record, null, 2), 'utf8');
+            this.markDefectStatus(folder, targetPath, targetSymbol, 'active');
             const relPath = path.relative(folder.uri.fsPath, outPath).replace(/\\/g, '/');
             outputChannel?.appendLine(`[defects] Recorded a genuine test failure for "${targetSymbol}" -> ${relPath}`);
             return relPath;
@@ -5495,6 +5612,84 @@ class GraphsViewProvider {
         catch (err) {
             outputChannel?.appendLine(`[defects] Failed to write defect record: ${err?.message || err}`);
             return null;
+        }
+    }
+    /**
+     * "Bugs, Issues & Defects" report — reads the JSON records
+     * recordDefectIfGenuine writes under ARTIFACT_OUTPUT_DIR/defects/ (one
+     * file per failing run of a genuine CODEMD-generated test), groups them by
+     * (targetPath, targetSymbol) so re-running the same failing test doesn't
+     * pile up as separate rows, and merges in each group's status from
+     * _status.json (markDefectStatus). Only 'active' bugs — ones nobody has
+     * fixed or dismissed yet — are returned in `items`; 'fixed' ones are
+     * folded into `counts.fixed` only, since once a bug is resolved there's no
+     * further action for the user to take on it and no need to keep showing
+     * its detail. A group with no status entry yet defaults to 'active'.
+     */
+    postDefects() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this.post({ type: 'defectsResult', ok: false, error: 'No workspace folder open.' });
+            return;
+        }
+        const defectsDir = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'defects');
+        try {
+            if (!fs.existsSync(defectsDir)) {
+                this.post({ type: 'defectsResult', ok: true, items: [], counts: { active: 0, fixed: 0 } });
+                return;
+            }
+            const statusIndex = this.readDefectStatusIndex(folder);
+            const groups = new Map();
+            fs.readdirSync(defectsDir)
+                .filter((name) => name.endsWith('.json') && name !== '_status.json')
+                .forEach((name) => {
+                try {
+                    const raw = JSON.parse(fs.readFileSync(path.join(defectsDir, name), 'utf8'));
+                    const targetSymbol = String(raw?.targetSymbol || '');
+                    const targetPath = String(raw?.targetPath || '');
+                    if (!targetSymbol || !targetPath) {
+                        return;
+                    }
+                    const key = this.defectKey(targetPath, targetSymbol);
+                    const timestamp = String(raw?.timestamp || '');
+                    const existing = groups.get(key);
+                    if (!existing || timestamp > existing.timestamp) {
+                        groups.set(key, {
+                            targetSymbol,
+                            targetPath,
+                            targetStartLine: Number(raw?.targetStartLine || 0) || 0,
+                            testFile: String(raw?.testFile || ''),
+                            generator: String(raw?.generator || ''),
+                            output: String(raw?.output || ''),
+                            timestamp,
+                            occurrences: (existing?.occurrences || 0) + 1,
+                        });
+                    }
+                    else {
+                        existing.occurrences += 1;
+                    }
+                }
+                catch {
+                    // skip unreadable record
+                }
+            });
+            let activeCount = 0;
+            let fixedCount = 0;
+            const items = [];
+            groups.forEach((group, key) => {
+                if (statusIndex[key]?.status === 'fixed') {
+                    fixedCount++;
+                }
+                else {
+                    activeCount++;
+                    items.push(group);
+                }
+            });
+            items.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+            this.post({ type: 'defectsResult', ok: true, items, counts: { active: activeCount, fixed: fixedCount } });
+        }
+        catch (err) {
+            this.post({ type: 'defectsResult', ok: false, error: err?.message || String(err) });
         }
     }
     handleMessage(message, source = 'view') {
@@ -5532,11 +5727,8 @@ class GraphsViewProvider {
         else if (message.type === 'runExistingTestsForResult') {
             this.runExistingTestsForResult(message.result || {}, String(message.requestId || ''));
         }
-        else if (message.type === 'setRunMode') {
-            this.setRunOrWriteMode('run', message.value);
-        }
-        else if (message.type === 'setWriteMode') {
-            this.setRunOrWriteMode('write', message.value);
+        else if (message.type === 'setAutoMode') {
+            this.setAutoMode(message.value);
         }
         else if (message.type === 'generateRegressionTest') {
             this.generateRegressionTestForResult(message.result || {}, String(message.requestId || ''));
@@ -5558,6 +5750,19 @@ class GraphsViewProvider {
         }
         else if (message.type === 'getCriticalFunctions') {
             this.postCriticalFunctions();
+        }
+        else if (message.type === 'getDefects') {
+            this.postDefects();
+        }
+        else if (message.type === 'markDefectFixed') {
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            if (folder) {
+                this.markDefectStatus(folder, String(message.targetPath || ''), String(message.targetSymbol || ''), 'fixed');
+                this.postDefects();
+            }
+        }
+        else if (message.type === 'openClaudeAgentConsentPicker') {
+            this.openClaudeAgentConsentPicker();
         }
         else if (message.type === 'runTestFile') {
             this.runTestFileForResult(message);
@@ -5683,6 +5888,10 @@ class GraphsViewProvider {
         this.postSearchHistory();
         this.postSearchSuggestions();
         this.postModesConfig();
+        // Cheap directory read (a handful of small JSON files at most) — eager,
+        // unlike Critical Functions' opt-in-on-expand, because the card's title
+        // needs a live Active/Fixed count even while collapsed.
+        this.postDefects();
         if (this.hasGenerated) {
             this.post({ type: 'generated' });
         }
@@ -6552,6 +6761,10 @@ class GraphsViewProvider {
             this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Read-only mode is on — CODEMD will not invoke Claude to write tests. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' });
             return;
         }
+        if (!(await this.ensureClaudeAgentConsent())) {
+            this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Claude wasn\'t allowed to run — click again to be asked.' });
+            return;
+        }
         const language = testLanguageFor(file);
         if (!language) {
             this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Generating a test with Claude currently only supports Python, JavaScript/TypeScript, Java, C#, Go, Rust, and Kotlin.' });
@@ -6775,6 +6988,9 @@ class GraphsViewProvider {
     async runClaudeTestGeneration(folder, prompt, requestId) {
         if (this.isReadOnlyMode()) {
             return { ok: false, error: 'Read-only mode is on — CODEMD will not invoke Claude to write tests. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' };
+        }
+        if (!(await this.ensureClaudeAgentConsent())) {
+            return { ok: false, error: 'Claude wasn\'t allowed to run — click again to be asked.' };
         }
         const claudeCommand = await resolveCommand('claude');
         if (!claudeCommand) {
@@ -8514,6 +8730,10 @@ class GraphsViewProvider {
             },
             required: ['command', 'cwd', 'notes'],
         });
+        if (!(await this.ensureClaudeAgentConsent())) {
+            this.postTestRunResult({ requestId, ok: false, error: 'Claude wasn\'t allowed to run — click again to be asked.' }, message);
+            return;
+        }
         // Reuse the same resolution already relied on for "Open Claude Code
         // /mcp" — a bare 'claude' spawn misses the VS Code extension's own
         // bundled native-binary/claude.exe, which `where.exe claude` (and a
@@ -8678,6 +8898,45 @@ class GraphsViewProvider {
         const targetDescription = targetSymbol && targetPath
             ? `"${targetSymbol}" in "${targetPath}"${targetStartLine ? ` near line ${targetStartLine}` : ''}`
             : 'the function this test is checking';
+        // If this failure was a recorded defect (recordDefectIfGenuine), close
+        // it out the moment Claude's own rerun says it's resolved — no separate
+        // re-verification pass required, per the "we've already fixed it"
+        // design: a fix that touched real source is a code bug fixed; one that
+        // only touched the test file (or needed no edit at all because the test
+        // already passes on rerun) isn't a code defect, so it's still marked
+        // fixed but tagged 'test' rather than 'code'. A fix attempt that Claude's
+        // own rerun says still fails leaves the bug active for another try.
+        const resolveDefectIfApplicable = (filesChangedList, passedAfterFix) => {
+            if (isEnvironmentIssue || !targetPath || !targetSymbol || passedAfterFix === false) {
+                return;
+            }
+            const normalize = (p) => p.replace(/\\/g, '/').toLowerCase();
+            const testFileNorm = normalize(file);
+            const isTestFilePath = (p) => {
+                const np = normalize(p);
+                if (testFileNorm && (np === testFileNorm || np.endsWith('/' + testFileNorm) || testFileNorm.endsWith('/' + np))) {
+                    return true;
+                }
+                const base = np.split('/').pop() || '';
+                return base.indexOf('test_') === 0 || base.endsWith('_test.py') || np.indexOf('/generated_tests/') !== -1;
+            };
+            const touchedSource = filesChangedList.some((f) => !isTestFilePath(f));
+            const touchedTest = filesChangedList.some(isTestFilePath);
+            let resolvedKind;
+            if (touchedSource) {
+                resolvedKind = 'code';
+            }
+            else if (touchedTest) {
+                resolvedKind = 'test';
+            }
+            else if (passedAfterFix === true) {
+                resolvedKind = 'test';
+            }
+            if (resolvedKind) {
+                this.markDefectStatus(folder, targetPath, targetSymbol, 'fixed', resolvedKind);
+                this.postDefects();
+            }
+        };
         const prompt = isEnvironmentIssue
             ? [
                 `${testDescription} could not even run — CODEMD's own attempt to run it saw this: "${lastError || 'an environment/config error'}".`,
@@ -8731,6 +8990,10 @@ class GraphsViewProvider {
         });
         if (this.isReadOnlyMode()) {
             this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Read-only mode is on — CODEMD will not invoke Claude to fix failures. Turn off codemdGraphs.readOnlyMode in Settings to enable this.' });
+            return;
+        }
+        if (!(await this.ensureClaudeAgentConsent())) {
+            this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Claude wasn\'t allowed to run — click again to be asked.' });
             return;
         }
         const claudeCommand = await resolveCommand('claude');
@@ -8834,6 +9097,7 @@ class GraphsViewProvider {
                     const filesChanged = Array.isArray(structured.filesChanged) ? structured.filesChanged.map((f) => String(f)) : [];
                     const budgetNote = parseClaudeBudgetError(run.stdout, costCapUsd);
                     outputChannel?.appendLine(`\n--- Fix with Claude (${kind}, ${testDescription}, process exited ${run.status} after finishing) ---\n${rawOutput}`);
+                    resolveDefectIfApplicable(filesChanged, typeof structured.passedAfterFix === 'boolean' ? structured.passedAfterFix : null);
                     this.post({
                         type: 'fixTestResult',
                         requestId,
@@ -8866,6 +9130,7 @@ class GraphsViewProvider {
             }
             const filesChanged = Array.isArray(structured.filesChanged) ? structured.filesChanged.map((f) => String(f)) : [];
             outputChannel?.appendLine(`\n--- Fix with Claude (${kind}, ${testDescription}) ---\n${rawOutput}`);
+            resolveDefectIfApplicable(filesChanged, typeof structured.passedAfterFix === 'boolean' ? structured.passedAfterFix : null);
             this.post({
                 type: 'fixTestResult',
                 requestId,
@@ -9692,6 +9957,20 @@ function getHtml(host, port, cspSource) {
   .criticalFnCount { flex: 0 0 auto; font-weight: 700; opacity: 0.85; min-width: 3.2em; }
   .criticalFnName { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
   .criticalFnFile { flex: 0 0 auto; opacity: 0.6; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #defectsCard { margin: 6px 8px; padding: 6px 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+  #defectsHeadline { display: flex; align-items: center; gap: 8px; }
+  #defectsLabel { font-size: 13px; font-weight: 600; }
+  #defectsDetails { margin: 6px 0 0; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable; font-size: 11px; }
+  #defectsCard.is-collapsed #defectsDetails { display: none; }
+  .defectRow { padding: 4px 0; border-top: 1px solid var(--vscode-panel-border); }
+  .defectRow:first-child { border-top: none; }
+  .defectRowHead { display: flex; align-items: baseline; gap: 6px; }
+  .defectRowIcon { flex: 0 0 auto; color: var(--vscode-errorForeground); }
+  .defectRowSymbol { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; cursor: pointer; }
+  .defectRowSymbol:hover { text-decoration: underline; }
+  .defectRowTime { flex: 0 0 auto; opacity: 0.6; font-size: 10px; white-space: nowrap; }
+  .defectRowFile { opacity: 0.6; margin: 1px 0 0 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .defectRowActions { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
   #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
   /* Commit-detail results stack (replace:false — each "Check Latest Commits"
@@ -9699,19 +9978,21 @@ function getHtml(host, port, cspSource) {
      query/answer/function-cards need a visible boundary tying them together
      as one commit's report, distinct from the next commit's block above/below. */
   .msg-boxed { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px 10px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
-  .msg .query { font-weight: 600; margin-bottom: 4px; }
+  .queryHeadline { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .msg .query { font-weight: 600; }
   .msg .answer { white-space: pre-wrap; font-size: 12px; margin-bottom: 6px; }
   .answerFunctionLink { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .answerFunctionLink:hover { color: var(--vscode-textLink-activeForeground); }
   .changeSymbolButton { border: 0; padding: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .changeSymbolButton:hover { color: var(--vscode-textLink-activeForeground); }
   .msg .error { color: var(--vscode-errorForeground); font-size: 12px; }
+  .testingArea { display: flex; flex-direction: column; gap: 4px; }
+  .testingArea.is-collapsed { display: none; }
   .testMatchList { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; font-size: 11px; }
   .testMatchGroup { display: flex; flex-direction: column; gap: 4px; }
   .testMatchGroup .testRunRow:first-of-type { padding-top: 0; border-top: none; }
   .testNoMatchNote { opacity: 0.85; font-style: italic; }
-  .regressionTestNote { margin-top: 4px; }
-  .callPathTestNote { margin-top: 4px; }
+  .generatedTestNote { margin-top: 4px; }
   .testMatchKind { font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground); margin-bottom: 2px; }
   .testMatchFile { display: block; cursor: pointer; font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; color: var(--vscode-descriptionForeground); word-break: break-all; margin-bottom: 2px; }
   .testMatchFile:hover { color: var(--vscode-textLink-activeForeground); }
@@ -9862,17 +10143,16 @@ function getHtml(host, port, cspSource) {
   .evidenceFileLink:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
   .detailsToggle { flex: 0 0 auto; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 0 4px; font-size: 10px; line-height: 16px; cursor: pointer; }
   .detailsToggle:hover { background: var(--vscode-list-hoverBackground); }
-  /* Run/Write mode pills, styled after Claude Code's own mode indicator —
-     a compact, always-visible, click-to-cycle state rather than a setting
-     buried in Settings. Write gets the "primary" treatment when it's Auto
-     specifically because that's the one state that spends real Claude
-     usage without a click each time; every other combination stays quiet. */
+  /* Single auto-run toggle, styled after Claude Code's own mode indicator —
+     a compact, always-visible, click-to-toggle state rather than a setting
+     buried in Settings. Only one state exists right now (local-only auto-run
+     for Python/Go/Rust/Java/C#/Kotlin) since nothing that invokes Claude
+     fires automatically yet — see fireCheckTests/testGapResult below. */
   #modeRow { display: flex; gap: 6px; margin-top: 4px; }
   .modePill { font: inherit; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: transparent; color: var(--vscode-foreground); padding: 2px 8px; font-size: 11px; cursor: pointer; opacity: 0.85; }
   .modePill:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
-  .modePill.is-auto { opacity: 1; border-color: var(--vscode-button-background); }
-  .modePill.is-write-auto { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; font-weight: 600; }
-  .modePill.is-write-auto:hover { background: var(--vscode-button-hoverBackground); }
+  .modePill.is-auto { opacity: 1; border-color: var(--vscode-button-background); background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: 600; }
+  .modePill.is-auto:hover { background: var(--vscode-button-hoverBackground); }
   .modePill:disabled { cursor: default; opacity: 0.6; }
   .changeGroupBody { display: grid; gap: 5px; margin-top: 2px; }
   .changeGroupBody .result { margin-bottom: 0; }
@@ -9954,14 +10234,21 @@ function getHtml(host, port, cspSource) {
       </div>
       <div id="criticalFunctionsDetails"></div>
     </div>
+    <div id="defectsCard" class="is-collapsed" title="Genuine bugs found when a CODEMD-generated test actually failed against real code — not every test failure, just ones traced to a real defect.">
+      <div id="defectsHeadline">
+        <button id="defectsToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show bugs found by generated tests">+</button>
+        <span id="defectsLabel">Bugs, Issues &amp; Defects</span>
+      </div>
+      <div id="defectsDetails"></div>
+    </div>
     <form id="searchForm">
       <input id="queryInput" type="text" placeholder="Search this codebase…" autocomplete="off" aria-autocomplete="list" aria-controls="querySuggestionPanel" />
       <div id="querySuggestionPanel" role="listbox"></div>
       <button type="submit">Search</button>
     </form>
     <div id="modeRow">
-      <button id="runModePill" type="button" class="modePill" title="Run: whether existing tests are checked automatically. Free either way — no Claude call.">Run: Auto</button>
-      <button id="writeModePill" type="button" class="modePill" title="Write: whether new tests get generated automatically. Auto spends real Claude usage without a click each time.">Write: Manual</button>
+      <button id="autoModeBtn" type="button" class="modePill" aria-pressed="false" title="Off: nothing runs without a click. On: existing tests for Python/Go/Rust/Java/C#/Kotlin are found and run automatically via their local toolchains — never Claude, and never for any other language.">Mode: Manual</button>
+      <button id="claudeConsentBtn" type="button" class="modePill" aria-pressed="false" title="Whether this panel is allowed to invoke Claude (writing tests, discovering a test command, fixing a failure). Click to change — opens the same choice you saw the first time.">✋ Manual</button>
     </div>
   </div>
 <script nonce="${nonce}">
@@ -10017,6 +10304,12 @@ function getHtml(host, port, cspSource) {
   const criticalFunctionsToggleBtn = document.getElementById('criticalFunctionsToggleBtn');
   const criticalFunctionsDetails = document.getElementById('criticalFunctionsDetails');
   let criticalFunctionsLoaded = false;
+  const defectsCard = document.getElementById('defectsCard');
+  const defectsToggleBtn = document.getElementById('defectsToggleBtn');
+  const defectsLabel = document.getElementById('defectsLabel');
+  const defectsDetails = document.getElementById('defectsDetails');
+  let defectsLoaded = false;
+  let defectCounts = { active: 0, fixed: 0 };
   const messages = document.getElementById('messages');
   const generateBtn = document.getElementById('generateBtn');
   const checkChangesBtn = document.getElementById('checkChangesBtn');
@@ -10415,6 +10708,20 @@ function getHtml(host, port, cspSource) {
       criticalFunctionsLoaded = true;
       criticalFunctionsDetails.textContent = 'Analyzing…';
       vscode.postMessage({ type: 'getCriticalFunctions' });
+    }
+  });
+
+  defectsToggleBtn.addEventListener('click', () => {
+    const collapsed = defectsCard.classList.toggle('is-collapsed');
+    defectsToggleBtn.textContent = collapsed ? '+' : '-';
+    defectsToggleBtn.title = collapsed ? 'Show bugs found by generated tests' : 'Hide this report';
+    defectsToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    // Lazy, same as Critical Functions above — only read from disk on first
+    // expand, not on every panel load.
+    if (!collapsed && !defectsLoaded) {
+      defectsLoaded = true;
+      defectsDetails.textContent = 'Loading…';
+      vscode.postMessage({ type: 'getDefects' });
     }
   });
 
@@ -11012,20 +11319,59 @@ function getHtml(host, port, cspSource) {
   // result comes back).
   const testGenOutputPreByRequestId = new Map();
 
+  function createLiveClaudeOutputEl(requestId) {
+    const pre = document.createElement('pre');
+    pre.className = 'testRunOutput';
+    pre.style.display = 'block';
+    testGenOutputPreByRequestId.set(requestId, pre);
+    return pre;
+  }
+
   // Creates and inserts the live output box right after afterEl, wires it
   // up to receive testGenProgress chunks for requestId, and returns it so
   // the caller can also clear it out of testGenOutputPreByRequestId once the
   // matching *TestResult message lands (see resolveChipTestResult and the
-  // callPathTestResult handler below). Left visible (not collapsed) once the
-  // run finishes — same call as fixOutputPre makes — as a record of what
-  // actually happened, not just a spinner nobody can inspect afterward.
+  // callPathTestResult handler below) — both of those now discard this live
+  // box once the run finishes, since the finished note they insert already
+  // offers the same transcript behind its own "View Claude output" toggle.
   function attachLiveClaudeOutput(afterEl, requestId) {
-    const pre = document.createElement('pre');
-    pre.className = 'testRunOutput';
-    pre.style.display = 'block';
+    const pre = createLiveClaudeOutputEl(requestId);
     afterEl.insertAdjacentElement('afterend', pre);
-    testGenOutputPreByRequestId.set(requestId, pre);
     return pre;
+  }
+
+  // Same as attachLiveClaudeOutput but appended as the last child of
+  // container instead of inserted as afterEl's next sibling — used inside a
+  // per-function testingArea (see appendResultItem) so the live transcript
+  // lands inside that collapsible region rather than escaping it.
+  function appendLiveClaudeOutput(container, requestId) {
+    const pre = createLiveClaudeOutputEl(requestId);
+    container.appendChild(pre);
+    return pre;
+  }
+
+  // Once a run finishes, its moment-by-moment transcript stops being
+  // something to read live and just becomes clutter stacking up on an
+  // otherwise-short finished card — this tucks it behind the same
+  // "View Claude output" toggle used for opts.output elsewhere, instead of
+  // leaving every past run's raw text permanently on screen. Called once
+  // per finished run (fix or generate), never while it's still streaming.
+  function collapseLiveOutput(pre, label) {
+    if (!pre || !pre.isConnected || !pre.textContent.trim()) { return; }
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'outputLink';
+    const hiddenLabel = 'View ' + label;
+    const shownLabel = 'Hide ' + label;
+    toggle.textContent = hiddenLabel;
+    pre.style.display = 'none';
+    toggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const showing = pre.style.display !== 'none';
+      pre.style.display = showing ? 'none' : 'block';
+      toggle.textContent = showing ? hiddenLabel : shownLabel;
+    });
+    pre.insertAdjacentElement('beforebegin', toggle);
   }
 
   const commitDetailRowsByRequestId = new Map();
@@ -11037,6 +11383,164 @@ function getHtml(host, port, cspSource) {
   const jsTestRunnerSetupByRequestId = new Map();
   const fixTestRowsByRequestId = new Map();
   let fixTestRequestSeq = 0;
+
+  // One row per active (unfixed) entry in the Bugs, Issues & Defects list —
+  // reuses the exact same fixTestFailure/fixTestResult round trip a live
+  // test-run row's "Fix with Claude" button uses (see createTestRunRow), so
+  // the outcome banner, live transcript, and defect-status auto-resolution
+  // (server-side, see fixTestFailureForResult) all behave identically here.
+  // No statusPill/statusDetail/runBtn/outputToggle/outputPre for this
+  // context — those only exist on a live test-run row — so the fixTestResult
+  // handler's row-status sync is simply skipped for these (guarded on
+  // statusPill being present).
+  function createDefectRow(item) {
+    const row = document.createElement('div');
+    row.className = 'defectRow';
+
+    const head = document.createElement('div');
+    head.className = 'defectRowHead';
+
+    const icon = document.createElement('span');
+    icon.className = 'defectRowIcon';
+    icon.textContent = '⚠';
+    head.appendChild(icon);
+
+    const name = document.createElement('span');
+    name.className = 'defectRowSymbol';
+    name.textContent = item.targetSymbol + (item.occurrences > 1 ? ' (failed ' + item.occurrences + '×)' : '');
+    name.title = 'Open ' + item.targetPath;
+    name.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (item.targetPath) {
+        vscode.postMessage({ type: 'openFile', file: item.targetPath, line: item.targetStartLine || '' });
+      }
+    });
+    head.appendChild(name);
+
+    if (item.timestamp) {
+      const time = document.createElement('span');
+      time.className = 'defectRowTime';
+      const parsed = new Date(item.timestamp);
+      time.textContent = isNaN(parsed.getTime()) ? item.timestamp : parsed.toLocaleString();
+      head.appendChild(time);
+    }
+    row.appendChild(head);
+
+    if (item.targetPath) {
+      const file = document.createElement('div');
+      file.className = 'defectRowFile';
+      file.textContent = item.targetPath + (item.targetStartLine ? ':' + item.targetStartLine : '');
+      row.appendChild(file);
+    }
+
+    // The failure text was always captured (recordDefectIfGenuine) but
+    // never actually shown — this is the first place it's surfaced.
+    if (item.output) {
+      const outputToggle = document.createElement('button');
+      outputToggle.type = 'button';
+      outputToggle.className = 'outputLink';
+      outputToggle.textContent = 'View failure output';
+      const outputPre = document.createElement('pre');
+      outputPre.className = 'testRunOutput';
+      outputPre.style.display = 'none';
+      outputPre.textContent = item.output;
+      outputToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const showing = outputPre.style.display !== 'none';
+        outputPre.style.display = showing ? 'none' : 'block';
+        outputToggle.textContent = showing ? 'View failure output' : 'Hide failure output';
+      });
+      row.appendChild(outputToggle);
+      row.appendChild(outputPre);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'defectRowActions';
+
+    const fixBtn = document.createElement('button');
+    fixBtn.type = 'button';
+    fixBtn.className = 'btn is-primary';
+    fixBtn.textContent = '🔧 Fix with Claude';
+    fixBtn.title = 'Ask Claude to look at this failure and fix whichever is wrong — the test itself or the code it tests — then re-run to verify. Only happens when you click this.';
+
+    const markFixedBtn = document.createElement('button');
+    markFixedBtn.type = 'button';
+    markFixedBtn.className = 'btn is-outline';
+    markFixedBtn.textContent = 'Mark fixed';
+    markFixedBtn.title = 'Already fixed this by hand (or some other way)? Mark it fixed without re-running anything.';
+
+    const fixStopBtn = document.createElement('button');
+    fixStopBtn.type = 'button';
+    fixStopBtn.className = 'btn is-outline';
+    fixStopBtn.textContent = 'Stop';
+    fixStopBtn.style.display = 'none';
+
+    const fixNote = document.createElement('div');
+    fixNote.style.display = 'none';
+
+    const fixOutputPre = document.createElement('pre');
+    fixOutputPre.className = 'testRunOutput';
+    fixOutputPre.style.display = 'none';
+
+    fixStopBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const fixRequestId = fixStopBtn.dataset.requestId || '';
+      if (!fixRequestId) { return; }
+      fixStopBtn.disabled = true;
+      fixStopBtn.textContent = 'Stopping…';
+      vscode.postMessage({ type: 'cancelFixTestFailure', requestId: fixRequestId });
+    });
+
+    fixBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (fixBtn.dataset.pending === '1') { return; }
+      fixBtn.dataset.pending = '1';
+      const tickInterval = startPendingTicker(fixBtn, 'Fixing');
+      fixNote.textContent = '';
+      fixNote.className = '';
+      fixNote.style.display = 'none';
+      const staleFixOutputToggle = fixOutputPre.previousElementSibling;
+      if (staleFixOutputToggle && staleFixOutputToggle.classList && staleFixOutputToggle.classList.contains('outputLink')) {
+        staleFixOutputToggle.remove();
+      }
+      fixOutputPre.textContent = '';
+      fixOutputPre.style.display = 'block';
+      fixStopBtn.disabled = false;
+      fixStopBtn.textContent = 'Stop';
+      fixStopBtn.style.display = '';
+      markFixedBtn.style.display = 'none';
+      const fixRequestId = 'fixtest_' + (fixTestRequestSeq++) + '_' + Date.now();
+      fixStopBtn.dataset.requestId = fixRequestId;
+      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote, testFile: item.testFile, sourceFile: item.targetPath, tickInterval, fixOutputPre, fixStopBtn });
+      vscode.postMessage({
+        type: 'fixTestFailure',
+        requestId: fixRequestId,
+        environmentIssue: false,
+        lastError: '',
+        file: item.testFile,
+        nodeId: '',
+        targetPath: item.targetPath,
+        targetStartLine: item.targetStartLine || 0,
+        targetSymbol: item.targetSymbol,
+      });
+    });
+
+    markFixedBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      markFixedBtn.disabled = true;
+      markFixedBtn.textContent = 'Marking…';
+      vscode.postMessage({ type: 'markDefectFixed', targetPath: item.targetPath, targetSymbol: item.targetSymbol });
+    });
+
+    actions.appendChild(fixBtn);
+    actions.appendChild(markFixedBtn);
+    actions.appendChild(fixStopBtn);
+    row.appendChild(actions);
+    row.appendChild(fixNote);
+    row.appendChild(fixOutputPre);
+    return row;
+  }
+
   const regressionTestChipsByRequestId = new Map();
   let regressionTestRequestSeq = 0;
   const callPathTestChipsByRequestId = new Map();
@@ -11076,12 +11580,25 @@ function getHtml(host, port, cspSource) {
   const existingTestsRequestsByRequestId = new Map();
   let existingTestsRequestSeq = 0;
 
-  // Run/Write mode — mirrors codemdGraphs.runMode / codemdGraphs.writeMode,
-  // synced from the host via the 'modesConfig' message (see
-  // markWebviewReady) and updated optimistically on click before the
-  // host's ack round-trips back.
-  let runMode = 'auto';
-  let writeMode = 'manual';
+  // Auto-run mode — mirrors codemdGraphs.autoMode, synced from the host via
+  // the 'modesConfig' message (see markWebviewReady) and updated
+  // optimistically on click before the host's ack round-trips back.
+  // 'manual' (default): nothing runs without a click. 'localOnly': existing
+  // tests for Python/Go/Rust/Java/C#/Kotlin auto-run via their local
+  // toolchains. Nothing that invokes Claude fires automatically yet —
+  // writeMode stays permanently 'manual' below until that lands, so the
+  // existing maybeAutoWriteTest/tryAutoWrite machinery stays intact but
+  // inert rather than needing to be ripped out and re-added later.
+  let autoMode = 'manual';
+  // Whether Claude is currently allowed to run at all — mirrors
+  // codemdGraphs.claudeAgentConsent, synced from the host via 'modesConfig'
+  // the same way autoMode is. Purely a display mirror of the actual
+  // decision-maker, which is the host-side config value; clicking
+  // claudeConsentBtn never flips this optimistically the way autoModeBtn
+  // does, since it opens a picker (openClaudeAgentConsentPicker) rather than
+  // toggling directly.
+  let claudeAgentConsent = false;
+  const writeMode = 'manual';
   let maxAutoWritesPerBatch = 3;
   // How many Claude test-writes Write:Auto has fired in the CURRENT
   // top-level result render (Check Uncommitted Edits / Check Latest
@@ -11110,33 +11627,34 @@ function getHtml(host, port, cspSource) {
   // both a contract and a broad-coverage chip on the same card).
   const pendingAutoWrites = new Map();
 
-  const runModePill = document.getElementById('runModePill');
-  const writeModePill = document.getElementById('writeModePill');
+  const autoModeBtn = document.getElementById('autoModeBtn');
+  const claudeConsentBtn = document.getElementById('claudeConsentBtn');
+  // Single click-to-toggle pill — only one real local-only switch exists
+  // here, so a popup/checklist would be overkill for it. Claude-invoking
+  // auto behavior (writing tests, running a test that needs Claude to find
+  // its command) is deliberately not offered here yet — see the const
+  // writeMode = 'manual' comment above. claudeConsentBtn (below) is the
+  // second, separate switch — whether Claude is allowed to run at all — and
+  // DOES open a picker each click, since granting/revoking that is exactly
+  // the kind of explicit, reversible choice a blind toggle shouldn't make.
   function renderModePills() {
-    runModePill.textContent = 'Run: ' + (runMode === 'auto' ? 'Auto' : 'Manual');
-    runModePill.className = 'modePill' + (runMode === 'auto' ? ' is-auto' : '');
-    // Write:Auto needs Run:Auto's data (the existing-tests verdict) to
-    // decide whether a symbol already has coverage worth skipping for, so
-    // Run is locked to Auto — and shown as such — while Write is Auto.
-    runModePill.disabled = writeMode === 'auto';
-    runModePill.title = writeMode === 'auto'
-      ? 'Locked to Auto while Write is Auto — auto-writing depends on this check\\'s result.'
-      : 'Run: whether existing tests are checked automatically. Free either way — no Claude call.';
-    writeModePill.textContent = 'Write: ' + (writeMode === 'auto' ? 'Auto' : 'Manual');
-    writeModePill.className = 'modePill' + (writeMode === 'auto' ? ' is-write-auto' : '');
+    autoModeBtn.textContent = 'Mode: ' + (autoMode === 'localOnly' ? 'Auto-Run Tests' : 'Manual');
+    autoModeBtn.className = 'modePill' + (autoMode === 'localOnly' ? ' is-auto' : '');
+    autoModeBtn.setAttribute('aria-pressed', autoMode === 'localOnly' ? 'true' : 'false');
+    claudeConsentBtn.textContent = claudeAgentConsent ? '🤖 Use Coding Agent (Claude)' : '✋ Manual';
+    claudeConsentBtn.className = 'modePill' + (claudeAgentConsent ? ' is-auto' : '');
+    claudeConsentBtn.setAttribute('aria-pressed', claudeAgentConsent ? 'true' : 'false');
+    claudeConsentBtn.title = claudeAgentConsent
+      ? 'Claude is currently allowed to run (writing tests, discovering a test command, fixing a failure). Click to change — you can turn this off here.'
+      : 'Claude is currently not allowed to run anything — you\\'ll be asked to allow it the first time you click a Claude-powered action. Click here to allow it now instead.';
   }
-  runModePill.addEventListener('click', () => {
-    if (runModePill.disabled) { return; }
-    runMode = runMode === 'auto' ? 'manual' : 'auto';
+  autoModeBtn.addEventListener('click', () => {
+    autoMode = autoMode === 'localOnly' ? 'manual' : 'localOnly';
     renderModePills();
-    vscode.postMessage({ type: 'setRunMode', value: runMode });
+    vscode.postMessage({ type: 'setAutoMode', value: autoMode });
   });
-  writeModePill.addEventListener('click', () => {
-    if (writeModePill.disabled) { return; }
-    writeMode = writeMode === 'auto' ? 'manual' : 'auto';
-    if (writeMode === 'auto') { runMode = 'auto'; }
-    renderModePills();
-    vscode.postMessage({ type: 'setWriteMode', value: writeMode });
+  claudeConsentBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openClaudeAgentConsentPicker' });
   });
   renderModePills();
 
@@ -11322,6 +11840,14 @@ function getHtml(host, port, cspSource) {
       outputToggle.style.display = 'none';
       outputPre.style.display = 'none';
       outputPre.textContent = '';
+      // A prior fix attempt's "View/Hide Claude output" toggle (inserted by
+      // collapseLiveOutput once that attempt finished) is still sitting right
+      // before fixOutputPre — without removing it here, a second click just
+      // stacks another toggle next to it instead of replacing it.
+      const staleFixOutputToggle = fixOutputPre.previousElementSibling;
+      if (staleFixOutputToggle && staleFixOutputToggle.classList && staleFixOutputToggle.classList.contains('outputLink')) {
+        staleFixOutputToggle.remove();
+      }
       fixOutputPre.textContent = '';
       fixOutputPre.style.display = 'block';
       fixStopBtn.disabled = false;
@@ -11333,7 +11859,11 @@ function getHtml(host, port, cspSource) {
       // whether Claude ended up touching the generated test, the actual
       // source code, or both — the whole reason for that distinction is so
       // the user never has to guess which one "Fix with Claude" changed.
-      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote, testFile: file, sourceFile: (targetInfo && targetInfo.path) || '', tickInterval, fixOutputPre, fixStopBtn });
+      // statusPill/statusDetail/runBtn/outputToggle/outputPre let that same
+      // handler sync this row's own run-status pill (e.g. a stale "Couldn't
+      // run") once the fix outcome makes it stale, instead of leaving it
+      // frozen next to a banner that says the test now passes.
+      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote, testFile: file, sourceFile: (targetInfo && targetInfo.path) || '', tickInterval, fixOutputPre, fixStopBtn, statusPill, statusDetail, runBtn, outputToggle, outputPre });
       vscode.postMessage({
         type: 'fixTestFailure',
         requestId: fixRequestId,
@@ -11397,9 +11927,13 @@ function getHtml(host, port, cspSource) {
     row.appendChild(outputPre);
     row.appendChild(fixNote);
     row.appendChild(fixOutputPre);
-    // Lets a batch runner ("Run all", below) trigger this row's run without
-    // duplicating the click handler's own pending/reset logic.
+    // Lets a batch runner ("Run all", below, or Auto-Run Tests) trigger this
+    // row's run without duplicating the click handler's own pending/reset
+    // logic. isDirect is exposed too so a caller can tell, without knowing
+    // this row's internals, whether running it needs Claude (to find the
+    // command) or not — Auto-Run Tests only ever fires the direct ones.
     row.runTest = () => runBtn.click();
+    row.isDirect = isDirect;
     return row;
   }
 
@@ -11409,7 +11943,13 @@ function getHtml(host, port, cspSource) {
   // drifting apart.
   function buildGeneratedTestNote(opts) {
     const note = document.createElement('div');
-    note.className = 'testCard';
+    // 'generatedTestNote' is the stable hook every "regenerate" click looks
+    // for (via testingArea.querySelector below) to remove the previous
+    // attempt before inserting the new one — without it, notes from earlier
+    // regenerations were never actually found (a stale check used to look
+    // for 'callPathTestNote'/'regressionTestNote', classes nothing here has
+    // ever set) and just piled up underneath each other indefinitely.
+    note.className = 'testCard generatedTestNote';
     const appendOutputToggle = (target) => {
       if (!opts.output) { return; }
       const toggle = document.createElement('button');
@@ -11730,9 +12270,10 @@ function getHtml(host, port, cspSource) {
   function resolveChipTestResult(chipsByRequestId, msg, resetText, successText) {
     const entry = chipsByRequestId.get(msg.requestId);
     chipsByRequestId.delete(msg.requestId);
+    const livePre = testGenOutputPreByRequestId.get(msg.requestId);
     testGenOutputPreByRequestId.delete(msg.requestId);
     if (!entry) { return; }
-    const { chip, actionsEl, rowEl, tickInterval, symbolKey } = entry;
+    const { chip, actionsEl, rowEl, testingArea, tickInterval, symbolKey } = entry;
     if (tickInterval) { clearInterval(tickInterval); }
     chip.dataset.pending = '0';
     // A successful generation means a test now exists where the button's
@@ -11756,8 +12297,18 @@ function getHtml(host, port, cspSource) {
       generationCostUsd: msg.generationCostUsd,
       output: msg.output,
     };
-    const anchor = actionsEl || rowEl;
-    anchor.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+    if (testingArea) {
+      const previous = testingArea.querySelector(':scope > .generatedTestNote');
+      if (previous) { previous.remove(); }
+      testingArea.appendChild(buildGeneratedTestNote(opts));
+    } else {
+      const anchor = actionsEl || rowEl;
+      anchor.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+    }
+    // The finished note above already offers this same transcript behind its
+    // own "View Claude output" toggle (opts.output) — drop the separate live
+    // stream now that it's done rather than leaving two copies of it visible.
+    if (livePre && livePre.isConnected) { livePre.remove(); }
     if (msg.ok && msg.path && symbolKey) {
       generatedTestsBySymbol.set(symbolKey, opts);
       updateVerdictCard(symbolKey.split('#')[0]);
@@ -11812,7 +12363,7 @@ function getHtml(host, port, cspSource) {
       if (claudeChip.dataset.pending === '1') { return; }
       claudeChip.dataset.pending = '1';
       const tickInterval = startPendingTicker(claudeChip, 'Asking Claude');
-      const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('callPathTestNote')
+      const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('generatedTestNote')
         ? genActions.nextElementSibling
         : null;
       if (existingNote) { existingNote.remove(); }
@@ -11967,6 +12518,15 @@ function getHtml(host, port, cspSource) {
       actions.className = 'actionRow';
       actions.style.marginTop = '4px';
 
+      // Everything test-related for this one function (generated-test notes,
+      // "Check tests" results, existing-test runs) lands in here instead of
+      // as loose siblings of the result item — collapsing it via the toggle
+      // appended below is what actually shrinks a scrolled-past function's
+      // card back down to one line, instead of every past action leaving a
+      // permanent block behind.
+      const testingArea = document.createElement('div');
+      testingArea.className = 'testingArea';
+
       const searchChip = document.createElement('span');
       searchChip.className = 'actionChip actionChipClickable';
       searchChip.textContent = 'Search this';
@@ -11981,9 +12541,8 @@ function getHtml(host, port, cspSource) {
         const testsChip = document.createElement('span');
         testsChip.className = 'actionChip actionChipClickable actionChipPrimary';
         testsChip.textContent = 'Check tests';
-        testsChip.title = 'Look for tests covering ' + symbolic + ' (does not run anything)';
-        testsChip.addEventListener('click', (event) => {
-          event.stopPropagation();
+        testsChip.title = 'Look for tests covering ' + symbolic + ' (does not run anything by itself)';
+        const fireCheckTests = () => {
           if (testsChip.dataset.pending === '1') { return; }
           testsChip.dataset.pending = '1';
           testsChip.textContent = 'Checking tests…';
@@ -11992,13 +12551,28 @@ function getHtml(host, port, cspSource) {
           const impactedFunctions = (card && Array.isArray(card.impactedFunctions)) ? card.impactedFunctions : [];
           testGapChipsByRequestId.set(requestId, {
             chip: testsChip,
+            testingArea,
             isNewFunction: !!card && card.kind === 'added',
             impactedFunctions,
             result: r,
           });
           vscode.postMessage({ type: 'findTestsForResult', result: r, requestId });
+        };
+        testsChip.addEventListener('click', (event) => {
+          event.stopPropagation();
+          fireCheckTests();
         });
         actions.appendChild(testsChip);
+        // Auto-Run Tests: automatically discovers and (for Python/Go/Rust/
+        // Java/C#/Kotlin only — never Claude) runs existing tests as this
+        // card renders, the same way a manual "Check tests" -> "Run all"
+        // would — see the testGapResult handler below for the actual
+        // per-match run decision. Capped like write-auto used to be, so a
+        // huge diff can't flood the OS with parallel local test runs.
+        if (autoMode === 'localOnly' && autoRunBatchCount < maxAutoWritesPerBatch) {
+          autoRunBatchCount++;
+          fireCheckTests();
+        }
       }
 
       // New functions have no pre-existing impact/caller data (deletion-report.py
@@ -12015,13 +12589,11 @@ function getHtml(host, port, cspSource) {
           if (newFuncChip.dataset.pending === '1') { return; }
           newFuncChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(newFuncChip, 'Generating');
-          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
-            ? actions.nextElementSibling
-            : null;
+          const existingNote = testingArea.querySelector(':scope > .generatedTestNote');
           if (existingNote) { existingNote.remove(); }
           const requestId = 'newfunctest_' + (newFunctionTestRequestSeq++) + '_' + Date.now();
-          attachLiveClaudeOutput(actions, requestId);
-          newFunctionTestChipsByRequestId.set(requestId, { chip: newFuncChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#newfunc' });
+          appendLiveClaudeOutput(testingArea, requestId);
+          newFunctionTestChipsByRequestId.set(requestId, { chip: newFuncChip, actionsEl: actions, testingArea, tickInterval, symbolKey: graphable + '#newfunc' });
           vscode.postMessage({ type: 'generateNewFunctionTest', result: r, requestId });
         };
         newFuncChip.addEventListener('click', (event) => {
@@ -12045,13 +12617,11 @@ function getHtml(host, port, cspSource) {
           if (contractChip.dataset.pending === '1') { return; }
           contractChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(contractChip, 'Generating');
-          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
-            ? actions.nextElementSibling
-            : null;
+          const existingNote = testingArea.querySelector(':scope > .generatedTestNote');
           if (existingNote) { existingNote.remove(); }
           const requestId = 'contracttest_' + (contractTestRequestSeq++) + '_' + Date.now();
-          attachLiveClaudeOutput(actions, requestId);
-          contractTestChipsByRequestId.set(requestId, { chip: contractChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#contract' });
+          appendLiveClaudeOutput(testingArea, requestId);
+          contractTestChipsByRequestId.set(requestId, { chip: contractChip, actionsEl: actions, testingArea, tickInterval, symbolKey: graphable + '#contract' });
           vscode.postMessage({ type: 'generateContractTest', result: r, requestId });
         };
         contractChip.addEventListener('click', (event) => {
@@ -12080,13 +12650,11 @@ function getHtml(host, port, cspSource) {
           if (broadChip.dataset.pending === '1') { return; }
           broadChip.dataset.pending = '1';
           const tickInterval = startPendingTicker(broadChip, 'Generating');
-          const existingNote = actions.nextElementSibling && actions.nextElementSibling.classList.contains('callPathTestNote')
-            ? actions.nextElementSibling
-            : null;
+          const existingNote = testingArea.querySelector(':scope > .generatedTestNote');
           if (existingNote) { existingNote.remove(); }
           const requestId = 'broadcoveragetest_' + (broadCoverageTestRequestSeq++) + '_' + Date.now();
-          attachLiveClaudeOutput(actions, requestId);
-          broadCoverageTestChipsByRequestId.set(requestId, { chip: broadChip, actionsEl: actions, tickInterval, symbolKey: graphable + '#broadcoverage' });
+          appendLiveClaudeOutput(testingArea, requestId);
+          broadCoverageTestChipsByRequestId.set(requestId, { chip: broadChip, actionsEl: actions, testingArea, tickInterval, symbolKey: graphable + '#broadcoverage' });
           vscode.postMessage({ type: 'generateBroadCoverageTest', result: r, requestId });
         };
         broadChip.addEventListener('click', (event) => {
@@ -12097,7 +12665,26 @@ function getHtml(host, port, cspSource) {
         maybeAutoWriteTest(graphable, graphable + '#broadcoverage', fireBroadCoverageTest, actions);
       }
 
+      // Toggles testingArea below — appended last so it always reads as
+      // "collapse everything below" rather than sitting ahead of the chips
+      // it's a peer of.
+      const testingToggle = document.createElement('button');
+      testingToggle.type = 'button';
+      testingToggle.className = 'detailsToggle';
+      testingToggle.textContent = '-';
+      testingToggle.title = 'Hide test results and status below';
+      testingToggle.setAttribute('aria-expanded', 'true');
+      testingToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const collapsed = testingArea.classList.toggle('is-collapsed');
+        testingToggle.textContent = collapsed ? '+' : '-';
+        testingToggle.title = collapsed ? 'Show test results and status below' : 'Hide test results and status below';
+        testingToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      });
+      actions.appendChild(testingToggle);
+
       item.appendChild(actions);
+      item.appendChild(testingArea);
 
       // A test generated in an earlier render (before this card's DOM got
       // rebuilt, e.g. by the auto uncommitted-edits refresh) still exists on
@@ -12105,12 +12692,12 @@ function getHtml(host, port, cspSource) {
       // tests" (or one of the generate-test chips) again and re-discover it.
       const savedTest = graphable ? generatedTestsBySymbol.get(graphable) : null;
       if (savedTest) {
-        item.appendChild(buildGeneratedTestNote(savedTest));
+        testingArea.appendChild(buildGeneratedTestNote(savedTest));
       }
       ['#newfunc', '#contract', '#broadcoverage'].forEach((suffix) => {
         const saved = graphable ? generatedTestsBySymbol.get(graphable + suffix) : null;
         if (saved) {
-          item.appendChild(buildGeneratedTestNote(saved));
+          testingArea.appendChild(buildGeneratedTestNote(saved));
         }
       });
       // Only changed functions (not files/blastRadius/commit rows) get a
@@ -12143,22 +12730,14 @@ function getHtml(host, port, cspSource) {
             });
             existingEl.appendChild(checkBtn);
           };
-          if (runMode === 'auto' && autoRunBatchCount < maxAutoWritesPerBatch) {
-            // No button — this is pure local search + pytest (no Claude
-            // call), so it's safe to fire automatically the first time this
-            // symbol renders rather than waiting on a click — but only up to
-            // the batch cap; a large diff or first-time scan can otherwise
-            // render hundreds of these in one batch and flood the OS with
-            // coverage-run/pytest processes (see acquirePythonTestRunSlot
-            // and autoRunBatchCount above). Symbols beyond the cap get the
-            // manual button instead of being silently skipped.
-            autoRunBatchCount++;
-            fireExistingTestsCheck();
-          } else {
-            renderCheckExistingTestsButton();
-          }
+          // Always manual now — this Python-only check used to auto-fire
+          // under Run:Auto, but the "Check tests" chip above (fireCheckTests)
+          // already auto-drives an equivalent, multi-language check when
+          // Auto-Run Tests is on, so auto-firing this one too would just
+          // duplicate it for Python specifically.
+          renderCheckExistingTestsButton();
         }
-        item.appendChild(existingEl);
+        testingArea.appendChild(existingEl);
 
         const verdictEl = document.createElement('div');
         verdictCardElsBySymbol.set(graphable, verdictEl);
@@ -12493,16 +13072,6 @@ function getHtml(host, port, cspSource) {
         existsBadge.textContent = '✓ Test already generated';
         existsBadge.title = chain.existingTestPath;
         actions.appendChild(existsBadge);
-
-        const viewChip = document.createElement('span');
-        viewChip.className = 'actionChip actionChipClickable actionChipPrimary';
-        viewChip.textContent = 'View Test';
-        viewChip.title = 'Open ' + chain.existingTestPath;
-        viewChip.addEventListener('click', (event) => {
-          event.stopPropagation();
-          vscode.postMessage({ type: 'openFile', file: chain.existingTestPath, line: '' });
-        });
-        actions.appendChild(viewChip);
       }
 
       const chip = document.createElement('span');
@@ -12514,7 +13083,7 @@ function getHtml(host, port, cspSource) {
         if (chip.dataset.pending === '1') { return; }
         chip.dataset.pending = '1';
         const tickInterval = startPendingTicker(chip, 'Generating');
-        const existingNote = row.nextElementSibling && row.nextElementSibling.classList.contains('callPathTestNote')
+        const existingNote = row.nextElementSibling && row.nextElementSibling.classList.contains('generatedTestNote')
           ? row.nextElementSibling
           : null;
         if (existingNote) { existingNote.remove(); }
@@ -12525,6 +13094,19 @@ function getHtml(host, port, cspSource) {
       });
       actions.appendChild(chip);
       row.appendChild(actions);
+
+      // A test found on disk from a previous run (existingCallChainTestFile
+      // on the extension host) is otherwise a dead end — "View Test" only
+      // opened the file, with no way to actually run it short of
+      // regenerating. This gives it the same Run/Fix row a freshly
+      // generated test gets (see createTestRunRow's other callers), keyed
+      // to the caller function since that's what the test was written
+      // against (see generateCallChainTestForResult's targetPath/
+      // targetStartLine/targetSymbol).
+      if (chain.existingTestPath) {
+        const targetInfo = { path: chain.callerFile, startLine: chain.callerLine, symbol: chain.callerSymbol };
+        row.appendChild(createTestRunRow(chain.existingTestPath, '', chain.existingTestPath, '', targetInfo));
+      }
 
       table.appendChild(row);
     });
@@ -12565,20 +13147,31 @@ function getHtml(host, port, cspSource) {
     // underneath, independent of this outer one.
     const body = document.createElement('div');
     if (msg.query) {
-      const q = document.createElement('button');
-      q.type = 'button';
-      q.className = 'query expandToggle';
-      q.setAttribute('aria-expanded', 'true');
-      const queryLabel = () => msg.query + ' ' + (q.getAttribute('aria-expanded') === 'true' ? 'v' : '>');
-      q.textContent = queryLabel();
-      q.addEventListener('click', (event) => {
+      // Same "+"/"-" detailsToggle button used by the Critical Functions /
+      // Calls to CODEMD MCP cards above, instead of this block's own
+      // "v"/">" suffix text — one collapse affordance style across the panel.
+      const headline = document.createElement('div');
+      headline.className = 'queryHeadline';
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'detailsToggle';
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.textContent = '-';
+      toggle.title = 'Hide this report';
+      const label = document.createElement('span');
+      label.className = 'query';
+      label.textContent = msg.query;
+      toggle.addEventListener('click', (event) => {
         event.stopPropagation();
-        const expanded = q.getAttribute('aria-expanded') === 'true';
-        q.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        toggle.textContent = expanded ? '+' : '-';
+        toggle.title = expanded ? 'Show this report' : 'Hide this report';
         body.style.display = expanded ? 'none' : '';
-        q.textContent = queryLabel();
       });
-      wrapper.appendChild(q);
+      headline.appendChild(toggle);
+      headline.appendChild(label);
+      wrapper.appendChild(headline);
     }
     wrapper.appendChild(body);
     if (msg.error) {
@@ -12588,17 +13181,21 @@ function getHtml(host, port, cspSource) {
       body.appendChild(errEl);
     } else {
       if (Array.isArray(msg.summaryTiles) && msg.summaryTiles.length) {
-        renderSummaryTiles(body, msg.summaryTiles);
+        const summaryBody = document.createElement('div');
+        renderSummaryTiles(summaryBody, msg.summaryTiles);
+        appendCollapsibleSection(body, 'Summary', summaryBody, 0, true);
       }
       if (msg.answer) {
         const a = document.createElement('div');
         a.className = 'answer';
         renderAnswerTextWithLinks(a, msg.answer, msg.answerLinks || []);
-        body.appendChild(a);
+        appendCollapsibleSection(body, 'Answer', a, 0, true);
       }
-      if (Array.isArray(msg.callChains) && msg.callChains.length) {
-        renderCallChainsSection(body, msg.callChains);
-      }
+      // Functions render above Call-Path Opportunities: the ranked function
+      // list is the primary result set, while call-path suggestions are a
+      // secondary callout derived from it, so they read better once the
+      // functions themselves have been seen.
+      const functionsBody = document.createElement('div');
       const resultList = document.createElement('div');
       const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius' || msg.kind === 'commitDetail';
       if (isChangeList && (msg.results || []).length > 0) {
@@ -12621,12 +13218,20 @@ function getHtml(host, port, cspSource) {
         });
         toolbar.appendChild(label);
         toolbar.appendChild(select);
-        body.appendChild(toolbar);
+        functionsBody.appendChild(toolbar);
         appendGroupedChangeResultItems(resultList, sortedChangeResults(msg.results || [], select.value), select.value);
       } else {
         appendResultItems(resultList, msg.results || []);
       }
-      body.appendChild(resultList);
+      functionsBody.appendChild(resultList);
+      if ((msg.results || []).length > 0) {
+        appendCollapsibleSection(body, 'Functions', functionsBody, (msg.results || []).length, true);
+      } else {
+        body.appendChild(functionsBody);
+      }
+      if (Array.isArray(msg.callChains) && msg.callChains.length) {
+        renderCallChainsSection(body, msg.callChains);
+      }
     }
     // A commit-detail result that came from clicking a specific row (see
     // commitDetailRowsByRequestId above) belongs directly under that row —
@@ -12675,14 +13280,10 @@ function getHtml(host, port, cspSource) {
         emptyStateRetryBtn.style.display = isError ? '' : 'none';
       }
     } else if (msg.type === 'modesConfig') {
-      runMode = msg.runMode === 'manual' ? 'manual' : 'auto';
-      writeMode = msg.writeMode === 'auto' ? 'auto' : 'manual';
+      autoMode = msg.autoMode === 'localOnly' ? 'localOnly' : 'manual';
       maxAutoWritesPerBatch = Number.isFinite(msg.maxAutoWritesPerBatch) && msg.maxAutoWritesPerBatch > 0
         ? msg.maxAutoWritesPerBatch : 3;
-      writeModePill.disabled = !!msg.readOnlyMode;
-      writeModePill.title = msg.readOnlyMode
-        ? 'Read-only mode is on (codemdGraphs.readOnlyMode) — CODEMD will not invoke Claude to write tests regardless of this setting.'
-        : 'Write: whether new tests get generated automatically. Auto spends real Claude usage without a click each time.';
+      claudeAgentConsent = Boolean(msg.claudeAgentConsent);
       renderModePills();
     } else if (msg.type === 'mcpUsage') {
       const total = Number(msg.totalCalls || 0);
@@ -12879,12 +13480,9 @@ function getHtml(host, port, cspSource) {
       const entry = testGapChipsByRequestId.get(msg.requestId);
       testGapChipsByRequestId.delete(msg.requestId);
       if (!entry) { return; }
-      const { chip, isNewFunction, impactedFunctions, result: gapResult } = entry;
+      const { chip, testingArea, isNewFunction, impactedFunctions, result: gapResult } = entry;
       chip.dataset.pending = '0';
-      const actionsRow = chip.closest('.actionRow');
-      let matchList = actionsRow && actionsRow.nextElementSibling && actionsRow.nextElementSibling.classList.contains('testMatchList')
-        ? actionsRow.nextElementSibling
-        : null;
+      let matchList = testingArea ? testingArea.querySelector(':scope > .testMatchList') : null;
       if (!msg.ok) {
         chip.textContent = 'Check tests';
         chip.title = msg.error || 'Test lookup failed.';
@@ -12894,7 +13492,7 @@ function getHtml(host, port, cspSource) {
       const count = Number(msg.matchCount || 0);
       const matches = Array.isArray(msg.matches) ? msg.matches : [];
       const targetInfo = msg.target || null;
-      if (count > 0 && matches.length && actionsRow) {
+      if (count > 0 && matches.length && testingArea) {
         // The chip counts individual tests, not matched files — matchCount
         // (files) and the per-test tally below routinely disagree (e.g. 4
         // files containing 8 test functions), and showing two different
@@ -12909,7 +13507,7 @@ function getHtml(host, port, cspSource) {
         if (!matchList) {
           matchList = document.createElement('div');
           matchList.className = 'testMatchList';
-          actionsRow.insertAdjacentElement('afterend', matchList);
+          testingArea.appendChild(matchList);
         }
         matchList.innerHTML = '';
 
@@ -12922,6 +13520,23 @@ function getHtml(host, port, cspSource) {
         let batchState = null;
         let runAllBtn = null;
         let runAllSummary = null;
+        // Every match/test group below lives in here instead of directly in
+        // matchList — once "Run all" finishes clean, this collapses down to
+        // just the runAllBar summary line ("21 passed") instead of leaving
+        // 21 individual pass rows (each repeating the same "did/did NOT
+        // execute the target function" note) permanently on screen. A
+        // failure keeps it open since that's exactly what needs attention.
+        const detailsWrap = document.createElement('div');
+        detailsWrap.className = 'testMatchDetails';
+        let detailsToggle = null;
+        const setDetailsCollapsed = (collapsed) => {
+          detailsWrap.style.display = collapsed ? 'none' : '';
+          if (detailsToggle) {
+            detailsToggle.textContent = collapsed ? '+' : '-';
+            detailsToggle.title = collapsed ? 'Show individual test results' : 'Hide individual test results';
+            detailsToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          }
+        };
         const updateBatchSummary = () => {
           if (!batchState || !runAllSummary) { return; }
           const parts = [];
@@ -12935,6 +13550,7 @@ function getHtml(host, port, cspSource) {
           if (complete && runAllBtn) {
             runAllBtn.dataset.pending = '0';
             runAllBtn.textContent = '▶ Run all ' + batchState.total + (batchState.total === 1 ? ' test' : ' tests');
+            setDetailsCollapsed(!(batchState.failed || batchState.errored));
           }
         };
         const handleBatchResult = (msg) => {
@@ -12954,19 +13570,32 @@ function getHtml(host, port, cspSource) {
           runAllBtn.title = 'Runs every test below (each the same way its own Run button would) and tallies pass/fail here.';
           runAllSummary = document.createElement('span');
           runAllSummary.className = 'testRunAllSummary';
+          detailsToggle = document.createElement('button');
+          detailsToggle.type = 'button';
+          detailsToggle.className = 'detailsToggle';
+          detailsToggle.textContent = '-';
+          detailsToggle.title = 'Hide individual test results';
+          detailsToggle.setAttribute('aria-expanded', 'true');
+          detailsToggle.addEventListener('click', (event) => {
+            event.stopPropagation();
+            setDetailsCollapsed(detailsWrap.style.display !== 'none');
+          });
           runAllBtn.addEventListener('click', (event) => {
             event.stopPropagation();
             if (runAllBtn.dataset.pending === '1') { return; }
             runAllBtn.dataset.pending = '1';
             runAllBtn.textContent = 'Running…';
+            setDetailsCollapsed(false);
             batchState = { total: runners.length, done: 0, passed: 0, failed: 0, errored: 0 };
             updateBatchSummary();
             runners.forEach((r) => r.runTest());
           });
           runAllBar.appendChild(runAllBtn);
           runAllBar.appendChild(runAllSummary);
+          runAllBar.appendChild(detailsToggle);
           matchList.appendChild(runAllBar);
         }
+        matchList.appendChild(detailsWrap);
 
         matches.forEach((match) => {
           const file = typeof match === 'string' ? match : String(match.file || '');
@@ -13005,8 +13634,19 @@ function getHtml(host, port, cspSource) {
             runners.push(row);
             group.appendChild(row);
           }
-          matchList.appendChild(group);
+          detailsWrap.appendChild(group);
         });
+
+        // Auto-Run Tests: run every match that has a local, no-Claude runner
+        // (isDirect — see createTestRunRow) as soon as it's discovered.
+        // Matches that need Claude to find their run command are left as a
+        // manual Run button regardless of mode — nothing here ever fires
+        // those automatically.
+        if (autoMode === 'localOnly') {
+          runners.forEach((runnerRow) => {
+            if (runnerRow.isDirect) { runnerRow.runTest(); }
+          });
+        }
       } else {
         // No trailing "— add one?": this chip is a status readout, not a
         // button — clicking it only re-runs the same lookup. The actual
@@ -13021,11 +13661,11 @@ function getHtml(host, port, cspSource) {
           note += ' It has ' + impactedFunctions.length + ' confirmed caller(s) (e.g. ' + sample
             + ') — a test that exercises one of those call paths would catch more than testing this function alone.';
         }
-        if (actionsRow) {
+        if (testingArea) {
           if (!matchList) {
             matchList = document.createElement('div');
             matchList.className = 'testMatchList';
-            actionsRow.insertAdjacentElement('afterend', matchList);
+            testingArea.appendChild(matchList);
           }
           matchList.innerHTML = '';
           const noteEl = document.createElement('div');
@@ -13087,7 +13727,7 @@ function getHtml(host, port, cspSource) {
               if (mechChip.dataset.pending === '1') { return; }
               mechChip.dataset.pending = '1';
               const tickInterval = startPendingTicker(mechChip, 'Generating');
-              const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('regressionTestNote')
+              const existingNote = genActions.nextElementSibling && genActions.nextElementSibling.classList.contains('generatedTestNote')
                 ? genActions.nextElementSibling
                 : null;
               if (existingNote) { existingNote.remove(); }
@@ -13270,9 +13910,10 @@ function getHtml(host, port, cspSource) {
       const entry = fixTestRowsByRequestId.get(msg.requestId);
       fixTestRowsByRequestId.delete(msg.requestId);
       if (!entry) { return; }
-      const { fixBtn, fixNote, testFile, sourceFile, tickInterval, fixStopBtn } = entry;
+      const { fixBtn, fixNote, testFile, sourceFile, tickInterval, fixStopBtn, fixOutputPre, statusPill, statusDetail, runBtn, outputToggle, outputPre } = entry;
       if (tickInterval) { clearInterval(tickInterval); }
       if (fixStopBtn) { fixStopBtn.style.display = 'none'; }
+      collapseLiveOutput(fixOutputPre, 'Claude output');
       const isEnvKind = msg.kind === 'environment';
       // Time, not the $ figure, leads here — most users are on a Pro/Max
       // subscription where costUsd isn't a real charge, just an API-
@@ -13287,7 +13928,26 @@ function getHtml(host, port, cspSource) {
         return;
       }
       const filesChanged = Array.isArray(msg.filesChanged) ? msg.filesChanged.filter(Boolean) : [];
-      const verdict = msg.passedAfterFix === true ? 'Now passes' : msg.passedAfterFix === false ? 'Still failing' : 'Not re-verified';
+      const passed = msg.passedAfterFix === true ? true : msg.passedAfterFix === false ? false : null;
+      const verdict = passed === true ? 'Now passes' : passed === false ? 'Still failing' : 'Not re-verified';
+      // The row's own run-status pill (statusPill/statusDetail/runBtn — only
+      // present when this fix was launched from a live test-run row, not
+      // from the standalone Bugs/Defects list) still shows whatever it said
+      // BEFORE this fix ran — often a stale "Couldn't run" from an earlier,
+      // unrelated failure. Once Claude's own rerun gives a real pass/fail
+      // verdict, that's more current than the old pill, so sync it the same
+      // way a real "Run" would.
+      if (statusPill && passed !== null) {
+        statusPill.textContent = (passed ? '✓ Passed' : '✗ Failed');
+        statusPill.className = 'statusPill ' + (passed ? 'is-good' : 'is-bad');
+        statusPill.style.display = '';
+        if (statusDetail) { statusDetail.style.display = 'none'; }
+        if (runBtn) { runBtn.textContent = '↻ Run again'; runBtn.className = 'btn is-outline'; }
+        if (outputToggle && msg.output) {
+          if (outputPre) { outputPre.textContent = msg.output; }
+          outputToggle.style.display = '';
+        }
+      }
       // Answers the question "did Claude just fix my code, or fix the test
       // it was checking?" instead of leaving the user to infer it from a
       // bare file list — sourceFile/testFile come from the same row this
@@ -13329,10 +13989,22 @@ function getHtml(host, port, cspSource) {
           detail: verdict + '. ' + (msg.summary || '') + ' Click "Run again" to confirm.' + durationSuffix,
           files: filesChanged.join(', '),
         });
+      } else if (passed === true) {
+        // Claude reran the test and it already passes without any edit —
+        // a false/stale failure, not a real bug. Nothing left to fix, so
+        // the button goes away instead of inviting another (paid) attempt
+        // at a problem that no longer exists.
+        fixBtn.style.display = 'none';
+        renderFixBanner(fixNote, {
+          tone: 'good',
+          icon: '✓',
+          lede: 'Already passing — no bug found',
+          detail: (msg.summary || 'Claude reran this and it passed without any change.') + durationSuffix,
+        });
       } else {
         fixBtn.className = isEnvKind ? 'btn is-quiet' : 'btn is-primary';
         fixBtn.textContent = isEnvKind ? '🔧 Fix environment issue with Claude' : '🔧 Fix with Claude';
-        const verdictSuffix = msg.passedAfterFix !== null && msg.passedAfterFix !== undefined ? ' (' + verdict + ')' : '';
+        const verdictSuffix = passed !== null ? ' (' + verdict + ')' : '';
         renderFixBanner(fixNote, {
           tone: isEnvKind ? 'env' : 'warn',
           icon: isEnvKind ? '⚙' : '⚠',
@@ -13373,6 +14045,7 @@ function getHtml(host, port, cspSource) {
     } else if (msg.type === 'callPathTestResult') {
       const entry = callPathTestChipsByRequestId.get(msg.requestId);
       callPathTestChipsByRequestId.delete(msg.requestId);
+      const livePre = testGenOutputPreByRequestId.get(msg.requestId);
       testGenOutputPreByRequestId.delete(msg.requestId);
       if (!entry) { return; }
       const { chip, actionsEl, tickInterval, symbol } = entry;
@@ -13394,6 +14067,7 @@ function getHtml(host, port, cspSource) {
         output: msg.output,
       };
       actionsEl.insertAdjacentElement('afterend', buildGeneratedTestNote(opts));
+      if (livePre && livePre.isConnected) { livePre.remove(); }
       if (msg.ok && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
         updateVerdictCard(symbol);
@@ -13488,6 +14162,31 @@ function getHtml(host, port, cspSource) {
           });
         });
         criticalFunctionsDetails.appendChild(row);
+      });
+    } else if (msg.type === 'defectsResult') {
+      defectsDetails.textContent = '';
+      if (!msg.ok) {
+        defectsLabel.textContent = 'Bugs, Issues & Defects';
+        defectsDetails.textContent = '⚠ ' + (msg.error || 'Could not load defect records.');
+        return;
+      }
+      defectCounts = msg.counts && typeof msg.counts === 'object'
+        ? { active: Number(msg.counts.active) || 0, fixed: Number(msg.counts.fixed) || 0 }
+        : { active: 0, fixed: 0 };
+      // The title itself carries the tally (Fixed: N, Active: M) so that's
+      // visible even while the card is collapsed — the body below only ever
+      // lists Active bugs, the ones actually needing a click from the user;
+      // a fixed bug has nothing left to act on, so it's counted, not shown.
+      defectsLabel.textContent = 'Bugs, Issues & Defects (Fixed: ' + defectCounts.fixed + ', Active: ' + defectCounts.active + ')';
+      const items = Array.isArray(msg.items) ? msg.items : [];
+      if (!items.length) {
+        defectsDetails.textContent = defectCounts.fixed
+          ? 'No active bugs — ' + defectCounts.fixed + ' fixed so far.'
+          : 'No genuine bugs recorded yet — this fills in when a CODEMD-generated test actually catches one.';
+        return;
+      }
+      items.forEach((item) => {
+        defectsDetails.appendChild(createDefectRow(item));
       });
     }
   });

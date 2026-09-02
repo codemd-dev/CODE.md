@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "The auto test harness for AI-written code. CODEMD traces your callgraph to find exactly what changed, instantly re-runs the existing tests that cover it, and has Claude write the ones you're missing — one click, always under your control.",
-  "version": "0.0.132",
+  "version": "0.0.135",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -180,35 +180,31 @@
           "default": false,
           "description": "When enabled, CODEMD never invokes Claude to write tests or fix failures — it only analyzes, and runs tests that already exist. The free, mechanical Regression Test (no AI involved) is unaffected."
         },
+        "codemdGraphs.claudeAgentConsent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether you've allowed this panel to invoke Claude at all (writing tests, discovering how to run a test, fixing a failure). Left off until the one-time popup shown the first time you click a Claude-powered action — picking '🤖 Use Coding Agent (Claude)' there turns this on; picking '✋ Manual' just skips that click and asks again next time. Turn this on directly to skip the popup."
+        },
         "codemdGraphs.maxCostPerActionUsd": {
           "type": "number",
           "default": 1,
           "minimum": 0.05,
           "description": "Caps how much API-equivalent usage a single Claude action (writing a test, fixing a failure, or finding how to run a test) can use, in USD. On a Claude Pro/Max subscription this isn't a real charge — it's the same usage figure the CLI reports internally — but the cap still protects your rate-limited 5-hour/7-day quota from one runaway action. Claude stops as soon as it crosses this between turns and the action is reported as failed rather than applied; since the check happens between turns, not mid-turn, actual usage can run slightly over this for one expensive turn. Raise it if you want to allow heavier actions."
         },
-        "codemdGraphs.runMode": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "manual"
-          ],
-          "default": "auto",
-          "description": "Whether the panel checks and runs existing tests for a changed function automatically (Auto, the default — pure local pytest, no Claude call) or only when you click Check existing tests (Manual). Forced to auto whenever codemdGraphs.writeMode is auto, since auto-write relies on this check's result."
-        },
-        "codemdGraphs.writeMode": {
+        "codemdGraphs.autoMode": {
           "type": "string",
           "enum": [
             "manual",
-            "auto"
+            "localOnly"
           ],
           "default": "manual",
-          "description": "Whether the panel invokes Claude to write New-Function/Contract/Broad-Coverage tests automatically as changed functions are found (Auto) or only when you click their chip (Manual, the default). Auto spends real Claude usage without a click each time, capped by codemdGraphs.maxAutoWritesPerBatch and codemdGraphs.maxCostPerActionUsd; has no effect while codemdGraphs.readOnlyMode is on."
+          "description": "Whether the panel checks and runs existing tests for a changed function automatically. 'manual' (the default): nothing runs without a click. 'localOnly': existing tests for Python/Go/Rust/Java/C#/Kotlin are found and run automatically via their local toolchains — never Claude, never for any other language. Claude-invoking actions (writing new tests, or running a test in a language with no local runner) never fire automatically regardless of this setting; they always require an explicit click."
         },
         "codemdGraphs.maxAutoWritesPerBatch": {
           "type": "number",
           "default": 3,
           "minimum": 1,
-          "description": "Caps how many tests codemdGraphs.writeMode: auto will generate within one Check Uncommitted Changes / Check Latest Commits / Analyze Commit result set. Functions beyond the cap keep their normal manual chip instead of auto-firing, so one large commit can't silently trigger a wall of Claude calls."
+          "description": "Caps how many existing-test runs codemdGraphs.autoMode: localOnly will auto-fire within one Check Uncommitted Changes / Check Latest Commits / Analyze Commit result set. Functions beyond the cap keep their normal manual chip instead of auto-firing, so one large commit can't silently trigger a wall of local test runs."
         },
         "codemdGraphs.excludeGlobs": {
           "type": "array",
