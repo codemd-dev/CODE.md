@@ -2976,6 +2976,25 @@ function generatedTestFileNameFor(namePrefix, language, ext) {
  * word of the class name (Java — see generatedTestFileNameFor) —
  * '' if the name doesn't match any of them (a pre-existing test the
  * user wrote, or one found via find_tests, not something CODEMD generated). */
+// Whether a file itself IS a test file (by naming convention/location), as
+// opposed to a source file some test happens to cover. Needed because a
+// diff's "added function" list includes functions newly added to test
+// files too (a hand-written test's own new helper/test-case function) —
+// without this, Auto Mode's kind==='added' branch would try to generate a
+// CODEMD test FOR a test function, which is meaningless. Deliberately a
+// naming/location heuristic, not a content check — mirrors the same rule
+// resolveDefectIfApplicable already applies inline for its own narrower
+// "did this fix touch the test or the source" question.
+function isLikelyTestFilePath(filePath) {
+    const normalized = String(filePath || '').replace(/\\/g, '/').toLowerCase();
+    const base = normalized.split('/').pop() || '';
+    if (base.startsWith('test_') || base.endsWith('_test.py')
+        || base.endsWith('.test.ts') || base.endsWith('.test.tsx') || base.endsWith('.test.js') || base.endsWith('.test.jsx')
+        || base.endsWith('.spec.ts') || base.endsWith('.spec.tsx') || base.endsWith('.spec.js') || base.endsWith('.spec.jsx')) {
+        return true;
+    }
+    return /(^|\/)(tests?|__tests__|generated_tests)\//.test(normalized);
+}
 function generatorKindFromTestFileName(testFile) {
     const base = path.basename(testFile).toLowerCase();
     if (base.startsWith('test_callpath_') || base.startsWith('callpath')) {
@@ -9680,7 +9699,7 @@ class GraphsViewProvider {
             const allResults = this.buildChangeResults(report, folder);
             const highPrioritySymbols = new Set(blastRadiusEntriesFromReport(report).map((e) => e.symbol));
             const queue = allResults
-                .filter((r) => r.changeCard && (r.changeCard.kind === 'modified' || r.changeCard.kind === 'added') && !r.changeCard.cosmeticOnly)
+                .filter((r) => r.changeCard && (r.changeCard.kind === 'modified' || r.changeCard.kind === 'added') && !r.changeCard.cosmeticOnly && !isLikelyTestFilePath(String(r.file || '')))
                 .sort((a, b) => {
                 const aHigh = highPrioritySymbols.has(String(a.fullName || a.graphSymbol || '')) ? 1 : 0;
                 const bHigh = highPrioritySymbols.has(String(b.fullName || b.graphSymbol || '')) ? 1 : 0;
