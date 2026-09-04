@@ -1,5 +1,6 @@
 import ast
 import logging
+import re
 from pathlib import Path
 from warnings import filters
 
@@ -136,7 +137,45 @@ class PythonAnalyzer:
             if self.function_graph.in_degree(node) == 0
         ]
 
+    # Test functions are graph ROOTS (they call into the app; nothing in the
+    # app calls them back), so nx.descendants() from an app entrypoint like
+    # main/app/run never reaches them. Without treating each test function as
+    # its own entrypoint here, root_graph_at_entrypoint() below deletes every
+    # test-file node as "unreachable" — which silently emptied test files out
+    # of the callgraph entirely, breaking find_tests (which needs test->target
+    # edges to do a real graph-based lookup instead of falling back to
+    # keyword-matching test file text).
+    # pyan3 (see pyan3_parser.PyCGParser, which this analyzer actually uses)
+    # names nodes by joining module-path segments with "__" instead of ".":
+    # a function in tests/test_foo.py becomes tests__test_foo__the_function.
+    # symbol_index (built separately by ASTSymbolIndexer) uses dotted names,
+    # so it can't be used to identify a pyan3 node's source file by exact-key
+    # lookup — match on the node name's own path segments instead.
+    #
+    # Only path segments (everything but the LAST segment, which is the
+    # function/method name itself) are checked — checking the last segment
+    # too would misclassify a plain production function that happens to be
+    # named like a test (e.g. main.test_jobs_dir, a job-directory cleanup
+    # utility) as a test root. Within each path segment, "test"/"tests" must
+    # appear as its own underscore-delimited word (checked by splitting on
+    # "_"), not merely as a substring — so "tests", "generated_tests", and
+    # "test_broadcoverage_foo" all match, but "contest" or "latest_data" do
+    # not. A leading hidden directory like ".codemd" collapses to a "codemd"
+    # segment in pyan3's naming (the dot produces an empty segment, stripped
+    # below), so ".codemd/generated_tests/test_x.py" must still be caught via
+    # its "generated_tests" segment, not by assuming segment 0 is the tell.
+    def _is_test_path_segment(self, segment):
+        words = segment.lower().split("_")
+        return "test" in words or "tests" in words
 
+    def find_test_entrypoint_nodes(self):
+        test_nodes = []
+        for node in self.function_graph.nodes():
+            segments = [s for s in node.split("__") if s]  # collapse "___" runs / drop empties
+            path_segments = segments[:-1]  # exclude the function/method name itself
+            if any(self._is_test_path_segment(seg) for seg in path_segments):
+                test_nodes.append(node)
+        return test_nodes
 
     def root_graph_at_entrypoint(self):
         # find the entry point node — look for main.py's top-level calls
@@ -146,18 +185,22 @@ class PythonAnalyzer:
         #]
 
         entry_nodes = self.find_entrypoint_nodes()
+        test_entry_nodes = self.find_test_entrypoint_nodes()
+        all_roots = list(dict.fromkeys(entry_nodes + test_entry_nodes))
 
-        if not entry_nodes:
+        if not all_roots:
             return  # no main.py found, keep full graph
-        # BFS/DFS from all main.py nodes to find reachable nodes
+        # BFS/DFS from all root nodes (app entrypoints + every test function,
+        # each a root in its own right) to find reachable nodes
         reachable = set()
-        for entry in entry_nodes:
+        for entry in all_roots:
             reachable.update(nx.descendants(self.function_graph, entry))
             reachable.add(entry)
         # remove unreachable nodes
         unreachable = set(self.function_graph.nodes()) - reachable
         self.function_graph.remove_nodes_from(unreachable)
         logger.debug("entry nodes: %s", entry_nodes[:3])
+        logger.debug("test entry nodes: %d", len(test_entry_nodes))
         logger.debug("reachable nodes: %d", len(reachable))
         logger.debug("pruned unreachable: %d", len(unreachable))
 

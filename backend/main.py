@@ -346,7 +346,6 @@ def zip_analysis_output(repo_id: str, output_repo_dir=None):
 # ============================================================
 
 SKIP_DIRS = {
-    "tests", "test", "__tests__",
     "venv", ".venv", "env",
     "build", "dist", "out", ".gradle", ".next", ".nuxt", ".svelte-kit", ".turbo", ".cache", "coverage", "__pycache__",
     "migrations", ".github", ".idea", ".vscode",
@@ -366,6 +365,37 @@ ALLOWED_CODE_EXTENSIONS = {
 
 HTML_UI_EXTENSIONS_FOR_ANALYSIS = {".html", ".htm", ".xhtml"}
 
+# Directory names that unambiguously mean "this holds tests," across every
+# language convention this tool analyzes — never excluded from source
+# discovery, no matter what. This overrides SKIP_DIRS entirely for a path
+# containing one of these segments, INCLUDING when it sits under an
+# otherwise-fully-skipped ancestor like ".codemd" (e.g.
+# ".codemd/generated_tests/" — CODEMD's own home for Claude/Codex-generated
+# tests) — the whole point of most callers of should_skip_path is to find
+# real, testable code, and a rule that hides the actual tests defeats that.
+#   - bare/common names: test, tests, __tests__, __test__, spec, specs
+#   - a whole extra word: unittest(s), unit_test(s), integration_test(s),
+#     generated_tests (CODEMD's own convention)
+#   - a delimited suffix on a compound/project name — .NET's convention is a
+#     whole SIBLING PROJECT directory named "<Project>.Tests" or
+#     "<Project>.IntegrationTests", not a bare "tests" folder at all. Only
+#     matched when "test(s)"/"spec(s)" is preceded by a real delimiter
+#     (., _, -) or is the entire segment, so "latest", "contest", "digest",
+#     and "protest" are correctly left alone (verified: none of those
+#     contain "test"/"tests" immediately after a ^, ., _, or - boundary).
+_TEST_DIR_EXACT_NAMES = {
+    "test", "tests", "__tests__", "__test__", "spec", "specs",
+    "unittest", "unittests", "unit_test", "unit_tests",
+    "integrationtest", "integrationtests", "integration_test", "integration_tests",
+    "generated_tests",
+}
+_TEST_DIR_SUFFIX_RE = re.compile(r"(?:^|[._-])(tests?|specs?)$", re.IGNORECASE)
+
+
+def is_test_directory_name(name: str) -> bool:
+    lowered = str(name or "").lower()
+    return lowered in _TEST_DIR_EXACT_NAMES or bool(_TEST_DIR_SUFFIX_RE.search(lowered))
+
 
 def should_skip_path(path: str, repo_root: str = ""):
     path_for_match = str(path)
@@ -376,6 +406,8 @@ def should_skip_path(path: str, repo_root: str = ""):
             path_for_match = str(path)
     parts = [part.lower() for part in path_for_match.replace("\\", "/").split("/")]
     filename = parts[-1] if parts else ""
+    if any(is_test_directory_name(part) for part in parts):
+        return False
     return (
         any(part in SKIP_DIRS or is_generated_output_dir_name(part) for part in parts)
         or filename.endswith(".min.js")
@@ -28280,6 +28312,30 @@ def build_javalang_callgraph(repo_src, output_dir, progress_callback=None):
         append_parse_errors(errors)
         return tree
 
+    # Local-variable type tracking (scoped, not full type inference): the
+    # qualifier-based resolution below can only match `Foo.bar()` when `Foo`
+    # is literally a known class name — it has no idea `foo.bar()` means the
+    # same thing when `foo` was declared as `Foo foo = new Foo();` earlier in
+    # the SAME method. That's the single most common shape real code (and
+    # nearly all test code: "construct an instance, call a method on it")
+    # takes, so before resolving calls in a method/constructor body, build a
+    # local `variable name -> declared type` map from that body's own
+    # LocalVariableDeclaration nodes and consult it first. Deliberately does
+    # NOT track fields, method/constructor parameters, interface-to-impl
+    # resolution, generics, or anything crossing more than one local
+    # declaration — this is a bounded, low-risk approximation, not real type
+    # inference.
+    def local_variable_types(body_node):
+        local_types = {}
+        for _, decl in body_node.filter(javalang.tree.LocalVariableDeclaration):
+            type_name = getattr(decl.type, "name", None)
+            if not type_name:
+                continue
+            for declarator in decl.declarators:
+                if declarator.name:
+                    local_types[declarator.name] = type_name
+        return local_types
+
     progress(f"Collecting Java methods from {total_files} files...")
     # -----------------------------------------
     # PASS 1 — Collect all user-defined methods
@@ -28316,6 +28372,32 @@ def build_javalang_callgraph(repo_src, output_dir, progress_callback=None):
             if not isinstance(path2[-2], javalang.tree.ClassDeclaration) and method.name:
                 user_methods.add(method.name)
 
+    # Maps a class's simple (unqualified) name to every known class prefix
+    # ending in that name — lets a local variable's declared type (always
+    # just the simple name as written, e.g. "Foo" in "Foo foo = ...", never
+    # the nested-class-qualified "Outer.Foo") resolve to the right user_methods
+    # key even for a nested class. Ambiguous when 2+ classes share a simple
+    # name (e.g. two different "Builder" inner classes) — resolved only when
+    # exactly one candidate exists, same "don't guess" discipline as the
+    # qualifier heuristic this is layered on top of.
+    simple_class_index = {}
+    for full_method in user_methods:
+        class_part = full_method.rsplit(".", 1)[0]
+        simple_class_index.setdefault(class_part.rsplit(".", 1)[-1], set()).add(class_part)
+
+    def resolve_local_var_call(class_name, callee, local_types, qualifier):
+        declared_type = local_types.get(qualifier)
+        if not declared_type:
+            return None
+        candidates = simple_class_index.get(declared_type)
+        if not candidates:
+            return None
+        owner = declared_type if declared_type in candidates else (next(iter(candidates)) if len(candidates) == 1 else None)
+        if not owner:
+            return None
+        candidate = f"{owner}.{callee}"
+        return candidate if candidate in user_methods else None
+
     progress(f"Resolving Java call relationships across {len(user_methods)} methods...")
     # -----------------------------------------
     # PASS 2 — Collect edges between user methods
@@ -28341,18 +28423,25 @@ def build_javalang_callgraph(repo_src, output_dir, progress_callback=None):
 
             for constructor in node.constructors:
                 caller = f"{class_name}.<init>"
+                constructor_local_types = local_variable_types(constructor)
                 for _, call in constructor.filter(javalang.tree.MethodInvocation):
                     callee = call.member
                     if not callee:
                         continue
+                    target = None
                     same_class = f"{class_name}.{callee}"
                     if same_class in user_methods:
-                        edges.add((caller, same_class))
+                        target = same_class
+                    elif call.qualifier:
+                        target = resolve_local_var_call(class_name, callee, constructor_local_types, call.qualifier)
+                    if target and caller != target:
+                        edges.add((caller, target))
 
             for method in node.methods:
                 if not method.name:
                     continue
                 caller = f"{class_name}.{method.name}"
+                method_local_types = local_variable_types(method)
 
                 # Walk the AST inside the method
                 for _, call in method.filter(javalang.tree.MethodInvocation):
@@ -28370,19 +28459,30 @@ def build_javalang_callgraph(repo_src, output_dir, progress_callback=None):
                     if same_class in user_methods:
                         target = same_class
 
-                    # 2. Qualifier-based resolution. Only resolve when the
-                    # qualifier names a known class/type. Do not guess from a
-                    # variable name or a repo-wide simple method name.
+                    # 2. Qualifier-based resolution.
                     elif call.qualifier:
                         q = call.qualifier
-                        guesses = [
-                            f"{q}.{callee}",
-                            f"{class_name.rsplit('.', 1)[0]}.{q}.{callee}" if "." in class_name else "",
-                        ]
-                        for g in guesses:
-                            if g in user_methods:
-                                target = g
-                                break
+
+                        # 2a. Local variable declared earlier in this SAME
+                        # method (e.g. `Foo foo = new Foo(); foo.bar();`) —
+                        # the dominant shape of real test code. Approximate
+                        # by design (single-method scope only), see
+                        # local_variable_types's docstring above.
+                        target = resolve_local_var_call(class_name, callee, method_local_types, q)
+
+                        # 2b. Fall back to the original heuristic: only
+                        # resolve when the qualifier IS a known class/type
+                        # name outright. Do not guess from a repo-wide
+                        # simple method name.
+                        if not target:
+                            guesses = [
+                                f"{q}.{callee}",
+                                f"{class_name.rsplit('.', 1)[0]}.{q}.{callee}" if "." in class_name else "",
+                            ]
+                            for g in guesses:
+                                if g in user_methods:
+                                    target = g
+                                    break
 
                     # Add edge if valid
                     if target and caller != target:
@@ -28560,9 +28660,35 @@ def build_tree_sitter_java_callgraph(repo_src, output_dir):
             return "<init>"
         return ""
 
-    def walk(source_bytes, node, package_name, class_stack, rel_path, current_method=None):
+    # Same scoped, non-full-type-inference approximation as
+    # local_variable_types() in build_javalang_callgraph above: a call like
+    # `foo.bar()` can only be resolved later if `foo`'s declared type is
+    # known. Reads a "local_variable_declaration" node's own type + declarator
+    # fields directly (see field shapes confirmed against tree-sitter-java
+    # 0.25's actual parse tree) and records name -> simple declared type name
+    # into the CURRENT method's local_types dict (reset fresh whenever `walk`
+    # enters a new method_types node below, so scope never leaks across
+    # methods). Non-reference types (e.g. `int a = 1;`) get recorded too but
+    # harmlessly no-op later, since a primitive type name never matches a
+    # real class in simple_class_index.
+    def record_local_var_types(source_bytes, node, local_types):
+        if node.type != "local_variable_declaration" or local_types is None:
+            return
+        type_node = node.child_by_field_name("type")
+        if not type_node:
+            return
+        type_name = _node_text(source_bytes, type_node).split("<", 1)[0].strip()
+        if not type_name:
+            return
+        for declarator in node.children_by_field_name("declarator"):
+            name_node = declarator.child_by_field_name("name")
+            if name_node:
+                local_types[_node_text(source_bytes, name_node)] = type_name
+
+    def walk(source_bytes, node, package_name, class_stack, rel_path, current_method=None, local_types=None):
         next_class_stack = class_stack
         next_method = current_method
+        next_local_types = local_types
 
         if node.type in class_types:
             name = _node_name(source_bytes, node)
@@ -28584,23 +28710,34 @@ def build_tree_sitter_java_callgraph(repo_src, output_dir):
                     "class_name": owner,
                     "file": rel_path,
                 }
+                next_local_types = {}
+
+        record_local_var_types(source_bytes, node, next_local_types)
 
         if current_method and node.type in call_types:
             callee = resolve_call_name(source_bytes, node)
             if callee:
+                qualifier_node = (
+                    node.child_by_field_name("object")
+                    or node.child_by_field_name("type")
+                    or node.child_by_field_name("qualifier")
+                ) if node.type == "method_invocation" else None
+                qualifier_text = _node_text(source_bytes, qualifier_node).strip() if qualifier_node else ""
+                local_var_type = (next_local_types or {}).get(qualifier_text) if qualifier_text else None
                 raw_calls.append({
                     "caller": current_method["full_name"],
                     "caller_method": current_method["method_name"],
                     "caller_class": current_method["class_name"],
                     "caller_file": current_method["file"],
                     "callee": callee,
+                    "local_var_type": local_var_type,
                     "line": _node_start_line(node),
                     "column": getattr(node, "start_point", [None, None])[1] if getattr(node, "start_point", None) else None,
                     "call_text": _node_text(source_bytes, node)[:300],
                 })
 
         for child in node.children:
-            walk(source_bytes, child, package_name, next_class_stack, rel_path, next_method)
+            walk(source_bytes, child, package_name, next_class_stack, rel_path, next_method, next_local_types)
 
     for path in iter_supported_repo_files(repo_src, {".java"}):
             files_seen += 1
@@ -28660,7 +28797,14 @@ def build_tree_sitter_java_callgraph(repo_src, output_dir):
             same_class = f"{call['caller_class']}.{method_name}"
             if same_class in user_methods:
                 target = same_class
-            elif qualifier and qualifier[:1].isupper():
+            elif call.get("local_var_type"):
+                # `foo.bar()` where `foo` was declared earlier in this same
+                # method as `Foo foo = ...` — resolve via the tracked
+                # declared type instead of requiring the qualifier text
+                # itself to look like a class name.
+                owner = unique_match(simple_class_index.get(call["local_var_type"], set())) or call["local_var_type"]
+                target = unique_match(class_method_index.get((owner, method_name), set()))
+            if not target and qualifier and qualifier[:1].isupper():
                 owner = unique_match(simple_class_index.get(qualifier, set())) or qualifier
                 target = unique_match(class_method_index.get((owner, method_name), set()))
 
@@ -34459,6 +34603,73 @@ def build_code_md_artifact(
     return str(output_path)
 
 
+# Source of truth for how a coding agent (Claude Code, Codex, etc.) and
+# CODEMD's own deterministic tooling divide responsibility for testing.
+# Regenerated verbatim into every analyzed repo's `.codemd/agent_policy/
+# testing.md` on each analysis run (see write_agent_policy_testing_md) —
+# this constant IS the policy, not a description of it, so edit it directly
+# rather than adding parallel prose elsewhere. CODE.md's own
+# "codemd_agent_guidance" section and the MCP server's per-tool
+# `agent_guidance` fields (scripts/codemd-mcp-server.js) both point back at
+# the generated file rather than duplicating this text, so there is exactly
+# one place this policy is written.
+AGENT_POLICY_TESTING_MD = """# CODEMD Testing Agent Policy
+
+This file defines how a coding agent (Claude Code, Codex, etc.) and CODEMD's own deterministic
+tooling divide responsibility when discovering, generating, running, and resolving tests for this
+repository. CODEMD regenerates this file on every analysis run — treat it as CODEMD's current
+policy, not a place to record repo-specific notes.
+
+## Division of labor
+
+CODEMD handles anything deterministic — no agent judgment needed:
+- Detecting changed functions from git diff / uncommitted changes
+- Traversing the callgraph to find impacted callers
+- Finding existing tests that already cover a changed function
+- Determining the repo's test framework/runner from package.json/config files
+- Building and running the exact test command for a known runner
+- Capturing pass/fail, exit codes, and coverage where available
+- Caching confirmed-passing results so an unchanged function isn't re-verified
+- A single deterministic retry for a known transient failure signature
+
+Use the coding agent for judgment CODEMD cannot automate:
+- Designing a new test that exercises a real caller's actual behavior/contract, not a placeholder
+- Reasoning about which assertions actually matter for a given call path
+- Diagnosing a genuine failure: a bug in the test, a bug in the code under test, an
+  environment/dependency problem, or a transient/flaky failure
+- Deciding how much further investigation a specific ambiguous result needs before it is
+  trustworthy, and making the actual code or test fix
+
+## Resolution goal, not run-count minimization
+
+When investigating a test failure, the goal is a defensible resolution — confirmed passing, a
+real code bug (fixed), a bad generated test (fixed), or a genuinely unresolved environment problem
+(reported honestly) — not simply "stopped after N attempts". Rerun a test as many times as it
+actually takes to tell a real regression apart from environment/runner noise. Running the broader
+test suite once, specifically to check whether an anomaly is isolated to one test or systemic, is
+legitimate evidence-gathering when a single result is genuinely ambiguous (e.g. it passed once and
+failed once with no code change in between).
+
+What is NOT legitimate evidence-gathering, regardless of how much budget remains: clearing
+node_modules/build caches, reinstalling dependencies, or switching test runners as a blind
+debugging step. None of these distinguish a real regression from noise — needing one of them is
+itself an environment problem worth reporting, not a fix worth attempting.
+
+## When CODEMD has already done the mechanical work
+
+If an MCP tool response or a task handed to you states that change detection, test discovery, or
+execution has already happened, do not repeat it. Start from the evidence given and apply
+judgment only to what is actually uncertain.
+"""
+
+
+def write_agent_policy_testing_md(output_repo_dir) -> str:
+    output_path = Path(output_repo_dir) / "agent_policy" / "testing.md"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(AGENT_POLICY_TESTING_MD, encoding="utf-8")
+    return str(output_path)
+
+
 def build_code_md_artifact(
     output_repo_dir,
     owner: str,
@@ -34735,10 +34946,17 @@ def build_code_md_artifact(
         "## recently_changed", "Evidence: local `git log` when a `.git` directory is available; otherwise concrete GitHub commit payload from analysis if present.", md_table(["Commit", "Date", "Subject", "Files"], recent_rows),
         "## high_churn_files", "Evidence: file occurrence/change count from local git history when available; otherwise concrete GitHub changed-file payload from analysis if present.", md_table(["File", "Commit touch/change count"], high_churn_rows),
         "## stable_files", "Evidence: tracked files with zero touches in the latest 100 local git commits. Empty when no local `.git` evidence is available.", md_table(["File"], stable_rows),
+        "## codemd_agent_guidance",
+        "Testing responsibilities and agent behavior are defined in `.codemd/agent_policy/testing.md`.",
+        "When using CODEMD MCP testing tools, follow the task-specific agent guidance returned by those tools.",
     ]
     content = "\n".join(sections).rstrip() + "\n"
     output_path = Path(output_repo_dir) / "CODE.md"
     output_path.write_text(content, encoding="utf-8")
+    try:
+        write_agent_policy_testing_md(output_repo_dir)
+    except Exception as exc:
+        logger.warning("Unable to write .codemd/agent_policy/testing.md for %s/%s: %s", owner, repo, exc)
     if source_root and source_root.exists():
         try:
             source_root_resolved = source_root.resolve()

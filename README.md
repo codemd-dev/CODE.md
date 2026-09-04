@@ -72,7 +72,7 @@ Only that last row spends any AI usage at all, and only to *find the command* �
 | **Call-Path Test** | Claude reads a real call site and writes the test by hand around it — grounded in an actual call, just not mechanically replayable. | Integration bugs a real caller would hit — not just isolated unit bugs. | ✅ | ✅ |
 | **Call-Chain Test** | For two functions that changed *together* in the same diff and call each other directly — one test exercising both as a real chain. | Breaks in how two changed functions interact, that neither one's own test would catch. | ✅ | ✅ |
 | **New-Function Test** | For a function you just added. CODEMD finds its first real caller in the callgraph and asks Claude to write a test around that actual usage. | Missing coverage on brand-new code, before it ships. | ✅ | ✅ |
-| **Broader-Coverage Test** | For a function with several real callers, one test per genuinely different way it's called, not just the first one found. | Edge cases that work for the common caller but break the others. | ✅ | ✅ |
+| **Multi-Caller Test** | For a function with several real callers, one test per genuinely different way it's called, not just the first one found. | Edge cases that work for the common caller but break the others. | ✅ | ✅ |
 | **Contract Test** | When a signature change breaks existing callers, CODEMD writes one test per broken call site, each showing the corrected call against the new signature. | Breaking API changes — renamed, reordered, or removed parameters. | ✅ | — |
 
 Whichever kind it picks, CODEMD only writes it when you click **Check tests** — nothing generates in the background — and it then runs the test itself and reports a real pass/fail.

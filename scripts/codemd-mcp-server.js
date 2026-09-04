@@ -838,9 +838,27 @@ function searchArtifacts(args) {
   }, null, 2);
 }
 
+// Next.js App Router reserved filenames — always a route/layout/handler
+// file, never a test, no matter which directory it sits in. Without this,
+// e.g. app/api/email/test/route.ts (the real /api/email/test ROUTE handler)
+// gets misread as a test file purely because it sits in a folder named
+// "test" — a feature-name coincidence, not a testing convention.
+const NEXTJS_RESERVED_FILENAMES = new Set([
+  'page', 'layout', 'loading', 'error', 'not-found', 'route', 'template',
+  'default', 'global-error', 'instrumentation', 'middleware',
+]);
+
+function isNextjsReservedFile(name) {
+  const base = name.replace(/\.[^.]+$/, '');
+  return NEXTJS_RESERVED_FILENAMES.has(base);
+}
+
 function isTestFile(relPath) {
   const normalized = String(relPath || '').replace(/\\/g, '/').toLowerCase();
   const name = normalized.split('/').pop() || normalized;
+  if (isNextjsReservedFile(name)) {
+    return false;
+  }
   return (
     /(^|\/)(__tests__|tests?|spec)(\/|$)/.test(normalized) ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
@@ -977,11 +995,25 @@ function loadFunctionRecordsLight() {
   return records;
 }
 
+// A qualified symbol like "backend.main.should_skip_path" must not feed its
+// module-path segments ("backend", "main") into the generic bag-of-words
+// scorer below as if they were meaningful search terms — they're short and
+// common enough to match almost every record in that module, so once the
+// real target has no match (untracked symbol, stale index), those generic
+// segments silently produce the SAME top-scoring "generic" records for any
+// query in that module instead of surfacing "no match found". Free-text
+// queries (feature descriptions, hyphenated phrases) have no dots and pass
+// through unchanged.
+function genericTermSource(raw) {
+  const lastDot = raw.lastIndexOf('.');
+  return lastDot === -1 ? raw : raw.slice(lastDot + 1);
+}
+
 function resolveFunctionRecords(query, limit = 8) {
   const raw = String(query || '').trim();
   const lowered = raw.toLowerCase();
   const tail = functionTail(raw).toLowerCase();
-  const terms = searchTerms(raw);
+  const terms = searchTerms(genericTermSource(raw));
   const scored = [];
   for (const record of loadFunctionRecords()) {
     const symbol = String(record.symbol || record.fullName || record.name || '');
@@ -1118,15 +1150,97 @@ function namedTestMatchesForFile(ext, text, targetTerms) {
   return results.slice(0, 6);
 }
 
+// Real graph-based test lookup: backward-BFS from the target symbol over the
+// resolved callgraph (the same forward/backward adjacency codemd_get_callers
+// and codemd_get_impact_radius already use) to find test-file nodes that
+// actually call the target, directly or transitively — instead of scanning
+// test file text for keyword overlap, which matches broadly on any common
+// term (e.g. "main") regardless of whether that test exercises this function.
+function findTestsViaCallgraph(query, limit) {
+  const graph = loadImpactGraph();
+  const roots = resolveNodes(query, graph.nodes, 8);
+  if (!roots.length) {
+    return null;
+  }
+  const walk = traverse(roots, graph.backward, 50, 2000, graph, true);
+  const testNodeRows = [];
+  for (const [node, depth] of Object.entries(walk.visited)) {
+    if (depth === 0) { continue; } // the root itself, not a caller
+    const loc = graph.locations[node];
+    const relPath = loc?.file ? String(loc.file).replace(/\\/g, '/') : '';
+    if (relPath && isTestFile(relPath)) {
+      testNodeRows.push({ node, depth, file: relPath, line: loc?.line || undefined });
+    }
+  }
+  if (!testNodeRows.length) {
+    return { roots, testNodeRows: [] };
+  }
+  const byFile = new Map();
+  for (const row of testNodeRows) {
+    if (!byFile.has(row.file)) {
+      byFile.set(row.file, []);
+    }
+    byFile.get(row.file).push(row);
+  }
+  const matches = Array.from(byFile.entries()).map(([file, rows]) => {
+    rows.sort((a, b) => a.depth - b.depth);
+    const minDepth = rows[0].depth;
+    const confidenceEdges = rows.map((row) => edgeConfidence(graph, row.node, roots[0]));
+    return {
+      file,
+      score: minDepth === 1 ? 100 : Math.max(10, 90 - (minDepth * 15)),
+      reasons: [minDepth === 1
+        ? 'directly calls the target (confirmed call-graph edge)'
+        : `calls the target transitively (${minDepth} hops, confirmed call-graph path)`],
+      confidence: confidenceEdges[0]?.tier || 'unknown',
+      test_names: rows.map((row) => ({
+        name: functionTail(row.node),
+        nodeId: row.node,
+        line: row.line || 0,
+      })).slice(0, 6),
+    };
+  });
+  matches.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+  return { roots, matches: matches.slice(0, limit) };
+}
+
 function findTests(args) {
   const query = String(args.query || args.symbol || args.node_query || '').trim();
   const limit = Math.max(1, Math.min(Number(args.limit || 12), 50));
   if (!query) {
     return JSON.stringify({ query, error: 'query is required', matches: [] }, null, 2);
   }
+
+  const graphResult = findTestsViaCallgraph(query, limit);
+  if (graphResult && graphResult.matches && graphResult.matches.length) {
+    const targets = resolveFunctionRecords(query, 8);
+    const targetRecords = targets.map((item) => item.record);
+    return JSON.stringify({
+      query,
+      method: 'callgraph',
+      target_candidates: targetRecords.map((record) => ({
+        symbol: record.symbol || '',
+        path: record.path || '',
+        start_line: record.start_line || record.startLine || '',
+        end_line: record.end_line || record.endLine || '',
+      })),
+      match_count: graphResult.matches.length,
+      matches: graphResult.matches,
+      note: 'Confirmed via call-graph traversal: each listed test file contains a test that calls the target function directly or transitively.',
+      agent_guidance: 'CODEMD has already performed deterministic test discovery for this target — do not repeat a repository-wide '
+        + 'test search. Your role is to evaluate whether these candidate tests actually exercise the affected behavior (real inputs, '
+        + 'meaningful assertions), and to run them yourself before relying on them as coverage. Full policy: '
+        + '.codemd/agent_policy/testing.md.',
+    }, null, 2);
+  }
+
+  // Fall back to keyword-based scanning only when the callgraph has no
+  // resolved node for this query (e.g. a non-indexed language, or a
+  // brand-new symbol not yet in the graph) — so results are always
+  // graph-confirmed when possible, and text-matched only as a last resort.
   const targets = resolveFunctionRecords(query, 8);
   const targetRecords = targets.map((item) => item.record);
-  const targetTerms = new Set(searchTerms(query));
+  const targetTerms = new Set(searchTerms(genericTermSource(query)));
   for (const record of targetRecords) {
     const symbol = String(record.symbol || '');
     const name = String(record.name || record.method_name || functionTail(symbol));
@@ -1194,6 +1308,7 @@ function findTests(args) {
   matches.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
   return JSON.stringify({
     query,
+    method: 'keyword',
     target_candidates: targetRecords.map((record) => ({
       symbol: record.symbol || '',
       path: record.path || '',
@@ -1204,8 +1319,15 @@ function findTests(args) {
     match_count: Math.min(matches.length, limit),
     matches: matches.slice(0, limit),
     note: matches.length
-      ? 'Likely test coverage based on test-file naming, imports/path references, and symbol mentions. Verify assertions in the source test file.'
+      ? 'Unconfirmed: based on test-file naming, imports/path references, and symbol-name mentions only — no call-graph edge to the target was found (the target may not be indexed, or the call is dynamic/unresolved). Verify assertions in the source test file before relying on this as coverage.'
       : noTestsFoundNote(targetRecords),
+    agent_guidance: matches.length
+      ? 'CODEMD already searched the repository for candidate tests — do not repeat that search. These matches are unconfirmed '
+        + '(no call-graph edge found), so read each candidate yourself to judge whether it genuinely exercises the target before '
+        + 'trusting it as coverage. Full policy: .codemd/agent_policy/testing.md.'
+      : 'CODEMD found no existing test for this target via call-graph or keyword search. Use engineering judgment on whether this '
+        + 'change needs a new regression test, and if so design one grounded in how the function is actually called — do not repeat '
+        + 'the search CODEMD already ran. Full policy: .codemd/agent_policy/testing.md.',
   }, null, 2);
 }
 
@@ -1372,6 +1494,12 @@ function reviewChanges(args = {}) {
         ? `Run and pass every file in tests_to_verify (${testsToVerify.length}) before considering this change done.` + (changedFunctionsWithoutTests ? ` ${changedFunctionsWithoutTests} changed function(s) above have an empty covering_tests — no test was found for them at all, which is itself worth flagging rather than ignoring.` : '')
         : (changedFunctionsWithoutTests ? `No covering test was found for any of the ${changedFunctionsWithoutTests} changed function(s) checked (covering_tests scan capped at the top ${TEST_LOOKUP_CAP} by review_priority) — this change looks untested.` : 'Review priority is based on changed source symbols plus direct callers/callees from cached static analysis.'))
       : 'No tracked local git diff was found. Untracked files are intentionally excluded by default.',
+    agent_guidance: allChangedFiles.length
+      ? 'CODEMD has already done the deterministic work: change detection, callgraph traversal, and test-coverage lookup for each '
+        + 'changed function. Run tests_to_verify directly rather than re-discovering coverage yourself. For a changed function with '
+        + 'an empty covering_tests, use engineering judgment on whether a new regression test is warranted, grounded in its real '
+        + 'callers above. Full policy: .codemd/agent_policy/testing.md.'
+      : undefined,
   }, null, 2);
 }
 

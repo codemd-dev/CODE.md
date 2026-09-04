@@ -2,5 +2,6 @@
     "codemdGraphs.writeMode": "manual",
     "codemdGraphs.runMode": "auto",
     "codemdGraphs.claudeAgentConsent": true,
-    "codemdGraphs.autoMode": "localOnly"
+    "codemdGraphs.autoMode": "manual",
+    "codemdGraphs.claudeAgentMode": "agent"
 }

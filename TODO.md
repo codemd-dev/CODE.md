@@ -1,5 +1,438 @@
 # CODEMD test-verification roadmap
 
+## NEXT: local LLM mode (flagged 2026-09-04, not started)
+
+**Motivation**: with the Claude API's promised $20 free SDK quota not
+materializing, Claude usage is now a genuinely scarce resource for CODEMD's
+own development and for users on a Pro/Max plan (session/weekly limits, not
+metered API billing) — every Claude call CODEMD makes needs to earn its
+cost, and users need a path that doesn't touch Claude's quota at all for
+the mechanical parts of testing. "Use Coding Agent (Prompt-Only)" (added
+this session — see `ClaudeAgentMode`, [extension.ts:1298](src/extension.ts#L1298),
+and the Modes popup) covers the "don't spend MY Claude quota automatically"
+need by handing control to the user's own terminal session. It does not
+cover "I don't want to depend on Claude/any hosted model at all" — that
+needs an actual local model.
+
+**Scope, not yet designed**: a fourth `ClaudeAgentMode`-shaped option (or a
+separate `codemdGraphs.llmProvider` setting orthogonal to it) that runs test
+generation/diagnosis prompts against a locally-hosted model (e.g. via
+Ollama or LM Studio's OpenAI-compatible local HTTP endpoint) instead of the
+`claude` CLI. Real open questions to resolve before implementing, not just
+plumbing:
+- Structured-output reliability: the existing generators depend on
+  `--json-schema` (Claude CLI) to reliably get back `{testSource, notes,
+  plainSummary}` — most local models are much weaker at strict JSON-schema
+  adherence than Claude, so this may need a more forgiving parse (e.g.
+  extract a fenced code block instead of requiring valid top-level JSON) or
+  a retry-on-malformed-output loop.
+- Quality bar: a small local model's generated test quality is likely to be
+  materially worse than Claude's, especially for the call-path/contract/
+  broad-coverage generators, which lean on real reasoning about caller
+  behavior, not just syntax. Worth setting expectations (or scoping local
+  mode to the mechanical/diagnosis side only, keeping generation on a hosted
+  model) rather than assuming parity.
+- No code for this exists anywhere in the repo today — this is a scoping
+  note, not a partial implementation.
+
+## Prompt-Only Mode — DONE (2026-09-04): CODEMD types the prompt into the user's own Claude terminal instead of running Claude itself
+
+Added a third `codemdGraphs.claudeAgentMode` value, `'promptOnly'`, sitting
+between Manual and Use Coding Agent in the Modes popup. In this mode, every
+one of CODEMD's 4 real Claude-invocation call sites (`generateCallPathTestForResult`,
+the shared `runClaudeTestGeneration` used by the other 4 test generators,
+`runTestViaClaudeForResult`'s discovery fallback, and `fixTestFailureForResult`)
+skips spawning a `claude` subprocess entirely and instead calls
+`sendPromptToUsersClaudeTerminal` ([extension.ts:1298](src/extension.ts#L1298)),
+which types the already-built prompt into an interactive `claude` CLI
+session running in a VS Code terminal via `Terminal.sendText(prompt, false)`
+— the `false` meaning "type this, do not press Enter" — so the user reads
+it, can edit it, and only runs it themselves. CODEMD spends zero of its own
+Claude budget doing this: no `--max-turns`/`--max-budget-usd`, no captured
+stdout, no parsing.
+
+**Confirmed NOT possible, despite an initial pasted claim that it was**:
+injecting text into the separate Claude Code VS Code extension's own GUI
+chat panel. That panel is a webview owned by a different extension, and VS
+Code has no API for one extension to write into another extension's webview
+DOM — `editor.insertSnippet` (the pasted suggestion) operates on a text
+*editor* tab, unrelated to a chat panel. The terminal mechanism is the only
+real path, and only works with the `claude` CLI running in an actual
+terminal, not that GUI panel.
+
+**Design consequence**: since nothing comes back to CODEMD to parse or
+write to disk, test-generation prompts are rewritten inline (dropping the
+"respond in a JSON schema" instruction, adding "write the file directly to
+`<path>` yourself") with the SAME deterministic path `writeGeneratedTest`
+would have used (`expectedGeneratedTestPath`, [extension.ts:3508](src/extension.ts#L3508))
+so a test the user runs through Claude in this mode still lands where
+CODEMD's Run/Fix buttons and test-status cache expect to find it. Auto Mode
+explicitly refuses to run in this mode (it's an unattended serial pipeline
+that can't pause for a human to review each prompt) rather than silently
+firing untended prompts into the terminal.
+
+**Not yet done**: no way for CODEMD to detect that the user actually ran
+the prompt and pick the result back up automatically — the UI says "click
+Regenerate/Check afterward." Could eventually poll for the expected file
+appearing, but that's a separate, smaller follow-up if it turns out to
+matter in practice.
+
+## NEEDS REAL-TOOLCHAIN VERIFICATION: C#/Java/Kotlin coverage confirmation (built 2026-09-02, unverified)
+
+Implemented Mode A coverage confirmation for C# (coverlet) and Java/Kotlin
+(JaCoCo), and wired all three (plus Go) into the automatic "Existing
+test(s) found for this change" check
+(`runExistingTestsForResult`, [extension.ts:8323](src/extension.ts#L8323)),
+not just the manual "Run" button — see the entries below for full detail on
+what changed and why.
+
+**None of this could be run against a real .NET SDK, JDK, or Maven
+installation in this session** — no such toolchain was available in this
+dev environment. Everything was checked by (a) `tsc --noEmit` compiling
+clean, and (b) careful reading against each tool's documented behavior
+(Cobertura XML schema, JaCoCo's report CLI, coverlet's `--collect` flag,
+`mvn dependency:get` classifier conventions) — not by an actual coverlet or
+JaCoCo run producing a real report and confirming CODEMD parses it
+correctly. Same caveat the pre-existing C#/Java/Kotlin/Rust run paths
+already carry from before this session, now extended to the new coverage
+piece specifically.
+
+**Before relying on this in production, verify against real projects**:
+- **C#**: a real .csproj with a method to cover; confirm `coverlet.collector`
+  actually resolves via NuGet in the throwaway project, confirm
+  `--collect:"XPlat Code Coverage"` produces `coverage.cobertura.xml` under
+  the expected `--results-directory`, and confirm `parseCoberturaCoverage`'s
+  `filename` matching (coverlet writes absolute paths) correctly maps back
+  to the workspace-relative `targetPath`.
+- **Java**: a real Maven project; confirm `mvn dependency:get` successfully
+  resolves `org.jacoco:org.jacoco.agent:0.8.13:jar:runtime` and
+  `org.jacoco:org.jacoco.cli:0.8.13:jar:nodeps` (version pinned from
+  JaCoCo's GitHub releases page, not Maven Central directly — worth
+  double-checking the exact coordinate resolves), confirm the
+  `-javaagent:...=destfile=...` flag placement works alongside `-jar` in one
+  `java` invocation, and confirm the CLI's `report` command output actually
+  matches `parseJacocoXmlReport`'s assumed `<package><sourcefile><line
+  nr=... ci=.../></sourcefile></package>` shape.
+- **Kotlin**: same JaCoCo pipeline as Java (shared via
+  `runJvmCoverageConfirmedLauncher`), plus its own pre-existing unverified
+  caveat (no Kotlin compiler available in this session either) — compounds
+  with the new coverage piece.
+
+## Correction + fix: Go's coverage-confirmation "Mode A" was already built — the real gap was elsewhere (2026-09-02)
+
+**Correction to the scoping/ranking below**: when ranking Mode A
+implementation cost per language, Go was ranked "easiest to build" as if it
+needed building. That was wrong — checking the actual code (not assumed)
+showed `runGoTestFileForResult`, `parseGoCoverageProfile`, and
+`estimateGoBlockEndLine` ([extension.ts:8881](src/extension.ts#L8881),
+[extension.ts:3684](src/extension.ts#L3684),
+[extension.ts:3716](src/extension.ts#L3716)) already fully implement Go
+coverage confirmation — `go test -coverprofile`, parsing the real
+`go tool cover` profile format, computing `coverageConfirmed`/
+`executedInRange`/`trackedInRange` in the exact same shape Python's
+`computePythonTestRunPayload` uses. This was pre-existing, shipped code, not
+something this session wrote.
+
+**The actual gap**: `runExistingTestsForResult`
+([extension.ts:8217](src/extension.ts#L8217)) — the function powering the
+automatic "Existing test(s) found for this change" card (the one this whole
+session's UI/badge-hierarchy fixes were about) — was hard-gated to `.py`
+files only, unconditionally refusing Go even though the run-and-confirm
+logic for Go already existed and worked. Go functions never got the
+auto-check at all; the manual "Run" button path (`runGoTestFileForResult`)
+worked, but nothing wired it into the automatic discovery-and-confirm flow.
+
+**Fixed**: split `runGoTestFileForResult` into a thin wrapper plus a new
+`computeGoTestRunPayload` (returns the payload instead of posting directly),
+mirroring the existing `computePythonTestRunPayload` split — exactly the
+refactor Python already needed for the same reason. `runExistingTestsForResult`
+now accepts `.go` alongside `.py`, and branches per MATCHED test file's own
+extension (not the target's) when choosing which run-and-confirm function to
+call, since `find_tests` could in principle return a match in a different
+language than the target. Also updated the webview-side auto-fire gate
+(`fireExistingTestsCheck`, [extension.ts:14023](src/extension.ts#L14023)) and
+its tooltip text, both previously hardcoded to Python only. Type-checked
+clean (`tsc --noEmit`) after the refactor.
+
+**Still Python+Go only** — Rust/Java/Kotlin/C# still hit the "only supports
+Python and Go" error from this same function; extending each of those is
+the real remaining Mode A work (per-language coverage tool integration, per
+the table below), now that the wiring bug that would have silently affected
+them too (a working run-and-confirm function existing but never being
+called by the automatic discovery flow) is fixed for the one language where
+it already existed.
+
+## Dynamic-coverage test discovery, scoped per language (researched 2026-09-02)
+
+Prompted by researching how real Test Impact Analysis products actually work
+(Datadog TIA, Codecov, Launchable — see the market-research findings above/
+below this entry once both are in the file) — the industry's proven approach
+is dynamic coverage (instrument real test runs, observe what each test
+touches), not static call-graph inference. CODEMD already has a working
+implementation of the CONFIRMATION half of this, for Python only
+(`computePythonTestRunPayloadImpl`, [extension.ts:8671](src/extension.ts#L8671)):
+run one already-identified candidate test with `coverage run --branch`,
+export `coverage json --include=<targetPath>`, and check the target
+function's own `functions.<name>.executed_lines` entry — ground truth from
+the tool itself, not a guessed line range. This is Mode A below. Scoping
+what extending this to other languages actually takes split into two
+genuinely different-sized projects once researched:
+
+### Mode A — per-candidate coverage confirmation (bounded, extends existing pattern)
+Run ONE test a static/keyword search already proposed, with coverage
+instrumentation, to confirm it actually executed the target's lines —
+exactly what Python already does, just per-language. Reuses each language's
+EXISTING run-path infrastructure (already built per language, see the
+"Language priority" table further down this file) rather than requiring new
+architecture:
+- **Go** — `go test -run ^TestName$ -coverprofile=X.out` then
+  `go tool cover -func=X.out` (or parse the profile directly). Built into
+  the stdlib, no extra dependency to install — lowest-friction of the group.
+- **C#** — `coverlet` as an added NuGet `PackageReference` inside the SAME
+  throwaway test project `runCsharpTestFileForResult`
+  ([main.py — see C# run path notes above](TODO.md)) already builds per run
+  alongside xUnit — a very natural fit, no new project-creation logic needed.
+- **Java/Kotlin** — JaCoCo via a `-javaagent:jacocoagent.jar=...` flag
+  wrapped around the SAME direct `javac` + JUnit Console Launcher invocation
+  `runJavaTestFileForResult` already does — fits existing infrastructure;
+  needs the jacocoagent jar fetched once (same `mvn dependency:get` pattern
+  already used for the JUnit launcher jar).
+- **Rust** — needs `cargo-llvm-cov` or `cargo-tarpaulin` installed
+  (NOT stdlib, unlike Go) — an extra tool the user's environment may not
+  have; needs the same graceful "not installed" degradation Python's own
+  flow already handles for missing pytest/coverage.py.
+- **JS/TS** — blocked on a real gap noted elsewhere in this file: **no
+  direct run path exists yet at all** (always the slower Claude-discovery
+  route today) — coverage here is two bundled pieces of work, not one:
+  build the direct run path first, then add Istanbul/c8/nyc (often built
+  into Jest/Vitest's own `--coverage` flag) on top.
+
+**Estimated effort**: small-medium per language, each independently
+bounded — no new architecture, just a language-specific coverage tool
+wired into a run path that (Go/Java/C#) already exists.
+
+### Mode B — full-suite discovery (the actual "Datadog-style" architecture)
+Run the WHOLE test suite once (or incrementally) with PER-TEST attribution,
+building a persistent test→covered-function map so "which tests cover X" is
+answered directly, without prior static/keyword narrowing at all. This is
+the bigger, more ambitious piece — and, confirmed by research, NOT
+uniformly available off-the-shelf:
+- **Python** — already has the tool support to do this cheaply:
+  `coverage.py`'s `dynamic_context = test_function` setting tags every
+  covered line with the specific test that caused it, in ONE full-suite
+  run. CODEMD isn't using this today (it runs one candidate test at a
+  time) — "just" needs a batch-mode implementation on top of a feature
+  that already exists.
+- **Go, Java/Kotlin, C#, Rust, JS/TS** — confirmed via direct research
+  (not assumed): none of the standard tools (Go's stdlib coverage, JaCoCo)
+  natively attribute a covered line to the specific test that covered it.
+  Getting Mode B here requires either (a) accepting O(n) cost — running the
+  full suite once per existing test, i.e. Mode A applied to every test,
+  which could be slow for a large suite — or (b) building a custom
+  per-test-boundary coverage correlator (e.g. a JUnit `TestExecutionListener`
+  that resets/dumps JaCoCo's buffer at each test boundary) — real,
+  non-trivial engineering roughly equivalent to what a company like Datadog
+  built into its own per-language client libraries.
+
+**Recommendation**: Mode A is the practical near-term target — bounded,
+reuses already-built run-path infrastructure, no new architecture per
+language. Mode B is a materially bigger, per-language investment with no
+off-the-shelf tooling to lean on outside Python; treat as a separate,
+later initiative, not bundled with Mode A. Neither started this session —
+scope only, per the same "check before building" discipline as the
+call-graph-tools research above.
+
+Sources: [Code coverage for Go integration tests](https://go.dev/blog/integration-test-coverage),
+[Coverage profiling support for integration tests](https://go.dev/doc/build-cover),
+[JaCoCo Coverage Counter docs](https://www.eclemma.org/jacoco/trunk/doc/counters.html),
+[How Test Impact Analysis Works in Datadog](https://docs.datadoghq.com/tests/test_impact_analysis/how_it_works/),
+[Datadog Test Impact Analysis overview](https://docs.datadoghq.com/tests/test_impact_analysis/).
+
+## Real call-graph tools per language (researched 2026-09-02) — revisit before building more local-var-tracking patches
+
+Prompted by the local-variable-type-tracking partial fix (below): rather than
+keep hand-patching the naive qualifier-matchers here, research turned up
+real, type-aware call-graph tools for most of these languages — most with a
+real engine (often official/vendor-maintained) but no turnkey CLI, meaning
+each still needs a small driver program written against it. All of them
+require that language's own toolchain/runtime present at analysis time — a
+real dependency this repo's current tree-sitter/regex approach doesn't have.
+
+| Language | Best engine | Needs a build? | Turnkey tool available? |
+|---|---|---|---|
+| Python | pyan3/PyCG (already in use) | No | Yes |
+| Go | `golang.org/x/tools/go/callgraph` (official Go team package; CHA/RTA/VTA algorithms, real `go/types` type-checking) | No (Go toolchain only) | Yes, official CLI (`golang.org/x/tools/cmd/callgraph`) |
+| Rust | `cargo-callgraph` (built on rust-analyzer internals; ships its own MCP server exposing the callgraph to AI assistants — directly relevant to how CODEMD's own MCP layer works) | No | Yes, actively maintained as of 2026 |
+| Java (source-only) | JavaSymbolSolver (merged into JavaParser) — real declared-type resolution from source alone, no build needed | No | Yes (library, needs a driver) — **recommended pick for CODEMD**, matches the current "just read source" model |
+| Java (higher precision) | WALA — points-to/context-sensitive analysis, better Java 8 + reflection handling per a 2019 tool comparison | Yes (wants compiled bytecode) | No — the `javacg-wala` CLI wrapper is archived/unmaintained, superseded by an OPAL-based tool |
+| Kotlin | Kotlin compiler's own Analysis API (K2/FIR), `analysis-api-standalone` mode — JetBrains explicitly recommends building static-analysis tooling on this; same resolved semantic data IntelliJ itself uses | No | No — needs a custom Kotlin driver program, no off-the-shelf CLI found |
+| C# | Roslyn `SemanticModel.GetSymbolInfo()` (`Microsoft.CodeAnalysis`) — the same engine Visual Studio/Rider use for Find-All-References | No | No — small wrappers exist (`RoslynCallGraph`, `Call-Graph-Builder-DotNet`, `Roslyn-Analysis-Tool`) but none showed clear signs of active maintenance/production use; better to build a thin driver directly on Roslyn than depend on one of these |
+
+**Not started, not scoped beyond this table** — a real architecture decision
+(trading today's zero-external-dependency tree-sitter/regex approach for
+per-language toolchain requirements), not a quick patch. Go is the strongest
+candidate to pilot first if this gets prioritized: official tooling,
+lowest integration friction, no build-step requirement.
+
+Sources checked: [golang.org/x/tools/go/callgraph](https://pkg.go.dev/golang.org/x/tools/go/callgraph),
+[cargo-callgraph](https://crates.io/crates/cargo-callgraph),
+[JavaSymbolSolver usage](https://tomassetti.me/resolve-method-calls-using-java-symbol-solver/),
+[javacg-wala (archived)](https://github.com/fasten-project/javacg-wala),
+[Systematic Comparison of Six Open-Source Java Call Graph Construction Tools (2019)](https://publicatio.bibl.u-szeged.hu/18406/1/JSP19-SystematicComparisonofSixOpen-SourceJavaCallGraphConstructionTools.pdf),
+[Kotlin Analysis API docs](https://kotlin.github.io/analysis-api/migrating-from-k1.html),
+[RoslynCallGraph](https://github.com/ianphil/RoslynCallGraph),
+[Call-Graph-Builder-DotNet](https://github.com/too4words/Call-Graph-Builder-DotNet).
+
+## Java/C#/Go call resolution can't see `instance.method()` calls at all (found 2026-09-02)
+
+**Not a pruning bug** (that was the separate Python fix, done and verified
+the same session — see below). This is a structural gap in the call
+resolvers themselves for Java (`build_javalang_callgraph`,
+`build_tree_sitter_java_callgraph` — [main.py:28239](backend/main.py#L28239),
+[main.py:28518](backend/main.py#L28518)), C# (`build_csharp_callgraph`,
+[main.py:30337](backend/main.py#L30337)), and very likely Go
+(`build_tree_sitter_go_callgraph`, [main.py:28902](backend/main.py#L28902) —
+same operand-as-literal-text pattern spotted at the call site, not
+independently proven with a synthetic repro the way Java was), Rust, and
+Kotlin (not checked).
+
+**Proven, not guessed**: built a synthetic Java project (`Calculator.add`
+called from `CalculatorTest.addition_isCorrect` via
+`Calculator calculator = new Calculator(); calculator.add(2, 2);` — the
+single most common Java pattern there is) and ran the real
+`build_javalang_callgraph` against it. Result: **zero edges.** Root cause —
+these resolvers treat a call's qualifier (`calculator`) as if it were
+already a class name, with no tracking of what type a local variable
+actually is:
+- javalang path: only resolves same-class calls or `qualifier.method()`
+  when `qualifier` is a literal, exact key in `user_methods`
+  ([main.py:28376-28385](backend/main.py#L28376-L28385)).
+- tree-sitter Java path: same idea, plus an explicit
+  `qualifier[:1].isupper()` gate ([main.py:28663](backend/main.py#L28663)) —
+  a deliberate "only guess when it looks like a class name" heuristic, which
+  by construction skips every lowercase-named variable.
+- C#: `by_class_method.get((qualifier, call_name))`
+  ([main.py:30430-30431](backend/main.py#L30430-L30431)) — qualifier is the
+  raw regex-captured text, same literal-match-only limitation.
+
+Python doesn't have this problem — it uses `pyan3`/PyCG, a real
+call-resolution library with actual data-flow analysis, not a hand-rolled
+qualifier matcher. That's the whole reason the Python test-node fix (below)
+was a pruning fix, not a resolution fix: the edges already existed correctly
+and were being deleted; here, most edges of this shape never get created in
+the first place. This affects test-finding specifically hard, since almost
+every JUnit/xUnit/testify test does `Type var = new Type(...); var.method();`
+— but it's not test-specific: ordinary production code calling instance
+methods on local variables is equally invisible to these callgraphs today.
+
+**Full fix = real per-language type inference** (multi-day, higher risk of
+false-positive edges if rushed) — explicitly declined for now, scope judged
+too large for a same-session follow-up.
+
+**Cheaper partial fix — DONE for Java (2026-09-02), same recipe available for
+C#/Go/Rust/Kotlin when prioritized.** Implemented in both Java resolvers
+([main.py:28239](backend/main.py#L28239) `build_javalang_callgraph`,
+[main.py:28586](backend/main.py#L28586) `build_tree_sitter_java_callgraph`):
+scan each method/constructor body for simple `Type name = new Type(...)` /
+`Type name = ...;` local-variable declarations, build a small `name -> Type`
+map scoped to that ONE method (reset fresh per method, no cross-method or
+cross-scope leakage), and consult it — falling back to nested-class
+disambiguation via a `simple_class_index` (unique-match only, stays silent
+on ambiguity) — before the original literal-qualifier heuristics. Explicitly
+does NOT track fields (`this.service.doThing()`), constructor/method
+parameters used as the qualifier, interface-typed variables resolved to an
+implementation, builder chains, or flow across more than one local
+declaration — a bounded approximation, not real type inference.
+
+Verified, not assumed:
+- Built a synthetic repo (`Calculator.add` + `CalculatorTest` calling it via
+  `Calculator calculator = new Calculator(); calculator.add(2,2);`) — before
+  the fix, zero edges; after, the edge resolves correctly in both the
+  javalang path AND (once the separate SKIP_DIRS bug below is also
+  accounted for) the tree-sitter path.
+- Real repo (OmTabletApp, Java Android app): javalang edge count rose
+  275 → 326 (+51, ~19%) on the exact same source, no new parse errors, no
+  regressions.
+- Confirmed the edge survives `build_merged_java_outputs`'s union merge
+  ([main.py:32510](backend/main.py#L32510)) into `java_merged_callgraph.json`
+  — which is what feeds `combined_callgraph.json`, which is what
+  `find_tests`'s graph traversal actually reads — so this isn't just an
+  isolated-function fix, it reaches the real end-to-end pipeline.
+
+**Separate, more fundamental bug found along the way — FIXED (2026-09-02)**:
+`SKIP_DIRS` ([main.py:348](backend/main.py#L348)) used to contain `"tests"`,
+`"test"`, `"__tests__"` — and `iter_supported_repo_files`
+([main.py:413](backend/main.py#L413)), which every tree-sitter-based
+callgraph builder shares (Java at
+[main.py:28710](backend/main.py#L28710), Go
+[main.py:29095](backend/main.py#L29095), Rust
+[main.py:29183](backend/main.py#L29183), Kotlin
+[main.py:29267](backend/main.py#L29267)), skipped entire directories
+matching that set during file discovery — meaning any project using the
+standard `src/test/java/...`-style layout (i.e. nearly every real
+Java/Maven/Gradle project) never had its test files even READ by these
+builders, independent of call-resolution quality. Compounding this: `.codemd`
+is also in `SKIP_DIRS` (for a legitimate reason — most of `.codemd/` really
+is internal tool artifacts, not application source), which meant
+`.codemd/generated_tests/` — CODEMD's own home for Claude/Codex-generated
+tests — was doubly invisible even after removing "tests" alone from the set.
+
+Checked every other caller of `should_skip_path` before changing shared
+behavior (API-route detection, text search, feature-catalog reference
+linking) — none of them rely on tests being hidden for a real reason.
+
+**Fix**: added `is_test_directory_name()` ([main.py:363-388](backend/main.py#L363-L388))
+— a dedicated, always-wins check (evaluated before `SKIP_DIRS` membership,
+so it overrides even an otherwise-skipped ancestor like `.codemd`) covering:
+- exact names: `test`, `tests`, `__tests__`, `__test__`, `spec`, `specs`,
+  `unittest(s)`, `unit_test(s)`, `integration_test(s)`,
+  `generated_tests` (CODEMD's own convention)
+- a delimited suffix on a compound/project name — .NET's convention is a
+  whole sibling project directory named `<Project>.Tests` or
+  `<Project>.IntegrationTests`, not a bare `tests` folder — matched only
+  when `test(s)`/`spec(s)` follows a real delimiter (`.`/`_`/`-`) or is the
+  entire segment, so `latest`, `contest`, `digest`, `protest` are correctly
+  left alone.
+
+Verified, not assumed: a 13-case table covering every convention above
+(including the .NET suffix cases and the false-positive-risk words) all
+matched correctly; re-ran the tree-sitter Java synthetic repro from the fix
+above — `files_seen` went from 1 (test file silently skipped) to 2, with the
+correct `CalculatorTest.addition_isCorrect → Calculator.add` edge now
+resolving independently via the tree-sitter path too (previously only
+reachable via javalang's separate unfiltered walk); spot-checked Go
+(`tests/main_test.go`) and TS (`__tests__/foo.test.ts`) directly against
+`iter_supported_repo_files` to confirm the fix isn't Java-specific — both now
+included where they were silently dropped before.
+
+## Python: test functions were being deleted from the callgraph entirely (fixed 2026-09-02)
+
+`root_graph_at_entrypoint` ([backend/parsers/python/python_analyzer.py](backend/parsers/python/python_analyzer.py))
+pruned the callgraph to only nodes reachable *forward* from app entrypoints
+(`main`/`app`/`run`/etc.) — test functions are graph roots (they call into
+the app; nothing calls them back), so every test node was being silently
+deleted as "unreachable," even though `pyan3` had already resolved real
+`test → target` call edges correctly. Fixed: test-file functions (detected
+by path segment, matching `tests`/`test_*`/`*_test`/`.codemd/generated_tests`
+conventions — pyan3 joins path segments with `__`, so this needed matching
+the node's OWN path segments, not exact-key lookup against the separately-
+built dotted-name `symbol_index`) are now added as additional graph roots
+alongside the app entrypoints. Verified directly against a real repo
+(CodeVal): 197 real `tests/` nodes and 28 `.codemd/generated_tests/` nodes
+now survive that previously vanished entirely, with confirmed
+`test → target` edges (e.g.
+`tests__test_daily_commit_snapshot_persistence__...__test_compact_daily_change_payload_for_snapshot_keeps_drift_metadata → main`).
+`codemd-mcp-server.js`'s `findTests` ([scripts/codemd-mcp-server.js](scripts/codemd-mcp-server.js))
+now does a real backward-BFS over this graph first (`method: 'callgraph'`,
+confirmed), falling back to the old keyword-text scan only when no graph
+node resolves (`method: 'keyword'`, explicitly flagged unconfirmed in its
+`note`). UI: `renderExistingTestsCard` in `src/extension.ts` no longer shows
+a green ✓ for a test CODEMD has already proven (via coverage tracing) does
+NOT exercise the change — that case now shows a neutral "○ Not relevant to
+this change" badge, collapsed into a "N other test(s) checked" toggle
+instead of sitting as a top-level row.
+
+
 ## "Set up test runner" installs at the workspace root, not the target monorepo package (flagged 2026-08-31)
 
 Found while fixing a related, more urgent bug: `detectJsTestRunner`

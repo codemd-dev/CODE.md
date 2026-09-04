@@ -16,6 +16,7 @@ If the MCP server isn't connected, fall back to reading the files directly:
 - `.codemd/html_ui/html_ui_graph.json` for DOM/UI element (buttons, links, inputs, forms) questions.
 - `.codemd/repo_text/repo_stats.json` for lightweight repository facts.
 - `.codemd/repo_text/repo_text.json` for extracted README, docs, and UI text.
+- `.codemd/agent_policy/testing.md` for CODEMD's testing responsibility policy (Claude vs. CODEMD division of labor, and how to resolve an ambiguous test result) — regenerated on each analysis run, so it's the current source of truth, not a place to add repo-specific notes.
 
 Treat these as generated static-analysis artifacts:
 - They may be stale if source changed after generation.

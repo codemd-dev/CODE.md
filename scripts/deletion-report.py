@@ -889,7 +889,7 @@ def main():
                     # tail — two modified functions with the same short name in
                     # different files would otherwise collide and overwrite
                     # each other's generated file.
-                    out_name = f"test_replay_{re.sub(r'[^A-Za-z0-9_]', '_', symbol)}.py"
+                    out_name = f"test_codemd_replay_{re.sub(r'[^A-Za-z0-9_]', '_', symbol)}.py"
                     out_path = os.path.join(out_dir, out_name)
                     source = generate_replay_test_source(core_helpers, symbol, file_path, replayable, args.base, args.target)
                     with open(out_path, "w", encoding="utf-8") as f:

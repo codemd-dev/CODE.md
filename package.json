@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "The auto test harness for AI-written code. CODEMD traces your callgraph to find exactly what changed, instantly re-runs the existing tests that cover it, and has Claude write the ones you're missing — one click, always under your control.",
-  "version": "0.0.135",
+  "version": "0.0.146",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -183,7 +183,22 @@
         "codemdGraphs.claudeAgentConsent": {
           "type": "boolean",
           "default": false,
-          "description": "Whether you've allowed this panel to invoke Claude at all (writing tests, discovering how to run a test, fixing a failure). Left off until the one-time popup shown the first time you click a Claude-powered action — picking '🤖 Use Coding Agent (Claude)' there turns this on; picking '✋ Manual' just skips that click and asks again next time. Turn this on directly to skip the popup."
+          "description": "Legacy boolean, superseded by codemdGraphs.claudeAgentMode ('agent' keeps this true, anything else keeps it false) — kept only for settings saved before that mode existed. Set codemdGraphs.claudeAgentMode instead."
+        },
+        "codemdGraphs.claudeAgentMode": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "promptOnly",
+            "agent"
+          ],
+          "enumDescriptions": [
+            "Nothing runs without a click, and Claude is never invoked.",
+            "CODEMD types each prompt into your own `claude` CLI terminal instead of running Claude itself — you review it, can edit it, and press Enter yourself. CODEMD spends none of your Claude usage this way.",
+            "CODEMD invokes Claude itself (writing tests, discovering how to run a test, fixing a failure) when you click a Claude-powered action."
+          ],
+          "default": "manual",
+          "description": "Whether, and how, this panel can use Claude. 'promptOnly' requires the `claude` CLI running in an actual terminal — it cannot type into the separate Claude Code VS Code extension's own chat panel, since one extension's webview has no API surface another extension can write into."
         },
         "codemdGraphs.maxCostPerActionUsd": {
           "type": "number",

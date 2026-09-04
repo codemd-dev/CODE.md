@@ -100,6 +100,11 @@ TEXT_EXTENSIONS = set(CODE_SOURCE_EXTENSIONS)
 
 SCIM_EXTRACTOR_VERSION = 27
 
+# Keep in sync with backend/main.py's SKIP_DIRS — this is a separate list
+# (scim.py has no import relationship with main.py) that feeds a different
+# index (functions.jsonl / semantic search) built from its own file walk, so
+# a directory missing here silently indexes framework build output as if it
+# were source even though main.py's callgraph correctly skips it.
 SKIP_PATH_PARTS = {
     ".git",
     ".codemd",
@@ -118,6 +123,14 @@ SKIP_PATH_PARTS = {
     "build",
     "out",
     "target",
+    ".gradle",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".cache",
+    "coverage",
+    "migrations",
     "vendor",
     "vendors",
     "third-party",
@@ -808,7 +821,9 @@ def python_module_name(src_dir: Path, file_path: Path) -> str:
     return ".".join(parts) if parts else "__init__"
 
 
-def extract_python_chunks(repo_id: str, src_dir: Path, file_path: Path) -> list[CodeChunk]:
+def extract_python_chunks(
+    repo_id: str, src_dir: Path, file_path: Path, progress_callback=None
+) -> list[CodeChunk]:
     text = file_path.read_text(encoding="utf-8", errors="ignore")
     relative_path = str(file_path.relative_to(src_dir)).replace("\\", "/")
     module_name = python_module_name(src_dir, file_path)
@@ -819,7 +834,16 @@ def extract_python_chunks(repo_id: str, src_dir: Path, file_path: Path) -> list[
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             tree = ast.parse(text, filename=str(file_path))
-    except SyntaxError:
+    except SyntaxError as exc:
+        # A parse failure here silently drops EVERY function in this file
+        # from functions.jsonl (and therefore from codemd_find_tests/semantic
+        # search) with no other error path to notice it — surface it instead
+        # of returning an empty list unremarked.
+        if progress_callback:
+            progress_callback(
+                f"Skipped {relative_path}: Python syntax error ({exc}) — no functions from this file were indexed.",
+                current_file=relative_path,
+            )
         return chunks
 
     class PythonChunkVisitor(ast.NodeVisitor):
@@ -1282,7 +1306,7 @@ def extract_chunks(
                 found = extract_java_chunks(repo_id, src_dir, path)
                 chunks.extend(found)
             elif path.suffix.lower() == ".py":
-                found = extract_python_chunks(repo_id, src_dir, path)
+                found = extract_python_chunks(repo_id, src_dir, path, progress_callback)
                 chunks.extend(found)
             elif path.suffix.lower() in HTML_SOURCE_EXTENSIONS and path.suffix.lower() in TEXT_EXTENSIONS:
                 found = extract_html_ui_chunks(repo_id, src_dir, path)
