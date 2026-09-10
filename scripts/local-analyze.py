@@ -3,12 +3,37 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 
 SKIPPED_ARTIFACT_KEY_RE = ("train_pairs", "download_zip")
 MIRRORED_HTML_ARTIFACTS = {"combined_callgraph/combined_navigatable_callgraph.html"}
 WEBVIEW_SUPPORT_ARTIFACTS = ("lib/cytoscape/cytoscape.min.js",)
+
+
+def atomic_copy(source, target):
+    """Copy `source` onto `target` without a reader (the webview loading the
+    mirrored graph HTML mid-analysis) ever observing a partially-copied
+    file. shutil.copy2 straight onto `target` streams into the destination
+    in place, so a background regenerate racing a webview that's already
+    loading the previous version of this same file can hand back a
+    truncated read. Copying to a same-directory temp file first and
+    swapping it in with os.replace (atomic on POSIX and Windows) means any
+    concurrent reader sees either the complete old file or the complete new
+    one, never a partial one."""
+    target = Path(target)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(source, tmp_name)
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def collect_artifact_urls(value, prefix, out):
@@ -49,7 +74,17 @@ def rewrite_html_artifact_for_webview(target, rel_path):
         "const initialElements = explicitElements.length ? explicitElements : flowElementsFor(firstRoot, 1, 16);",
     )
     if rewritten != text:
-        target.write_text(rewritten, encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(rewritten)
+            os.replace(tmp_name, target)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
 
 def artifact_prefix(result):
@@ -87,7 +122,7 @@ def mirror_artifacts(result, output_dir):
         if not source.exists():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        atomic_copy(source, target)
 
     for rel_path in WEBVIEW_SUPPORT_ARTIFACTS:
         source = Path.cwd() / rel_path.replace("/", os.sep)

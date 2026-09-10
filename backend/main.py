@@ -115,6 +115,35 @@ from parsers.python.python_analyzer import (
     PythonAnalyzer
 )
 
+# Go/Rust/Kotlin/Java/C# callgraph builders and their shared generic helpers
+# now live in parsers/ (see backend/parsers/common.py, generic_tree_sitter.py)
+# -- extracted out of this file so pyan3 can eventually analyze main.py itself
+# instead of skipping it for being oversized (see PYTHON_MAX_PYAN_PARSE_BYTES
+# in parsers/python/pyan3_parser.py). JS/Python's own callgraph builders are a
+# deliberately deferred follow-up.
+from parsers.common import (
+    ALLOWED_CODE_EXTENSIONS,
+    HTML_UI_EXTENSIONS_FOR_ANALYSIS,
+    SKIP_DIRS,
+    _load_edge_graph_with_meta,
+    atomic_write_text,
+    is_generated_output_dir_name,
+    is_supported_repo_source_file,
+    is_test_directory_name,
+    iter_supported_repo_files,
+    looks_like_browser_metadata_file,
+    should_skip_path,
+    write_ordered_call_sequence,
+    write_ordered_sequence_from_edges,
+)
+from parsers.csharp.csharp_parser import build_csharp_callgraph
+from parsers.go.tree_sitter_parser import build_tree_sitter_go_outputs
+from parsers.rust.tree_sitter_parser import build_tree_sitter_rust_outputs
+from parsers.kotlin.tree_sitter_parser import build_tree_sitter_kotlin_outputs
+from parsers.java.javalang_parser import build_javalang_outputs
+from parsers.java.tree_sitter_parser import build_tree_sitter_java_outputs
+from parsers.java.merge import build_merged_java_outputs
+
 from typing import Optional
 
 class VisibleTextHTMLParser(HTMLParser):
@@ -239,11 +268,6 @@ OUTPUT_URL_PREFIX = f"/{DEFAULT_OUTPUT_DIR_NAME}"
 DEFAULT_LOCAL_OUTPUT_DIR = PARENT_ROOT / ".codemd" / "backend-output"
 
 
-def is_generated_output_dir_name(name: str):
-    lower = str(name or "").lower()
-    return lower == "output" or lower.startswith(("output_", "output-", "output%"))
-
-
 def choose_output_root():
     configured = os.getenv("CODEVAL_OUTPUT_DIR")
     if configured:
@@ -308,6 +332,22 @@ def output_url(path):
     return f"{OUTPUT_URL_PREFIX}/{relative_path}"
 
 
+def json_for_inline_script(data, **dumps_kwargs) -> str:
+    """json.dumps() output that's safe to drop verbatim into an HTML <script> tag.
+
+    Node/edge labels here are pulled straight from source (symbol names, docstrings,
+    code snippets), and this repo's own source dogfoods CODEMD on files that contain
+    literal "</script>" text (extension.ts's webview HTML template, video-walkthrough-
+    script.html). The HTML tokenizer looks for that literal byte sequence before any
+    JS/JSON parsing happens, so an unescaped "</script>" inside a JSON string value
+    still closes the surrounding <script> tag early and truncates/corrupts the page.
+    Escaping every "</" as the JSON-legal "<\\/" prevents the false match while
+    leaving the decoded string value unchanged.
+    """
+    dumps_kwargs.setdefault("separators", (",", ":"))
+    return json.dumps(data, **dumps_kwargs).replace("</", "<\\/")
+
+
 def zip_analysis_output(repo_id: str, output_repo_dir=None):
     output_dir = Path(output_repo_dir) if output_repo_dir else BASE_OUTPUT / repo_id
     if not output_dir.exists() or not output_dir.is_dir():
@@ -344,111 +384,11 @@ def zip_analysis_output(repo_id: str, output_repo_dir=None):
 # ============================================================
 #   CONSTANTS
 # ============================================================
-
-SKIP_DIRS = {
-    "venv", ".venv", "env",
-    "build", "dist", "out", ".gradle", ".next", ".nuxt", ".svelte-kit", ".turbo", ".cache", "coverage", "__pycache__",
-    "migrations", ".github", ".idea", ".vscode",
-    "node_modules", "output",
-    "third-party", "third_party", "thirdparty",
-    "extern", "external", "deps", "dependencies",
-    "vendor", "vendors",
-    "sample", "samples",
-    ".git", ".codemd",
-}
-
-ALLOWED_CODE_EXTENSIONS = {
-    ".py", ".java", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-    ".go", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh",
-    ".cs", ".rb", ".php", ".rs", ".kt", ".kts",
-}
-
-HTML_UI_EXTENSIONS_FOR_ANALYSIS = {".html", ".htm", ".xhtml"}
-
-# Directory names that unambiguously mean "this holds tests," across every
-# language convention this tool analyzes — never excluded from source
-# discovery, no matter what. This overrides SKIP_DIRS entirely for a path
-# containing one of these segments, INCLUDING when it sits under an
-# otherwise-fully-skipped ancestor like ".codemd" (e.g.
-# ".codemd/generated_tests/" — CODEMD's own home for Claude/Codex-generated
-# tests) — the whole point of most callers of should_skip_path is to find
-# real, testable code, and a rule that hides the actual tests defeats that.
-#   - bare/common names: test, tests, __tests__, __test__, spec, specs
-#   - a whole extra word: unittest(s), unit_test(s), integration_test(s),
-#     generated_tests (CODEMD's own convention)
-#   - a delimited suffix on a compound/project name — .NET's convention is a
-#     whole SIBLING PROJECT directory named "<Project>.Tests" or
-#     "<Project>.IntegrationTests", not a bare "tests" folder at all. Only
-#     matched when "test(s)"/"spec(s)" is preceded by a real delimiter
-#     (., _, -) or is the entire segment, so "latest", "contest", "digest",
-#     and "protest" are correctly left alone (verified: none of those
-#     contain "test"/"tests" immediately after a ^, ., _, or - boundary).
-_TEST_DIR_EXACT_NAMES = {
-    "test", "tests", "__tests__", "__test__", "spec", "specs",
-    "unittest", "unittests", "unit_test", "unit_tests",
-    "integrationtest", "integrationtests", "integration_test", "integration_tests",
-    "generated_tests",
-}
-_TEST_DIR_SUFFIX_RE = re.compile(r"(?:^|[._-])(tests?|specs?)$", re.IGNORECASE)
-
-
-def is_test_directory_name(name: str) -> bool:
-    lowered = str(name or "").lower()
-    return lowered in _TEST_DIR_EXACT_NAMES or bool(_TEST_DIR_SUFFIX_RE.search(lowered))
-
-
-def should_skip_path(path: str, repo_root: str = ""):
-    path_for_match = str(path)
-    if repo_root:
-        try:
-            path_for_match = os.path.relpath(path_for_match, repo_root)
-        except ValueError:
-            path_for_match = str(path)
-    parts = [part.lower() for part in path_for_match.replace("\\", "/").split("/")]
-    filename = parts[-1] if parts else ""
-    if any(is_test_directory_name(part) for part in parts):
-        return False
-    return (
-        any(part in SKIP_DIRS or is_generated_output_dir_name(part) for part in parts)
-        or filename.endswith(".min.js")
-        or filename.endswith(".bundle.js")
-        or filename.endswith(".map")
-    )
-
-
-def looks_like_browser_metadata_file(path: str):
-    try:
-        sample = Path(path).read_text(encoding="utf-8", errors="ignore")[:12000]
-    except OSError:
-        return False
-    lowered = sample.lower()
-    browser_keys = ("pagetitle", "pageurl", "faviconurl", "lastaccesstime")
-    if "edge_all_open_tabs" in lowered:
-        return True
-    return sum(1 for key in browser_keys if key in lowered) >= 2 and ("pageurl" in lowered or "url" in lowered)
-
-
-def is_supported_repo_source_file(path: str, repo_root: str, allowed_extensions=None, sniff_browser_metadata=True):
-    ext = os.path.splitext(str(path))[1].lower()
-    if allowed_extensions is None:
-        allowed_extensions = ALLOWED_CODE_EXTENSIONS
-    if ext not in allowed_extensions:
-        return False
-    if should_skip_path(path, repo_root):
-        return False
-    if sniff_browser_metadata and ext in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"} and looks_like_browser_metadata_file(path):
-        logger.info("Skipping browser metadata file during source analysis: %s", path)
-        return False
-    return True
-
-
-def iter_supported_repo_files(repo_src: str, allowed_extensions=None, sniff_browser_metadata=True):
-    for root, dirs, files in os.walk(repo_src):
-        dirs[:] = [d for d in dirs if not should_skip_path(os.path.join(root, d), repo_src)]
-        for filename in sorted(files):
-            path = os.path.join(root, filename)
-            if is_supported_repo_source_file(path, repo_src, allowed_extensions, sniff_browser_metadata=sniff_browser_metadata):
-                yield path
+# SKIP_DIRS, ALLOWED_CODE_EXTENSIONS, HTML_UI_EXTENSIONS_FOR_ANALYSIS,
+# is_test_directory_name, should_skip_path, looks_like_browser_metadata_file,
+# is_supported_repo_source_file, iter_supported_repo_files now live in
+# parsers/common.py (imported near the top of this file) so the Go/Rust/
+# Kotlin/C# parser modules can use them without importing from main.
 
 
 def should_skip_file_graph_path(path: str):
@@ -6455,10 +6395,10 @@ def build_navigatable_cytoscape_graph(
         "snapshot": snapshot_info,
         "instructions": "Click a node to reveal the next connected node or edge.",
     }
-    json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
+    atomic_write_text(json_path, json.dumps(graph_data, indent=2), encoding="utf-8")
     relative_json = os.path.relpath(json_path, BASE_OUTPUT).replace("\\", "/")
     graph_json_url = f"{OUTPUT_URL_PREFIX}/{relative_json}"
-    embedded = json.dumps(graph_data, separators=(",", ":"))
+    embedded = json_for_inline_script(graph_data)
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -6533,9 +6473,9 @@ def build_navigatable_cytoscape_graph(
         const label = String(raw || \"\");
         function limit(value) {{
           value = String(value || \"\")
-            .replace(/\*\*([^*]+)\*\*/g, \"$1\")
-            .replace(/\s+\./g, \".\")
-            .replace(/\.\s+/g, \".\");
+            .replace(/\\*\\*([^*]+)\\*\\*/g, \"$1\")
+            .replace(/\\s+\\./g, \".\")
+            .replace(/\\.\\s+/g, \".\");
         return value.length > 76 ? `${{value.slice(0, 34)}}...${{value.slice(-34)}}` : value;
         }}
         if (nodeLabels[label]) return limit(nodeLabels[label]);
@@ -7117,7 +7057,7 @@ def build_navigatable_cytoscape_graph(
 </body>
 </html>
 """
-    html_path.write_text(html, encoding="utf-8")
+    atomic_write_text(html_path, html, encoding="utf-8")
     relative_html = os.path.relpath(html_path, BASE_OUTPUT).replace("\\", "/")
     return f"{OUTPUT_URL_PREFIX}/{relative_html}"
 
@@ -7146,7 +7086,7 @@ def build_ordered_process_cytoscape_graph(
     json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
     relative_json = os.path.relpath(json_path, BASE_OUTPUT).replace("\\", "/")
     graph_json_url = f"{OUTPUT_URL_PREFIX}/{relative_json}"
-    embedded = json.dumps(graph_data, separators=(",", ":"))
+    embedded = json_for_inline_script(graph_data)
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -7320,7 +7260,7 @@ def build_ordered_lr_callgraph(
     json_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
     relative_json = os.path.relpath(json_path, BASE_OUTPUT).replace("\\", "/")
     graph_json_url = f"{OUTPUT_URL_PREFIX}/{relative_json}"
-    embedded = json.dumps(graph_data, separators=(",", ":"))
+    embedded = json_for_inline_script(graph_data)
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -7799,12 +7739,12 @@ def navigatable_graph_html_current(html_path):
         and "applyRoadLayout" in html
         and "single-root-progressive-v6" in html
         and "node_labels" in html
-        and "order: edge.order" in html
+        and "sourceOrder" in html
         and '"font-size":"11px"' in html
     )
 
 
-HTTP_ROUTE_DECORATORS = {"get", "post", "put", "patch", "delete", "options", "head", "api_route"}
+HTTP_ROUTE_DECORATORS = {"get", "post", "put", "patch", "delete", "options", "head", "api_route", "route"}
 
 
 def api_route_symbol(route_path: str):
@@ -7938,6 +7878,174 @@ def extract_python_api_route_edges(repo_src, function_nodes):
                     node_labels[route_node] = api_route_label(route_path)
                     edges.add((route_node, target))
     return nodes, edges, node_labels
+
+
+_ROUTE_PARAM_RE = re.compile(
+    r"<(?:(?P<conv>[a-zA-Z_][a-zA-Z0-9_]*):)?(?P<name1>[a-zA-Z_][a-zA-Z0-9_]*)>"
+    r"|\{(?P<name2>[a-zA-Z_][a-zA-Z0-9_]*)(?::(?P<conv2>path))?\}"
+)
+
+
+def _route_param_segment(converter: str):
+    conv = str(converter or "").strip().lower()
+    if conv == "int":
+        return r"[0-9]+"
+    if conv == "float":
+        return r"[0-9]+(?:\.[0-9]+)?"
+    if conv == "uuid":
+        return r"[0-9a-fA-F-]{8,36}"
+    if conv == "path":
+        return r".+"
+    return r"[^/]+"
+
+
+def compile_route_path_pattern(route_path: str):
+    """Turns a Flask/Bottle '<converter:name>' or FastAPI '{name}' route path
+    into a regex matching concrete request paths, so a literal test URL like
+    '/status/418' can be matched against the decorated pattern that owns it
+    (e.g. '/status/<int:code>')."""
+    route_path = str(route_path or "")
+    pieces = []
+    pos = 0
+    for match in _ROUTE_PARAM_RE.finditer(route_path):
+        pieces.append(re.escape(route_path[pos:match.start()]))
+        converter = match.group("conv") or match.group("conv2") or ""
+        pieces.append(_route_param_segment(converter))
+        pos = match.end()
+    pieces.append(re.escape(route_path[pos:]))
+    try:
+        return re.compile("^" + "".join(pieces) + "/?$")
+    except re.error:
+        return None
+
+
+def _decorator_route_methods(decorator):
+    """Best-effort HTTP method(s) a decorator declares: the verb itself for
+    @app.get/@app.post/etc., or the methods=(...) kwarg for @app.route(...)
+    and @router.api_route(...). Empty set means "unknown", i.e. don't filter
+    on method."""
+    call_node = decorator if isinstance(decorator, ast.Call) else None
+    func_node = call_node.func if call_node else decorator
+    method_name = ""
+    if isinstance(func_node, ast.Attribute):
+        method_name = func_node.attr
+    elif isinstance(func_node, ast.Name):
+        method_name = func_node.id
+    if method_name in {"get", "post", "put", "patch", "delete", "head", "options"}:
+        return {method_name.upper()}
+    if not call_node:
+        return set()
+    for kw in call_node.keywords or []:
+        if kw.arg != "methods":
+            continue
+        values = kw.value.elts if isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)) else []
+        methods = {v.value.upper() for v in values if isinstance(v, ast.Constant) and isinstance(v.value, str)}
+        if methods:
+            return methods
+    return set()
+
+
+_TEST_CLIENT_HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
+_TEST_FILE_NAME_RE = re.compile(r"^(test_.*|.*_test)\.py$")
+
+
+def _literal_str_arg(call_node):
+    args = list(call_node.args or [])
+    if args and isinstance(args[0], ast.Constant) and isinstance(args[0].value, str):
+        return args[0].value
+    for kw in call_node.keywords or []:
+        if kw.arg in ("path", "url") and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+            return kw.value.value
+    return None
+
+
+def extract_python_test_route_dispatch_edges(repo_src, function_nodes):
+    """Bridges a gap the ordinary callgraph can't: a black-box test that hits
+    a decorated route through a test client (self.app.get('/status/418'))
+    never calls the handler function directly, so no call edge exists for it
+    at all — find_tests' callgraph traversal treats such a target as
+    untested even when it has real route-level coverage. This walks route
+    decorators to build path-pattern -> handler entries, then walks test
+    files for literal URL strings passed to *.get/post/put/... calls, and
+    emits a direct test_function -> handler edge wherever a literal URL
+    matches a route's pattern. Best-effort by construction (literal strings
+    only, no f-string/concatenation support) — a missed match just means no
+    edge, never a wrong one, since a non-match adds nothing."""
+    if not repo_src:
+        return set(), set(), {}
+    repo_src = Path(repo_src or "")
+    if not repo_src.exists():
+        return set(), set(), {}
+    function_nodes = set(function_nodes or [])
+
+    def resolve_target(module_name, item_name):
+        target = f"{module_name}.{item_name}" if module_name else item_name
+        if target in function_nodes:
+            return target
+        suffix_matches = [node for node in function_nodes if str(node).endswith(f".{item_name}")]
+        return suffix_matches[0] if len(suffix_matches) == 1 else None
+
+    route_entries = []  # (regex, methods, handler_target)
+    test_calls = []  # (test_target, path, method)
+
+    for root, dirs, files in os.walk(repo_src):
+        dirs[:] = [d for d in dirs if not should_skip_path(os.path.join(root, d), str(repo_src))]
+        for filename in files:
+            if not filename.endswith(".py"):
+                continue
+            path = Path(root) / filename
+            if should_skip_path(str(path), str(repo_src)):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
+            except Exception:
+                continue
+            module_name = _python_module_name_for_route(repo_src, path)
+            is_test_file = bool(_TEST_FILE_NAME_RE.match(filename))
+            for item in ast.walk(tree):
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                route_paths = [
+                    (route_path, _decorator_route_methods(decorator))
+                    for decorator in item.decorator_list
+                    for route_path in [_decorator_route_path(decorator)]
+                    if route_path
+                ]
+                if route_paths:
+                    target = resolve_target(module_name, item.name)
+                    if target:
+                        for route_path, methods in route_paths:
+                            pattern = compile_route_path_pattern(route_path)
+                            if pattern:
+                                route_entries.append((pattern, methods, target))
+                if not is_test_file or not item.name.startswith("test"):
+                    continue
+                test_target = resolve_target(module_name, item.name)
+                if not test_target:
+                    continue
+                for call_node in ast.walk(item):
+                    if not isinstance(call_node, ast.Call) or not isinstance(call_node.func, ast.Attribute):
+                        continue
+                    method = call_node.func.attr
+                    if method not in _TEST_CLIENT_HTTP_METHODS:
+                        continue
+                    url = _literal_str_arg(call_node)
+                    if not url or not url.startswith("/"):
+                        continue
+                    test_calls.append((test_target, url.split("?", 1)[0], method.upper()))
+
+    nodes = set()
+    edges = set()
+    for test_target, url_path, method in test_calls:
+        for pattern, methods, handler_target in route_entries:
+            if methods and method not in methods:
+                continue
+            if not pattern.match(url_path):
+                continue
+            nodes.add(test_target)
+            nodes.add(handler_target)
+            edges.add((test_target, handler_target))
+    return nodes, edges, {}
 
 
 def iter_javascript_function_bodies(text: str):
@@ -8277,6 +8385,9 @@ def build_combined_navigatable_callgraph(output_repo_dir, results=None, repo_src
     nodes.update(js_route_nodes)
     edges.update(js_route_edges)
     node_labels.update(js_route_labels)
+    test_dispatch_nodes, test_dispatch_edges, _ = extract_python_test_route_dispatch_edges(repo_src, nodes)
+    nodes.update(test_dispatch_nodes)
+    edges.update(test_dispatch_edges)
     nodes, edges = add_ui_alias_edges(nodes, edges)
     entry_points = collect_combined_entry_points(repo_src, nodes, edges)
 
@@ -16054,307 +16165,15 @@ def ack_unused_functions(req: UnusedFunctionAckRequest):
     return {"ok": True, "ok_count": len(ok_symbols)}
 
 
-# ============================================================
-# FAST JAVA CALLGRAPH (WITH CALLER TRACKING)
-# ============================================================
-
-skipped_files = []
-
-# -------------------------------
-# Helper: safe parse wrapper
-# -------------------------------
-def safe_parse(text, path, repo_src=None, parse_errors=None):
-    try:
-        return javalang.parse.parse(text)
-    except javalang.tokenizer.LexerError as e:
-        print(f"[SKIP] LexerError in {path}: {format_java_parse_error(e, text)}")
-        if parse_errors is not None:
-            parse_errors.append(java_parse_error_diagnostic(e, text, path, repo_src, "lexer_error"))
-    except javalang.parser.JavaSyntaxError as e:
-        print(f"[SKIP] SyntaxError in {path}: {format_java_parse_error(e, text)}")
-        if parse_errors is not None:
-            parse_errors.append(java_parse_error_diagnostic(e, text, path, repo_src, "syntax_error"))
-    except Exception as e:
-        print(f"[SKIP] Unknown parse error in {path}: {e}")
-        if parse_errors is not None:
-            parse_errors.append({
-                "file": repo_relative_path(path, repo_src),
-                "error_type": "parse_error",
-                "language": "java",
-                "parser": "javalang",
-                "line": None,
-                "column": None,
-                "message": str(e) or e.__class__.__name__,
-            })
-    skipped_files.append(path)
-    return None
+# skipped_files / safe_parse / repo_relative_path / java_parse_error_diagnostic /
+# format_java_parse_error now live in parsers/java/javalang_parser.py (imported near
+# the top of this file).
 
 
-def repo_relative_path(path, repo_src=None):
-    if repo_src:
-        try:
-            return os.path.relpath(path, repo_src).replace("\\", "/")
-        except ValueError:
-            pass
-    return str(path).replace("\\", "/")
-
-
-def java_parse_error_diagnostic(error, source, path, repo_src=None, error_type="syntax_error"):
-    location = getattr(error, "at", None) or getattr(error, "position", None)
-    token = location
-    if location is not None and hasattr(location, "position"):
-        location = location.position
-    line_no = getattr(location, "line", None)
-    col_no = getattr(location, "column", None)
-    if location and not line_no and isinstance(location, tuple) and len(location) >= 2:
-        line_no, col_no = location[:2]
-
-    message = str(error) or error.__class__.__name__
-    lines = source.splitlines()
-    snippet = lines[line_no - 1].strip() if line_no and 0 < line_no <= len(lines) else ""
-    token_value = getattr(token, "value", "") or getattr(token, "string", "")
-    if token_value and token_value not in message:
-        message = f"{message} near {token_value!r}"
-    if snippet:
-        message = f"{message}: {snippet[:220]}"
-    return {
-        "file": repo_relative_path(path, repo_src),
-        "error_type": error_type,
-        "language": "java",
-        "parser": "javalang",
-        "line": line_no,
-        "column": col_no,
-        "message": message,
-    }
-
-
-def format_java_parse_error(error, source):
-    location = getattr(error, "at", None) or getattr(error, "position", None)
-    token = location
-    if location is not None and hasattr(location, "position"):
-        location = location.position
-    line_no = getattr(location, "line", None)
-    col_no = getattr(location, "column", None)
-    if location and not line_no and isinstance(location, tuple) and len(location) >= 2:
-        line_no, col_no = location[:2]
-
-    detail = str(error) or error.__class__.__name__
-    if not line_no:
-        return detail
-
-    lines = source.splitlines()
-    snippet = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else ""
-    token_value = getattr(token, "value", "") or getattr(token, "string", "")
-    token_text = f" token={token_value!r}" if token_value else ""
-    return f"{detail} at line {line_no}, column {col_no or '?'}{token_text}: {snippet[:220]}"
-
-
-def generate_callgraph_with_pyan_number(repo_dir, dot_file=None, html_file=None, json_file=None):
-    """
-    Generate a Python call graph using pyan3, save DOT, JSON, and interactive HTML,
-    with numbering resetting for each top-level node.
-    """
-    dot_file = dot_file or os.path.join(repo_dir, "callgraph_pyan.dot")
-    html_file = html_file or os.path.join(repo_dir, "callgraph_pyan.html")
-    json_file = json_file or os.path.join(repo_dir, "callgraph_pyan.json")
-
-    py_files = [f for f in os.listdir(repo_dir) if f.endswith(".py")]
-    if not py_files:
-        raise ValueError("No Python files found in repo_dir")
-
-    # Run pyan3
-    cmd = ["pyan3"] + py_files + ["--dot"]
-    with open(dot_file, "w", encoding="utf-8") as f:
-        subprocess.run(cmd, cwd=repo_dir, stdout=f, check=True)
-    print(f"DOT call graph written to: {dot_file}")
-
-    # Load DOT into NetworkX
-    G = nx.drawing.nx_pydot.read_dot(dot_file)
-
-    # Remove 'main' node if it exists
-    if "main" in G:
-        G.remove_node("main")
-
-    # Save JSON
-    nodes = list(G.nodes())
-    edges = [[u, v] for u, v in G.edges()]
-    with open(json_file, "w", encoding="utf-8") as f:
-        json.dump({"nodes": nodes, "edges": edges}, f, indent=2)
-    print(f"Call graph JSON written to: {json_file}")
-
-    # Build PyVis network
-    net = Network(height="800px", width="100%", directed=True)
-
-    # Find top-level nodes (nodes with no incoming edges)
-    top_nodes = [n for n in G.nodes() if G.in_degree(n) == 0]
-
-    for top in top_nodes:
-        numbering = {}          # maps node → unique number
-        counter = 0             # global counter per top node
-        queue = [top]
-        # assign number to top
-        numbering[top] = counter
-        top_id = f"{top}_{counter}"
-        net.add_node(top_id, label=f"{counter}: {top}")
-        while queue:
-            node = queue.pop(0)
-            node_num = numbering[node]
-            node_id = f"{top}_{node_num}"
-            # iterate children
-            for child in G.successors(node):
-                # assign number if new
-                if child not in numbering:
-                    counter += 1
-                    numbering[child] = counter
-                    child_id = f"{top}_{counter}"
-                    net.add_node(child_id, label=f"{counter}: {child}")
-                    queue.append(child)
-                else:
-                    child_id = f"{top}_{numbering[child]}"
-                # now safe to add edge
-                net.add_edge(node_id, child_id)
-
-    # Physics options
-    options = {
-        "physics": {
-            "enabled": True,
-            "barnesHut": {
-                "gravitationalConstant": -8000,
-                "centralGravity": 0.3,
-                "springLength": 200,
-                "springConstant": 0.04,
-                "damping": 0.09,
-                "avoidOverlap": 1
-            }
-        },
-        "interaction": {"dragNodes": True}
-    }
-    net.set_options(json.dumps(options))
-
-    net.write_html(html_file, open_browser=False)
-    print(f"Interactive call graph written to: {html_file}")
-
-    # Disable physics after 5s
-    with open(html_file, "r", encoding="utf-8") as f:
-        html = f.read()
-    custom_js = """
-    <script type="text/javascript">
-    setTimeout(function() {
-        network.setOptions({physics: {enabled:false}});
-    }, 5000);
-    </script>
-    """
-    html = html.replace("</body>", custom_js + "\n</body>")
-    with open(html_file, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    return G
-
-
-
-# pyan3 CALLGRAPH (PYTHON)
-def generate_callgraph_with_pyan(repo_dir, dot_file=None, html_file=None, json_file=None):
-    """
-    Generate a Python call graph using pyan3 from Python code, save DOT, JSON, and interactive HTML.
-
-    Args:
-        repo_dir (str): Directory containing Python files.
-        dot_file (str, optional): Path to save DOT output. Defaults to repo_dir/callgraph_pyan.dot.
-        html_file (str, optional): Path to save interactive HTML. Defaults to repo_dir/callgraph_pyan.html.
-        json_file (str, optional): Path to save JSON version of callgraph. Defaults to repo_dir/callgraph_pyan.json.
-    """
-    dot_file = dot_file or os.path.join(repo_dir, "callgraph_pyan.dot")
-    html_file = html_file or os.path.join(repo_dir, "callgraph_pyan.html")
-    json_file = json_file or os.path.join(repo_dir, "callgraph_pyan.json")
-
-    # Find all Python files in repo_dir
-    py_files = [f for f in os.listdir(repo_dir) if f.endswith(".py")]
-    if not py_files:
-        raise ValueError("No Python files found in repo_dir")
-
-    # Build pyan3 command
-    cmd = ["pyan3"] + py_files + ["--dot"]
-
-    # Run pyan3 and capture DOT output
-    with open(dot_file, "w", encoding="utf-8") as f:
-        subprocess.run(cmd, cwd=repo_dir, stdout=f, check=True)
-    print(f"DOT call graph written to: {dot_file}")
-
-    # Load DOT into NetworkX
-    G = nx.drawing.nx_pydot.read_dot(dot_file)
-
-    # Optionally remove root node 'main'
-    root_node = "main"
-    if root_node in G:
-        G.remove_node(root_node)
-
-    # Save JSON version
-    nodes = list(G.nodes())
-    edges = [[u, v] for u, v in G.edges()]
-    with open(json_file, "w", encoding="utf-8") as f:
-        json.dump({"nodes": nodes, "edges": edges}, f, indent=2)
-    print(f"Call graph JSON written to: {json_file}")
-
-    # Build interactive PyVis graph
-    net = Network(height="800px", width="100%", directed=True)
-
-    # Map nodes to numbers
-    node_map = {name: i+1 for i, name in enumerate(nodes)}
-
-    # Add nodes with number + label
-    for original in nodes:
-        number = node_map[original]
-        net.add_node(number, label=f"{number}: {original}")
-
-    # Add edges using numbers
-    for u, v in edges:
-        net.add_edge(node_map[u], node_map[v])
-
-    options = {
-        "physics": {
-            "enabled": True,
-            "barnesHut": {
-                "gravitationalConstant": -8000,
-                "centralGravity": 0.3,
-                "springLength": 200,
-                "springConstant": 0.04,
-                "damping": 0.09,
-                "avoidOverlap": 1
-            }
-        },
-        "interaction": {
-            "dragNodes": True
-        }
-    }
-
-    # Enable physics for initial layout
-    # Pass as JSON string
-    net.set_options(json.dumps(options))
-
-    net.write_html(html_file, open_browser=False)
-    print(f"Interactive call graph written to: {html_file}")
-
-    # After net.write_html(html_file)
-    with open(html_file, "r", encoding="utf-8") as f:
-        html = f.read()
-
-    custom_js = """
-    <script type="text/javascript">
-    setTimeout(function() {
-        network.setOptions({physics: {enabled:false}});
-    }, 5000);
-    </script>
-    """
-
-    html = html.replace("</body>", custom_js + "\n</body>")
-
-    with open(html_file, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    return G  # optional, return NetworkX graph
-
-
-
+# generate_callgraph_with_pyan / generate_callgraph_with_pyan_number removed
+# (2026-09-07): dead code, unreferenced anywhere -- superseded by the actual
+# pyan3 path used in production, parsers/python/pyan3_parser.PyCGParser
+# (via PythonAnalyzer / build_python_callgraph).
 
 
 
@@ -16563,69 +16382,8 @@ def export_call_graph_json(graph, output_path):
         json.dump(data, f, indent=2)
 
 
-def write_ordered_call_sequence(calls, output_path, parser="", source_callgraph=""):
-    normalized = []
-    for index, call in enumerate(calls or [], start=1):
-        caller = call.get("caller") or call.get("source") or call.get("method") or ""
-        callee = call.get("callee") or call.get("target") or call.get("callee_fullName") or ""
-        if not caller or not callee:
-            continue
-        order = call.get("order")
-        try:
-            order = int(order) if order is not None and order != "" else index
-        except (TypeError, ValueError):
-            order = index
-        line = call.get("line")
-        try:
-            line = int(line) if line is not None and line != "" else None
-        except (TypeError, ValueError):
-            line = None
-        column = call.get("column")
-        try:
-            column = int(column) if column is not None and column != "" else None
-        except (TypeError, ValueError):
-            column = None
-        normalized.append({
-            "caller": str(caller),
-            "callee": str(callee),
-            "file": call.get("file") or call.get("caller_file") or "",
-            "line": line,
-            "column": column,
-            "order": order,
-            "call_text": call.get("call_text") or call.get("call_code") or call.get("call_name") or "",
-        })
-
-    normalized.sort(key=lambda item: (
-        item.get("file") or "",
-        item.get("caller") or "",
-        item.get("line") if item.get("line") is not None else 0,
-        item.get("column") if item.get("column") is not None else 0,
-        item.get("order") if item.get("order") is not None else 0,
-        item.get("callee") or "",
-    ))
-    payload = {
-        "mode": "ordered_call_sequence",
-        "parser": parser,
-        "source_callgraph": source_callgraph,
-        "calls": normalized,
-        "call_count": len(normalized),
-    }
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    return output_path
-
-
-def write_ordered_sequence_from_edges(edges, output_path, parser="", source_callgraph=""):
-    calls = [
-        {
-            "caller": src,
-            "callee": dst,
-            "order": index,
-        }
-        for index, (src, dst) in enumerate(sorted(edges or []), start=1)
-    ]
-    return write_ordered_call_sequence(calls, output_path, parser, source_callgraph)
+# write_ordered_call_sequence / write_ordered_sequence_from_edges now live in
+# parsers/common.py (imported near the top of this file).
 
 
 def build_python_callgraph(repo_src, output_dir, progress_callback=None):
@@ -16921,523 +16679,11 @@ def build_call_graph_from_ast_folder(ast_folder, output_json):
 
 
 
-def build_javalang_callgraph_wrong(repo_src, output_dir):
-    edges = set()
-    user_methods = set()
-    # -----------------------------------------
-    # PASS 1 — Collect all user-defined methods
-    # -----------------------------------------
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-            tree = safe_parse(text, path)
-            if tree is None:
-                continue
-
-            # Class methods
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-                for method in node.methods:
-                    user_methods.add(f"{class_name}.{method.name}")
-            # Top-level methods (rare)
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    user_methods.add(method.name)
-
-    # -----------------------------------------
-    # PASS 2 — Collect edges between user methods
-    # -----------------------------------------
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-
-            tree = safe_parse(text, path)
-            if tree is None:
-                continue
-
-            # -----------------------------------------
-            # CLASS METHODS
-            # -----------------------------------------
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-
-                for method in node.methods:
-                    caller = f"{class_name}.{method.name}"
-
-                    for _, call in method.filter(javalang.tree.MethodInvocation):
-                        callee = call.member
-                        target = None
-
-                        # 🚫 Skip trivial self-recursion early (optional but useful)
-                        if callee == method.name:
-                            continue
-
-                        # ✅ 1. Same-class call
-                        same_class = f"{class_name}.{callee}"
-                        if same_class in user_methods:
-                            target = same_class
-
-                        # ✅ 2. Qualifier-based guesses
-                        elif call.qualifier:
-                            q = call.qualifier
-                            guesses = [
-                                f"{q}.{callee}",
-                                f"{q.capitalize()}.{callee}",
-                            ]
-
-                            for g in guesses:
-                                if g in user_methods:
-                                    target = g
-                                    break
-
-                        # ✅ 3. Fallback
-                        if not target:
-                            matches = [um for um in user_methods if um.endswith(f".{callee}")]
-                            if len(matches) == 1:
-                                target = matches[0]
-
-                        # ✅ FINAL CLEAN ADD (THIS IS THE KEY PART)
-                        if target and caller != target:
-                            edges.add((caller, target))
-
-            # -----------------------------------------
-            # OPTIONAL: TOP-LEVEL METHODS (rare in Java)
-            # -----------------------------------------
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if len(path2) < 2 or not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    caller = method.name
-
-                    for _, call in method.filter(javalang.tree.MethodInvocation):
-                        callee = call.member
-
-                        for um in user_methods:
-                            if um.endswith(f".{callee}"):
-                                edges.add((caller, um))
-                                break
-    # -----------------------------------------
-    # Write compact JSON
-    # -----------------------------------------
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, "javalang_callgraph.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(list(edges), f, separators=(",", ":"))
-    print("Minimal user-only callgraph written:", out)
-    print("Edges:", len(edges))
-    return out
-
-
-def build_javalang_callgraph_v1(repo_src, output_dir):
-    edges = set()
-    user_methods = set()
-
-    # -----------------------------------------
-    # PASS 1 — Collect all user-defined methods
-    # -----------------------------------------
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-
-            tree = safe_parse(text, path)
-            if tree is None:
-                continue
-
-            # Class methods
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-                for method in node.methods:
-                    user_methods.add(f"{class_name}.{method.name}")
-
-            # Top-level methods (rare)
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    user_methods.add(method.name)
-
-    # -----------------------------------------
-    # PASS 2 — Collect edges between user methods
-    # -----------------------------------------
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-
-            tree = safe_parse(text, path)
-            if tree is None:
-                continue
-
-            # CLASS METHODS
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-
-                for method in node.methods:
-                    caller = f"{class_name}.{method.name}"
-
-                    # Walk the *entire* AST inside the method
-                    for _, call in method.filter(javalang.tree.MethodInvocation):
-                        callee = call.member
-                        target = None
-
-                        # Skip trivial self-recursion
-                        if callee == method.name:
-                            continue
-
-                        # 1. Same-class call
-                        same_class = f"{class_name}.{callee}"
-                        if same_class in user_methods:
-                            target = same_class
-
-                        # 2. Qualifier-based resolution
-                        elif call.qualifier:
-                            q = call.qualifier
-                            guesses = [
-                                f"{q}.{callee}",
-                                f"{q.capitalize()}.{callee}",
-                            ]
-                            for g in guesses:
-                                if g in user_methods:
-                                    target = g
-                                    break
-
-                        # 3. Fallback: suffix match
-                        if not target:
-                            for um in user_methods:
-                                if um.endswith(f".{callee}"):
-                                    target = um
-                                    break
-
-                        # Add edge if valid
-                        if target and caller != target:
-                            edges.add((caller, target))
-
-            # TOP-LEVEL METHODS
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if len(path2) < 2 or not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    caller = method.name
-
-                    for _, call in method.filter(javalang.tree.MethodInvocation):
-                        callee = call.member
-
-                        for um in user_methods:
-                            if um.endswith(f".{callee}"):
-                                edges.add((caller, um))
-                                break
-
-    # -----------------------------------------
-    # Write compact JSON
-    # -----------------------------------------
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, "javalang_callgraph.json")
-
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(list(edges), f, separators=(",", ":"))
-
-    print("Minimal user-only callgraph written:", out)
-    print("Edges:", len(edges))
-
-    return out
-
-
-
-
-def build_fast_javalang_callgraph_user_only(repo_src, output_dir):
-    edges = []
-    seen = set()
-    user_methods = set()  # All user-defined methods
-    skipped_files = []
-
-    # -------------------------------
-    # Helper: safe parse wrapper
-    # -------------------------------
-    def safe_parse(text, path):
-        try:
-            return javalang.parse.parse(text)
-        except javalang.tokenizer.LexerError as e:
-            print(f"[SKIP] LexerError in {path}: {format_java_parse_error(e, text)}")
-        except javalang.parser.JavaSyntaxError as e:
-            print(f"[SKIP] SyntaxError in {path}: {format_java_parse_error(e, text)}")
-        except Exception as e:
-            print(f"[SKIP] Unknown parse error in {path}: {e}")
-        skipped_files.append(path)
-        return None
-
-    # First pass: collect all user-defined functions
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-            path = os.path.join(root, f)
-            text = open(path, "r", encoding="utf-8", errors="ignore").read()
-            tree = safe_parse(text, path)
-            if tree is None:
-                continue
-            
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-            try:
-                tree = javalang.parse.parse(text)
-            except:
-                continue
-
-            # Class methods
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-                for method in node.methods:
-                    caller = f"{class_name}.{method.name}"
-                    user_methods.add(caller)
-
-            # Top-level functions (no class)
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    user_methods.add(method.name)
-
-    # Second pass: collect edges only between user-defined functions
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-            try:
-                tree = javalang.parse.parse(text)
-            except:
-                continue
-
-            # Class methods
-            for _, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-                for method in node.methods:
-                    caller = f"{class_name}.{method.name}"
-                    for m in method.body or []:
-                        for _, call in m.filter(javalang.tree.MethodInvocation):
-                            callee = call.member
-                            # Prepend class name if callee is also user-defined
-                            possible_callee = f"{class_name}.{callee}"
-                            if possible_callee in user_methods:
-                                edge = (caller, possible_callee)
-                                if edge not in seen:
-                                    edges.append({"caller": caller, "callee": possible_callee})
-                                    seen.add(edge)
-                            elif callee in user_methods:
-                                edge = (caller, callee)
-                                if edge not in seen:
-                                    edges.append({"caller": caller, "callee": callee})
-                                    seen.add(edge)
-
-            # Top-level methods
-            for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-                if not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                    caller = method.name
-                    for m in method.body or []:
-                        for _, call in m.filter(javalang.tree.MethodInvocation):
-                            callee = call.member
-                            if callee in user_methods:
-                                edge = (caller, callee)
-                                if edge not in seen:
-                                    edges.append({"caller": caller, "callee": callee})
-                                    seen.add(edge)
-
-    # Write JSON
-    out = os.path.join(output_dir, "callgraph_user_only.json")
-    os.makedirs(output_dir, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(edges, f, indent=2)
-
-    print("User-only callgraph written:", out)
-    print("Edges:", len(edges))
-
-
-
-
-
-def build_fast_javalang_callgraph(repo_src, output_dir):
-    edges = []
-    seen = set()
-
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-            path = os.path.join(root, f)
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
-
-            try:
-                tree = javalang.parse.parse(text)
-            except:
-                continue
-
-            class_name = None
-            for path, node in tree.filter(javalang.tree.ClassDeclaration):
-                class_name = node.name
-                for method in node.methods:
-                    caller = f"{class_name}.{method.name}"
-                    for m in method.body or []:
-                        for path2, call in m.filter(javalang.tree.MethodInvocation):
-                            callee = call.member
-                            edge = (caller, callee)
-                            if edge not in seen:
-                                edges.append({"caller": caller, "callee": callee})
-                                seen.add(edge)
-
-            # Also capture top-level methods (no class)
-            for path, method in tree.filter(javalang.tree.MethodDeclaration):
-                if not isinstance(path[-2], javalang.tree.ClassDeclaration):
-                    caller = method.name
-                    for m in method.body or []:
-                        for path2, call in m.filter(javalang.tree.MethodInvocation):
-                            callee = call.member
-                            edge = (caller, callee)
-                            if edge not in seen:
-                                edges.append({"caller": caller, "callee": callee})
-                                seen.add(edge)
-
-    out = os.path.join(output_dir, "callgraph_fast.json")
-    os.makedirs(output_dir, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(edges, f, indent=2)
-
-    print("FAST callgraph written:", out)
-    print("Edges:", len(edges))
-
-def build_fast_javalang_callgraph_old(repo_src, output_dir):
-    """
-    Build Java callgraph using javalang parser.
-    Saves callgraph_fast.json with actual caller -> callee edges.
-    """
-
-    edges = []
-    seen = set()
-    method_count = 0
-
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-            path = os.path.join(root, f)
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    src = fh.read()
-                tree = javalang.parse.parse(src)
-            except Exception as e:
-                print("Skipping file (parse error):", path, e)
-                continue
-
-            # Find all methods
-            for path_node, node in tree.filter(javalang.tree.MethodDeclaration):
-                current_method = node.name
-                method_count += 1
-
-                # Find all method calls inside this method
-                for _, call in node.filter(javalang.tree.MethodInvocation):
-                    callee = call.member
-                    edge = (current_method, callee)
-                    if edge not in seen:
-                        edges.append({"caller": current_method, "callee": callee})
-                        seen.add(edge)
-
-    # Save output
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, "callgraph_javalang_fast.json")
-    with open(out, "w", encoding="utf-8", errors="ignore") as f:
-        json.dump(edges, f, indent=2)
-
-    print(f"FAST PARSER methods found: {method_count}")
-    print(f"FAST callgraph written: {out}")
-    print(f"Edges: {len(edges)}")
-
-
-JAVA_METHOD_DEF = re.compile(
-    r'(public|private|protected)?\s+(static\s+)?[\w<>\[\]]+\s+(\w+)\s*\('
-)
-
-JAVA_METHOD_CALL = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(')
-
-
-def build_fast_java_callgraph(repo_src, output_dir):
-
-    print("Running FAST callgraph extraction...")
-
-    edges = []
-    seen = set()
-
-    for root, _, files in os.walk(repo_src):
-
-        for f in files:
-            if not f.endswith(".java"):
-                continue
-
-            path = os.path.join(root, f)
-
-            try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                    lines = fh.readlines()
-            except Exception:
-                continue
-
-            current_method = None
-            brace_depth = 0
-
-            for line in lines:
-
-                # --- detect method definition ---
-                m = JAVA_METHOD_DEF.search(line)
-
-                if m:
-                    current_method = m.group(3)
-                    brace_depth = line.count("{") - line.count("}")
-                    continue
-
-                # --- update brace depth ---
-                brace_depth += line.count("{")
-                brace_depth -= line.count("}")
-
-                # if method closed
-                if brace_depth <= 0:
-                    current_method = None
-
-                # --- detect calls ---
-                for call in JAVA_METHOD_CALL.findall(line):
-
-                    if current_method is None:
-                        continue
-
-                    if call == current_method:
-                        continue
-
-                    edge = (current_method, call)
-
-                    if edge not in seen:
-                        edges.append({
-                            "caller": current_method,
-                            "callee": call
-                        })
-                        seen.add(edge)
-
-    out = os.path.join(output_dir, "callgraph_fast.json")
-
-    with open(out, "w", encoding="utf-8", errors="ignore") as f:
-        json.dump(edges, f, indent=2)
-
-    print("FAST callgraph written:", out)
-    print("Edges:", len(edges))
+# build_javalang_callgraph_wrong / build_javalang_callgraph_v1 /
+# build_fast_javalang_callgraph_user_only / build_fast_javalang_callgraph /
+# build_fast_javalang_callgraph_old / build_fast_java_callgraph removed (2026-09-07):
+# dead code, unreferenced anywhere -- superseded by the actual build_javalang_callgraph
+# (now in parsers/java/javalang_parser.py).
 
 
 
@@ -18385,69 +17631,7 @@ println("Comments written")
 #   PYVIS VISUALIZATIONS
 # ============================================================
 
-def build_pyvis_callgraph_old(callgraph_path, html_output):
-    if not os.path.exists(callgraph_path):
-        logger.warning(f"No callgraph.json at {callgraph_path}")
-        return
-
-    with open(callgraph_path, "r", encoding="utf-8") as f:
-        edges = json.load(f)
-
-    net = Network(
-        height="100%",
-        width="100%",
-        directed=True,
-        bgcolor="#ffffff",
-        font_color="#222222"
-    )
-
-    net.set_options("""
-    {
-      "physics": {
-        "enabled": false
-      },
-      "edges": {
-        "smooth": {
-          "type": "curvedCW",
-          "roundness": 0.2
-        },
-        "color": { "color": "#00aaff" },
-        "width": 2
-      },
-      "nodes": {
-        "shape": "box",
-        "margin": 10,
-        "font": { "size": 18 }
-      }
-    }
-    """)
-
-    FILE_COLOR = "#4a90e2"
-    nodes = set()
-
-    # FIXED: edges is a list of dicts, not tuples
-    for edge in edges:
-        src = edge.get("caller")
-        dst = edge.get("callee")
-        if src:
-            nodes.add(src)
-        if dst:
-            nodes.add(dst)
-
-    # Add nodes
-    for fpath in nodes:
-        label = str(fpath).replace("\\", "/").replace("/", "\n")
-        net.add_node(fpath, label=label, title=str(fpath), color=FILE_COLOR)
-
-    # Add edges
-    for edge in edges:
-        src = edge.get("caller")
-        dst = edge.get("callee")
-        if src and dst:
-            net.add_edge(src, dst)
-
-    net.write_html(html_output)
-    logger.info(f"Callgraph HTML saved to {html_output}")
+# build_pyvis_callgraph_old removed (2026-09-07): dead code, unreferenced anywhere.
 
 
 
@@ -19115,7 +18299,7 @@ def build_generic_cytoscape_graph(nodes, edges, output_repo_dir, graph_name, gra
 
     html = html.replace("__JSON_PATH__", f"{OUTPUT_URL_PREFIX}/{relative_json}")
     html = html.replace("__GRAPH_TITLE__", graph_title)
-    html = html.replace("__GRAPH_DATA__", json.dumps(graph_data, separators=(",", ":")))
+    html = html.replace("__GRAPH_DATA__", json_for_inline_script(graph_data))
 
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -28244,7 +27428,7 @@ def build_cytoscape_html(json_path, html_out_path):
     # Inject correct URL and embedded fallback data
     html = html.replace("__JSON_PATH__", f"{OUTPUT_URL_PREFIX}/{relative_to_output}")
     html = html.replace("__GRAPH_TITLE__", str(graph_data.get("title") or "Graph") if isinstance(graph_data, dict) else "Graph")
-    html = html.replace("__GRAPH_DATA__", json.dumps(graph_data, separators=(",", ":")))
+    html = html.replace("__GRAPH_DATA__", json_for_inline_script(graph_data))
 
     # Write final HTML
     with open(html_out_path, "w") as f:
@@ -28268,1150 +27452,21 @@ def build_cytoscape_html(json_path, html_out_path):
 
 
 
-def build_javalang_callgraph(repo_src, output_dir, progress_callback=None):
-    import os, json
-    import javalang
+# build_javalang_callgraph now lives in parsers/java/javalang_parser.py (imported near
+# the top of this file).
 
-    INCLUDE_ISOLATED_FUNCTIONS_LIMIT = 150
-    edges = set()
-    user_methods = set()
-    parse_errors = []
-    parse_error_keys = set()
-    java_files = []
-    for root, _, files in os.walk(repo_src):
-        for f in files:
-            if f.endswith(".java"):
-                java_files.append(os.path.join(root, f))
-    java_files.sort()
-    total_files = len(java_files)
 
-    def progress(message, current_file=None):
-        if progress_callback:
-            try:
-                progress_callback(message, current_file=current_file)
-            except TypeError:
-                progress_callback(message)
+# _node_text / _node_name / _node_start_line / _first_descendant / _java_package_name /
+# _java_type_name / _tree_sitter_java_language / build_tree_sitter_java_callgraph /
+# _tree_sitter_java_worker / run_tree_sitter_java_callgraph_isolated now live in
+# parsers/java/tree_sitter_parser.py (imported near the top of this file).
 
-    def append_parse_errors(items):
-        for item in items:
-            key = (
-                item.get("file"),
-                item.get("error_type"),
-                item.get("line"),
-                item.get("column"),
-                item.get("message"),
-            )
-            if key in parse_error_keys:
-                continue
-            parse_error_keys.add(key)
-            parse_errors.append(item)
 
-    def parse_java_file(text, path):
-        errors = []
-        tree = safe_parse(text, path, repo_src=repo_src, parse_errors=errors)
-        append_parse_errors(errors)
-        return tree
-
-    # Local-variable type tracking (scoped, not full type inference): the
-    # qualifier-based resolution below can only match `Foo.bar()` when `Foo`
-    # is literally a known class name — it has no idea `foo.bar()` means the
-    # same thing when `foo` was declared as `Foo foo = new Foo();` earlier in
-    # the SAME method. That's the single most common shape real code (and
-    # nearly all test code: "construct an instance, call a method on it")
-    # takes, so before resolving calls in a method/constructor body, build a
-    # local `variable name -> declared type` map from that body's own
-    # LocalVariableDeclaration nodes and consult it first. Deliberately does
-    # NOT track fields, method/constructor parameters, interface-to-impl
-    # resolution, generics, or anything crossing more than one local
-    # declaration — this is a bounded, low-risk approximation, not real type
-    # inference.
-    def local_variable_types(body_node):
-        local_types = {}
-        for _, decl in body_node.filter(javalang.tree.LocalVariableDeclaration):
-            type_name = getattr(decl.type, "name", None)
-            if not type_name:
-                continue
-            for declarator in decl.declarators:
-                if declarator.name:
-                    local_types[declarator.name] = type_name
-        return local_types
-
-    progress(f"Collecting Java methods from {total_files} files...")
-    # -----------------------------------------
-    # PASS 1 — Collect all user-defined methods
-    # -----------------------------------------
-    for index, path in enumerate(java_files, start=1):
-        rel_path = os.path.relpath(path, repo_src)
-        progress(f"Collecting Java methods from file {index}/{total_files}.", current_file=rel_path)
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            text = fh.read()
-
-        tree = parse_java_file(text, path)
-        if tree is None:
-            continue
-
-        def class_prefix(path_nodes, class_name):
-            names = [
-                p.name for p in path_nodes
-                if isinstance(p, javalang.tree.ClassDeclaration)
-            ]
-            names.append(class_name)
-            return ".".join(names)
-
-        # Class methods
-        for _, node in tree.filter(javalang.tree.ClassDeclaration):
-            class_name = class_prefix(_, node.name)
-            for method in node.methods:
-                if method.name:  # only add valid names
-                    user_methods.add(f"{class_name}.{method.name}")
-            for constructor in node.constructors:
-                user_methods.add(f"{class_name}.<init>")
-
-        # Top-level methods (rare)
-        for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-            if not isinstance(path2[-2], javalang.tree.ClassDeclaration) and method.name:
-                user_methods.add(method.name)
-
-    # Maps a class's simple (unqualified) name to every known class prefix
-    # ending in that name — lets a local variable's declared type (always
-    # just the simple name as written, e.g. "Foo" in "Foo foo = ...", never
-    # the nested-class-qualified "Outer.Foo") resolve to the right user_methods
-    # key even for a nested class. Ambiguous when 2+ classes share a simple
-    # name (e.g. two different "Builder" inner classes) — resolved only when
-    # exactly one candidate exists, same "don't guess" discipline as the
-    # qualifier heuristic this is layered on top of.
-    simple_class_index = {}
-    for full_method in user_methods:
-        class_part = full_method.rsplit(".", 1)[0]
-        simple_class_index.setdefault(class_part.rsplit(".", 1)[-1], set()).add(class_part)
-
-    def resolve_local_var_call(class_name, callee, local_types, qualifier):
-        declared_type = local_types.get(qualifier)
-        if not declared_type:
-            return None
-        candidates = simple_class_index.get(declared_type)
-        if not candidates:
-            return None
-        owner = declared_type if declared_type in candidates else (next(iter(candidates)) if len(candidates) == 1 else None)
-        if not owner:
-            return None
-        candidate = f"{owner}.{callee}"
-        return candidate if candidate in user_methods else None
-
-    progress(f"Resolving Java call relationships across {len(user_methods)} methods...")
-    # -----------------------------------------
-    # PASS 2 — Collect edges between user methods
-    # -----------------------------------------
-    for index, path in enumerate(java_files, start=1):
-        rel_path = os.path.relpath(path, repo_src)
-        progress(f"Resolving Java calls from file {index}/{total_files}.", current_file=rel_path)
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            text = fh.read()
-
-        tree = parse_java_file(text, path)
-        if tree is None:
-            continue
-
-        # CLASS METHODS
-        for _, node in tree.filter(javalang.tree.ClassDeclaration):
-            class_name = ".".join(
-                [
-                    p.name for p in _
-                    if isinstance(p, javalang.tree.ClassDeclaration)
-                ] + [node.name]
-            )
-
-            for constructor in node.constructors:
-                caller = f"{class_name}.<init>"
-                constructor_local_types = local_variable_types(constructor)
-                for _, call in constructor.filter(javalang.tree.MethodInvocation):
-                    callee = call.member
-                    if not callee:
-                        continue
-                    target = None
-                    same_class = f"{class_name}.{callee}"
-                    if same_class in user_methods:
-                        target = same_class
-                    elif call.qualifier:
-                        target = resolve_local_var_call(class_name, callee, constructor_local_types, call.qualifier)
-                    if target and caller != target:
-                        edges.add((caller, target))
-
-            for method in node.methods:
-                if not method.name:
-                    continue
-                caller = f"{class_name}.{method.name}"
-                method_local_types = local_variable_types(method)
-
-                # Walk the AST inside the method
-                for _, call in method.filter(javalang.tree.MethodInvocation):
-                    callee = call.member
-                    if not callee:
-                        continue
-                    target = None
-
-                    # Skip trivial self-recursion
-                    if callee == method.name:
-                        continue
-
-                    # 1. Same-class call
-                    same_class = f"{class_name}.{callee}"
-                    if same_class in user_methods:
-                        target = same_class
-
-                    # 2. Qualifier-based resolution.
-                    elif call.qualifier:
-                        q = call.qualifier
-
-                        # 2a. Local variable declared earlier in this SAME
-                        # method (e.g. `Foo foo = new Foo(); foo.bar();`) —
-                        # the dominant shape of real test code. Approximate
-                        # by design (single-method scope only), see
-                        # local_variable_types's docstring above.
-                        target = resolve_local_var_call(class_name, callee, method_local_types, q)
-
-                        # 2b. Fall back to the original heuristic: only
-                        # resolve when the qualifier IS a known class/type
-                        # name outright. Do not guess from a repo-wide
-                        # simple method name.
-                        if not target:
-                            guesses = [
-                                f"{q}.{callee}",
-                                f"{class_name.rsplit('.', 1)[0]}.{q}.{callee}" if "." in class_name else "",
-                            ]
-                            for g in guesses:
-                                if g in user_methods:
-                                    target = g
-                                    break
-
-                    # Add edge if valid
-                    if target and caller != target:
-                        edges.add((caller, target))
-
-        # TOP-LEVEL METHODS
-        for path2, method in tree.filter(javalang.tree.MethodDeclaration):
-            if len(path2) < 2 or not isinstance(path2[-2], javalang.tree.ClassDeclaration):
-                if not method.name:
-                    continue
-                caller = method.name
-
-                for _, call in method.filter(javalang.tree.MethodInvocation):
-                    callee = call.member
-                    if not callee:
-                        continue
-
-                    same_scope = f"{caller.rsplit('.', 1)[0]}.{callee}" if "." in caller else callee
-                    if same_scope in user_methods and same_scope != caller:
-                        edges.add((caller, same_scope))
-
-    # -----------------------------------------
-    # Write compact JSON
-    # -----------------------------------------
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, "javalang_callgraph.json")
-
-    # Convert to list of lists of strings, skip None
-    clean_edges = [[str(s), str(t)] for s, t in edges if s and t]
-    connected_nodes = {node for edge in clean_edges for node in edge[:2]}
-    include_isolated = len(user_methods) <= INCLUDE_ISOLATED_FUNCTIONS_LIMIT
-    graph = {
-        "mode": "all_user_functions" if include_isolated else "connected_user_functions",
-        "node_count_total": len(user_methods),
-        "node_limit_for_isolated": INCLUDE_ISOLATED_FUNCTIONS_LIMIT,
-        "nodes": sorted(user_methods if include_isolated else connected_nodes),
-        "edges": clean_edges,
-        "parse_errors": parse_errors[:50],
-        "parse_error_count": len(parse_errors),
-    }
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(graph, f, separators=(",", ":"))
-
-    ordered_out = os.path.join(output_dir, "javalang_ordered_call_sequence.json")
-    write_ordered_sequence_from_edges(
-        edges,
-        ordered_out,
-        parser="javalang",
-        source_callgraph=os.path.basename(out),
-    )
-
-    logger.info(
-        "Minimal user-only callgraph written: %s methods=%s edges=%s mode=%s parse_errors=%s",
-        out,
-        len(user_methods),
-        len(clean_edges),
-        graph["mode"],
-        len(parse_errors),
-    )
-
-    return out
-
-
-def _node_text(source_bytes, node):
-    if not node:
-        return ""
-    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
-
-
-def _node_name(source_bytes, node):
-    if not node:
-        return ""
-    name_node = node.child_by_field_name("name")
-    if name_node:
-        return _node_text(source_bytes, name_node)
-    for child in node.children:
-        if child.type in {"identifier", "type_identifier"}:
-            return _node_text(source_bytes, child)
-    return ""
-
-
-def _node_start_line(node):
-    point = node.start_point
-    row = getattr(point, "row", None)
-    if row is None:
-        row = point[0]
-    return row + 1
-
-
-def _first_descendant(node, node_types):
-    stack = list(node.children)
-    while stack:
-        current = stack.pop()
-        if current.type in node_types:
-            return current
-        stack.extend(reversed(current.children))
-    return None
-
-
-def _java_package_name(source_bytes, root):
-    package_node = _first_descendant(root, {"package_declaration"})
-    if not package_node:
-        return ""
-    scoped = _first_descendant(package_node, {"scoped_identifier", "identifier"})
-    return _node_text(source_bytes, scoped)
-
-
-def _java_type_name(source_bytes, node):
-    type_node = node.child_by_field_name("type")
-    if type_node:
-        scoped = _first_descendant(type_node, {"scoped_type_identifier", "type_identifier", "identifier"})
-        return _node_text(source_bytes, scoped or type_node).split("<", 1)[0].strip()
-    return ""
-
-
-def _tree_sitter_java_language():
-    from tree_sitter import Language, Parser
-    import tree_sitter_java
-
-    language_fn = getattr(tree_sitter_java, "language", None)
-    if not language_fn:
-        raise RuntimeError("tree_sitter_java.language() is unavailable")
-
-    language = Language(language_fn())
-    parser = Parser()
-    if hasattr(parser, "set_language"):
-        parser.set_language(language)
-    else:
-        parser.language = language
-    return parser
-
-
-def build_tree_sitter_java_callgraph(repo_src, output_dir):
-    parser = _tree_sitter_java_language()
-    class_types = {
-        "class_declaration",
-        "interface_declaration",
-        "enum_declaration",
-        "record_declaration",
-        "annotation_type_declaration",
-    }
-    method_types = {"method_declaration", "constructor_declaration"}
-    call_types = {
-        "method_invocation",
-        "object_creation_expression",
-        "explicit_constructor_invocation",
-    }
-    include_isolated_limit = 150
-    user_methods = set()
-    method_files = {}
-    raw_calls = []
-    parse_error_count = 0
-    parse_errors = []
-    recovered_error_samples = []
-    files_seen = 0
-
-    def class_full_name(package_name, class_stack):
-        pieces = ([package_name] if package_name else []) + class_stack
-        return ".".join(part for part in pieces if part)
-
-    def resolve_call_name(source_bytes, call_node):
-        if call_node.type == "method_invocation":
-            name = _node_name(source_bytes, call_node)
-            qualifier_node = (
-                call_node.child_by_field_name("object")
-                or call_node.child_by_field_name("type")
-                or call_node.child_by_field_name("qualifier")
-            )
-            qualifier = _node_text(source_bytes, qualifier_node).strip() if qualifier_node else ""
-            return f"{qualifier}.{name}" if qualifier and name else name
-        if call_node.type == "object_creation_expression":
-            type_name = _java_type_name(source_bytes, call_node)
-            return f"{type_name}.<init>" if type_name else ""
-        if call_node.type == "explicit_constructor_invocation":
-            return "<init>"
-        return ""
-
-    # Same scoped, non-full-type-inference approximation as
-    # local_variable_types() in build_javalang_callgraph above: a call like
-    # `foo.bar()` can only be resolved later if `foo`'s declared type is
-    # known. Reads a "local_variable_declaration" node's own type + declarator
-    # fields directly (see field shapes confirmed against tree-sitter-java
-    # 0.25's actual parse tree) and records name -> simple declared type name
-    # into the CURRENT method's local_types dict (reset fresh whenever `walk`
-    # enters a new method_types node below, so scope never leaks across
-    # methods). Non-reference types (e.g. `int a = 1;`) get recorded too but
-    # harmlessly no-op later, since a primitive type name never matches a
-    # real class in simple_class_index.
-    def record_local_var_types(source_bytes, node, local_types):
-        if node.type != "local_variable_declaration" or local_types is None:
-            return
-        type_node = node.child_by_field_name("type")
-        if not type_node:
-            return
-        type_name = _node_text(source_bytes, type_node).split("<", 1)[0].strip()
-        if not type_name:
-            return
-        for declarator in node.children_by_field_name("declarator"):
-            name_node = declarator.child_by_field_name("name")
-            if name_node:
-                local_types[_node_text(source_bytes, name_node)] = type_name
-
-    def walk(source_bytes, node, package_name, class_stack, rel_path, current_method=None, local_types=None):
-        next_class_stack = class_stack
-        next_method = current_method
-        next_local_types = local_types
-
-        if node.type in class_types:
-            name = _node_name(source_bytes, node)
-            if name:
-                next_class_stack = class_stack + [name]
-
-        if node.type in method_types:
-            method_name = _node_name(source_bytes, node)
-            if node.type == "constructor_declaration":
-                method_name = "<init>"
-            owner = class_full_name(package_name, next_class_stack)
-            full_name = f"{owner}.{method_name}" if owner else method_name
-            if method_name:
-                user_methods.add(full_name)
-                method_files[full_name] = rel_path
-                next_method = {
-                    "full_name": full_name,
-                    "method_name": method_name,
-                    "class_name": owner,
-                    "file": rel_path,
-                }
-                next_local_types = {}
-
-        record_local_var_types(source_bytes, node, next_local_types)
-
-        if current_method and node.type in call_types:
-            callee = resolve_call_name(source_bytes, node)
-            if callee:
-                qualifier_node = (
-                    node.child_by_field_name("object")
-                    or node.child_by_field_name("type")
-                    or node.child_by_field_name("qualifier")
-                ) if node.type == "method_invocation" else None
-                qualifier_text = _node_text(source_bytes, qualifier_node).strip() if qualifier_node else ""
-                local_var_type = (next_local_types or {}).get(qualifier_text) if qualifier_text else None
-                raw_calls.append({
-                    "caller": current_method["full_name"],
-                    "caller_method": current_method["method_name"],
-                    "caller_class": current_method["class_name"],
-                    "caller_file": current_method["file"],
-                    "callee": callee,
-                    "local_var_type": local_var_type,
-                    "line": _node_start_line(node),
-                    "column": getattr(node, "start_point", [None, None])[1] if getattr(node, "start_point", None) else None,
-                    "call_text": _node_text(source_bytes, node)[:300],
-                })
-
-        for child in node.children:
-            walk(source_bytes, child, package_name, next_class_stack, rel_path, next_method, next_local_types)
-
-    for path in iter_supported_repo_files(repo_src, {".java"}):
-            files_seen += 1
-            with open(path, "rb") as fh:
-                source_bytes = fh.read()
-            rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
-            tree = parser.parse(source_bytes)
-            if tree.root_node.has_error:
-                parse_error_count += 1
-                if len(parse_errors) < 50:
-                    parse_errors.append({
-                        "file": rel_path,
-                        "error_type": "syntax_error",
-                        "language": "java",
-                        "parser": "tree-sitter-java",
-                        "line": None,
-                        "column": None,
-                        "message": "tree-sitter recovered syntax error while parsing file",
-                    })
-                if len(recovered_error_samples) < 5:
-                    recovered_error_samples.append(rel_path)
-            package_name = _java_package_name(source_bytes, tree.root_node)
-            walk(source_bytes, tree.root_node, package_name, [], rel_path)
-
-    edges = set()
-    ordered_calls = []
-    class_method_index = defaultdict(set)
-    simple_class_index = defaultdict(set)
-    for method in user_methods:
-        owner, _, method_name = method.rpartition(".")
-        if owner:
-            class_method_index[(owner, method_name)].add(method)
-            simple_class_index[owner.rsplit(".", 1)[-1]].add(owner)
-
-    def unique_match(matches):
-        return next(iter(matches)) if len(matches) == 1 else None
-
-    for call in raw_calls:
-        callee = call["callee"]
-        if callee == call["caller_method"]:
-            continue
-
-        target = None
-        if callee == "<init>":
-            same_class_init = f"{call['caller_class']}.<init>"
-            if same_class_init in user_methods:
-                target = same_class_init
-        elif callee.endswith(".<init>"):
-            type_name = callee.rsplit(".", 1)[0]
-            owner = unique_match(simple_class_index.get(type_name, set())) or type_name
-            target = unique_match(class_method_index.get((owner, "<init>"), set()))
-        else:
-            qualifier = ""
-            method_name = callee
-            if "." in callee:
-                qualifier, method_name = callee.rsplit(".", 1)
-            same_class = f"{call['caller_class']}.{method_name}"
-            if same_class in user_methods:
-                target = same_class
-            elif call.get("local_var_type"):
-                # `foo.bar()` where `foo` was declared earlier in this same
-                # method as `Foo foo = ...` — resolve via the tracked
-                # declared type instead of requiring the qualifier text
-                # itself to look like a class name.
-                owner = unique_match(simple_class_index.get(call["local_var_type"], set())) or call["local_var_type"]
-                target = unique_match(class_method_index.get((owner, method_name), set()))
-            if not target and qualifier and qualifier[:1].isupper():
-                owner = unique_match(simple_class_index.get(qualifier, set())) or qualifier
-                target = unique_match(class_method_index.get((owner, method_name), set()))
-
-        if target and target != call["caller"]:
-            edges.add((call["caller"], target))
-            ordered_calls.append({
-                "caller": call["caller"],
-                "callee": target,
-                "file": call.get("caller_file", ""),
-                "line": call.get("line"),
-                "column": call.get("column"),
-                "order": len(ordered_calls) + 1,
-                "call_text": call.get("call_text", ""),
-            })
-
-    clean_edges = [[str(src), str(dst)] for src, dst in sorted(edges)]
-    connected_nodes = {node for edge in clean_edges for node in edge[:2]}
-    include_isolated = len(user_methods) <= include_isolated_limit
-    graph = {
-        "mode": "tree_sitter_all_user_functions" if include_isolated else "tree_sitter_connected_user_functions",
-        "parser": "tree-sitter-java",
-        "files_seen": files_seen,
-        "parse_error_count": parse_error_count,
-        "parse_errors": parse_errors,
-        "node_count_total": len(user_methods),
-        "node_limit_for_isolated": include_isolated_limit,
-        "function_files": method_files,
-        "nodes": sorted(user_methods if include_isolated else connected_nodes),
-        "edges": clean_edges,
-    }
-
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, "tree_sitter_java_callgraph.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(graph, f, separators=(",", ":"))
-
-    ordered_out = os.path.join(output_dir, "tree_sitter_java_ordered_call_sequence.json")
-    write_ordered_call_sequence(
-        ordered_calls,
-        ordered_out,
-        parser="tree-sitter-java",
-        source_callgraph=os.path.basename(out),
-    )
-
-    logger.info(
-        "Tree-sitter Java graph written: %s files=%s methods=%s edges=%s recovered_errors=%s",
-        out,
-        files_seen,
-        len(user_methods),
-        len(clean_edges),
-        parse_error_count,
-    )
-    if parse_error_count:
-        logger.info(
-            "Tree-sitter Java recovered syntax errors in %s/%s files; graph generation continued. Sample files: %s",
-            parse_error_count,
-            files_seen,
-            ", ".join(recovered_error_samples),
-        )
-    return out
-
-
-TREE_SITTER_JAVA_TIMEOUT_SECONDS = int(os.getenv("CODEVAL_TREE_SITTER_JAVA_TIMEOUT_SECONDS", "90") or 90)
-
-
-def _tree_sitter_java_worker(repo_src, output_dir, result_queue):
-    try:
-        graph_path = build_tree_sitter_java_callgraph(repo_src, output_dir)
-        ordered_path = os.path.join(output_dir, "tree_sitter_java_ordered_call_sequence.json")
-        result_queue.put({
-            "ok": True,
-            "graph_path": graph_path,
-            "ordered_path": ordered_path if os.path.exists(ordered_path) else "",
-        })
-    except BaseException as exc:
-        result_queue.put({
-            "ok": False,
-            "error": f"{type(exc).__name__}: {exc}",
-        })
-
-
-def run_tree_sitter_java_callgraph_isolated(repo_src, output_dir, timeout_seconds=None):
-    timeout_seconds = timeout_seconds or TREE_SITTER_JAVA_TIMEOUT_SECONDS
-    result_queue = multiprocessing.Queue(maxsize=1)
-    process = multiprocessing.Process(
-        target=_tree_sitter_java_worker,
-        args=(repo_src, output_dir, result_queue),
-        name="codeval-tree-sitter-java",
-    )
-    process.start()
-    process.join(timeout_seconds)
-
-    if process.is_alive():
-        process.terminate()
-        process.join(5)
-        if process.is_alive():
-            process.kill()
-            process.join(5)
-        result_queue.close()
-        result_queue.join_thread()
-        raise TimeoutError(f"tree-sitter Java analysis timed out after {timeout_seconds}s")
-
-    try:
-        result = result_queue.get(timeout=2)
-    except queue.Empty:
-        exit_code = process.exitcode
-        raise RuntimeError(f"tree-sitter Java analysis worker exited without a result (exit code {exit_code})")
-    finally:
-        result_queue.close()
-        result_queue.join_thread()
-
-    if process.exitcode not in (0, None):
-        raise RuntimeError(f"tree-sitter Java analysis worker exited with code {process.exitcode}")
-    if not result.get("ok"):
-        raise RuntimeError(result.get("error") or "tree-sitter Java analysis failed")
-    return result
-
-
-def _generic_tree_sitter_language(pip_module_name):
-    """Same load pattern as _tree_sitter_java_language, parameterized by
-    which grammar package to import — tree-sitter-go/-rust/-kotlin all
-    expose the identical `language()` factory function convention."""
-    from tree_sitter import Language, Parser
-    import importlib
-
-    mod = importlib.import_module(pip_module_name)
-    language_fn = getattr(mod, "language", None)
-    if not language_fn:
-        raise RuntimeError(f"{pip_module_name}.language() is unavailable")
-    language = Language(language_fn())
-    parser = Parser()
-    if hasattr(parser, "set_language"):
-        parser.set_language(language)
-    else:
-        parser.language = language
-    return parser
-
-
-def _generic_callee_tail_name(callee):
-    """The bare function/method name off the end of a callee string,
-    whichever separator produced it. Rust mixes separators even within one
-    file (`self.init()` via field access -> '.', `Type::new()` via path ->
-    '::'), unlike Go/Kotlin's single '.' convention throughout, so this
-    always splits on the last occurrence of either rather than assuming one
-    fixed separator per language."""
-    parts = re.split(r"::|\.", callee)
-    return parts[-1]
-
-
-def _resolve_generic_language_calls(raw_calls, user_funcs, sep):
-    """Shared call-resolution pass for the Go/Rust/Kotlin tree-sitter
-    builders below — verified against real sample source for all three
-    before being wired in here. Mirrors build_tree_sitter_java_callgraph's
-    own strategy (same-owner match first, then a global unique-name match,
-    dropping anything ambiguous or unresolved) rather than trusting raw
-    callee text directly, which would otherwise include stdlib/third-party
-    calls with no corresponding user-defined function. `raw_calls` entries
-    are {caller, callee, file, line, call_text}; `user_funcs` is the set of
-    known full names, each shaped like 'owner<sep>name'.
-    """
-    name_index = defaultdict(set)
-    owner_of = {}
-    for full in user_funcs:
-        if sep in full:
-            owner, _, name = full.rpartition(sep)
-        else:
-            owner, name = "", full
-        name_index[name].add(full)
-        owner_of[full] = owner
-
-    def unique_match(matches):
-        return next(iter(matches)) if len(matches) == 1 else None
-
-    edges = set()
-    ordered_calls = []
-    for call in raw_calls:
-        callee = call["callee"]
-        caller = call["caller"]
-        caller_owner = owner_of.get(caller, "")
-        name = _generic_callee_tail_name(callee)
-        target = None
-        # 1) exact same-owner call (self.x() / bare x() inside the same type)
-        same_owner_candidate = f"{caller_owner}{sep}{name}" if caller_owner else name
-        if same_owner_candidate in user_funcs:
-            target = same_owner_candidate
-        # 2) the raw callee string already IS a full, known name verbatim
-        elif callee in user_funcs:
-            target = callee
-        # 3) unique global match by bare method/function name
-        else:
-            target = unique_match(name_index.get(name, set()))
-        if target and target != caller:
-            edge = (caller, target)
-            if edge not in edges:
-                edges.add(edge)
-                ordered_calls.append({
-                    "caller": caller,
-                    "callee": target,
-                    "file": call.get("file", ""),
-                    "line": call.get("line"),
-                    "order": len(ordered_calls) + 1,
-                    "call_text": call.get("call_text", ""),
-                })
-    return edges, ordered_calls
-
-
-def _write_generic_tree_sitter_graph(output_dir, filename_stem, parser_label, files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls, include_isolated_limit=150):
-    """Shared final-output step for the Go/Rust/Kotlin builders — same
-    shape/fields as build_tree_sitter_java_callgraph's own graph dict and
-    write_ordered_call_sequence call, just parameterized by filename stem
-    and parser label instead of hardcoding "java" throughout."""
-    clean_edges = [[str(src), str(dst)] for src, dst in sorted(edges)]
-    connected_nodes = {node for edge in clean_edges for node in edge[:2]}
-    include_isolated = len(user_funcs) <= include_isolated_limit
-    graph = {
-        "mode": "tree_sitter_all_user_functions" if include_isolated else "tree_sitter_connected_user_functions",
-        "parser": parser_label,
-        "files_seen": files_seen,
-        "parse_error_count": parse_error_count,
-        "node_count_total": len(user_funcs),
-        "node_limit_for_isolated": include_isolated_limit,
-        "function_files": func_files,
-        "nodes": sorted(user_funcs if include_isolated else connected_nodes),
-        "edges": clean_edges,
-    }
-    os.makedirs(output_dir, exist_ok=True)
-    out = os.path.join(output_dir, f"{filename_stem}_callgraph.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(graph, f, separators=(",", ":"))
-    ordered_out = os.path.join(output_dir, f"{filename_stem}_ordered_call_sequence.json")
-    write_ordered_call_sequence(ordered_calls, ordered_out, parser=parser_label, source_callgraph=os.path.basename(out))
-    logger.info(
-        "Tree-sitter %s graph written: %s files=%s functions=%s edges=%s",
-        parser_label, out, files_seen, len(user_funcs), len(clean_edges),
-    )
-    return out
-
-
-def build_tree_sitter_go_callgraph(repo_src, output_dir):
-    """Go's tree-sitter callgraph builder — same shape as
-    build_tree_sitter_java_callgraph, adapted for Go's grammar (verified
-    against tree-sitter-go 0.25.0 directly: method_declaration's receiver
-    type is read via its `receiver` field -> parameter_declaration's `type`
-    field -> either a bare type_identifier or a pointer_type wrapping one;
-    call_expression's `function` field is either a bare identifier for a
-    same-package free-function call, or a selector_expression whose
-    `operand`/`field` fields give "x.y" for both real method calls and
-    package-qualified calls like fmt.Println, which the resolution pass
-    below naturally drops since "fmt" is never a user-defined owner)."""
-    parser = _generic_tree_sitter_language("tree_sitter_go")
-    user_funcs = set()
-    func_files = {}
-    raw_calls = []
-    files_seen = 0
-    parse_error_count = 0
-
-    def package_name_of(source_bytes, root):
-        for c in root.children:
-            if c.type == "package_clause":
-                for gc in c.children:
-                    if gc.type == "package_identifier":
-                        return source_bytes[gc.start_byte:gc.end_byte].decode("utf-8", "ignore")
-        return ""
-
-    def receiver_type_of(source_bytes, method_decl_node):
-        recv = method_decl_node.child_by_field_name("receiver")
-        if recv is None:
-            return ""
-        for pd in recv.children:
-            if pd.type != "parameter_declaration":
-                continue
-            type_node = pd.child_by_field_name("type")
-            if type_node is None:
-                continue
-            if type_node.type == "pointer_type":
-                inner = next((c for c in type_node.children if c.type == "type_identifier"), None)
-                if inner is not None:
-                    return source_bytes[inner.start_byte:inner.end_byte].decode("utf-8", "ignore")
-            elif type_node.type == "type_identifier":
-                return source_bytes[type_node.start_byte:type_node.end_byte].decode("utf-8", "ignore")
-        return ""
-
-    def resolve_call_name(source_bytes, call_node):
-        fn = call_node.child_by_field_name("function")
-        if fn is None:
-            return ""
-        if fn.type == "selector_expression":
-            operand = fn.child_by_field_name("operand")
-            field = fn.child_by_field_name("field")
-            operand_text = source_bytes[operand.start_byte:operand.end_byte].decode("utf-8", "ignore") if operand else ""
-            field_text = source_bytes[field.start_byte:field.end_byte].decode("utf-8", "ignore") if field else ""
-            return f"{operand_text}.{field_text}" if operand_text and field_text else field_text
-        return source_bytes[fn.start_byte:fn.end_byte].decode("utf-8", "ignore")
-
-    def walk(source_bytes, node, package_name, rel_path, current_func):
-        next_func = current_func
-        if node.type in ("function_declaration", "method_declaration"):
-            receiver_type = receiver_type_of(source_bytes, node) if node.type == "method_declaration" else ""
-            name_node = node.child_by_field_name("name")
-            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
-            owner = f"{package_name}.{receiver_type}" if receiver_type else package_name
-            full_name = f"{owner}.{func_name}" if owner else func_name
-            if func_name:
-                user_funcs.add(full_name)
-                func_files[full_name] = rel_path
-                next_func = {"full_name": full_name}
-        if current_func and node.type == "call_expression":
-            callee = resolve_call_name(source_bytes, node)
-            if callee:
-                raw_calls.append({
-                    "caller": current_func["full_name"],
-                    "callee": callee,
-                    "file": rel_path,
-                    "line": node.start_point[0] + 1,
-                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
-                })
-        for child in node.children:
-            walk(source_bytes, child, package_name, rel_path, next_func)
-
-    for path in iter_supported_repo_files(repo_src, {".go"}):
-        files_seen += 1
-        with open(path, "rb") as fh:
-            source_bytes = fh.read()
-        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
-        tree = parser.parse(source_bytes)
-        if tree.root_node.has_error:
-            parse_error_count += 1
-        package_name = package_name_of(source_bytes, tree.root_node)
-        walk(source_bytes, tree.root_node, package_name, rel_path, None)
-
-    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, ".")
-    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_go", "tree-sitter-go", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
-
-
-def build_tree_sitter_rust_callgraph(repo_src, output_dir):
-    """Rust's tree-sitter callgraph builder — verified against
-    tree-sitter-rust 0.24.2 directly: function_item's `name` field gives the
-    function name regardless of whether it's free or inside an impl_item
-    (Rust has no separate "method" node type the way Go does); impl_item's
-    `type` field gives the struct/enum name for owner-tracking, mod_item's
-    `name` field nests module paths the same way. call_expression's
-    `function` field is one of: scoped_identifier ("Type::method" —
-    resolves its own `path`/`name` fields), field_expression ("value.field"
-    — e.g. self.init(), resolves its own `value`/`field` fields), or a bare
-    identifier for a same-scope free-function call. Unlike Go/Kotlin, Rust
-    genuinely mixes '.' and '::' separators in callee text even within one
-    file, which is why the resolution pass below always splits on whichever
-    separator actually produced the callee string (_generic_callee_tail_name)
-    rather than assuming one fixed separator per language."""
-    parser = _generic_tree_sitter_language("tree_sitter_rust")
-    user_funcs = set()
-    func_files = {}
-    raw_calls = []
-    files_seen = 0
-    parse_error_count = 0
-
-    def resolve_call_name(source_bytes, call_node):
-        fn = call_node.child_by_field_name("function")
-        if fn is None:
-            return ""
-        if fn.type == "scoped_identifier":
-            path = fn.child_by_field_name("path")
-            name = fn.child_by_field_name("name")
-            path_text = source_bytes[path.start_byte:path.end_byte].decode("utf-8", "ignore") if path else ""
-            name_text = source_bytes[name.start_byte:name.end_byte].decode("utf-8", "ignore") if name else ""
-            return f"{path_text}::{name_text}" if path_text and name_text else name_text
-        if fn.type == "field_expression":
-            value = fn.child_by_field_name("value")
-            field = fn.child_by_field_name("field")
-            value_text = source_bytes[value.start_byte:value.end_byte].decode("utf-8", "ignore") if value else ""
-            field_text = source_bytes[field.start_byte:field.end_byte].decode("utf-8", "ignore") if field else ""
-            return f"{value_text}.{field_text}" if value_text and field_text else field_text
-        return source_bytes[fn.start_byte:fn.end_byte].decode("utf-8", "ignore")
-
-    def walk(source_bytes, node, mod_stack, rel_path, current_func):
-        next_mod_stack = mod_stack
-        next_func = current_func
-        if node.type == "mod_item":
-            name_node = node.child_by_field_name("name")
-            if name_node is not None:
-                next_mod_stack = mod_stack + [source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore")]
-        if node.type == "impl_item":
-            type_node = node.child_by_field_name("type")
-            if type_node is not None:
-                next_mod_stack = mod_stack + [source_bytes[type_node.start_byte:type_node.end_byte].decode("utf-8", "ignore")]
-        if node.type == "function_item":
-            name_node = node.child_by_field_name("name")
-            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
-            owner = "::".join(mod_stack)
-            full_name = f"{owner}::{func_name}" if owner else func_name
-            if func_name:
-                user_funcs.add(full_name)
-                func_files[full_name] = rel_path
-                next_func = {"full_name": full_name}
-        if current_func and node.type == "call_expression":
-            callee = resolve_call_name(source_bytes, node)
-            if callee:
-                raw_calls.append({
-                    "caller": current_func["full_name"],
-                    "callee": callee,
-                    "file": rel_path,
-                    "line": node.start_point[0] + 1,
-                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
-                })
-        for child in node.children:
-            walk(source_bytes, child, next_mod_stack, rel_path, next_func)
-
-    for path in iter_supported_repo_files(repo_src, {".rs"}):
-        files_seen += 1
-        with open(path, "rb") as fh:
-            source_bytes = fh.read()
-        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
-        tree = parser.parse(source_bytes)
-        if tree.root_node.has_error:
-            parse_error_count += 1
-        walk(source_bytes, tree.root_node, [], rel_path, None)
-
-    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, "::")
-    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_rust", "tree-sitter-rust", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
-
-
-def build_tree_sitter_kotlin_callgraph(repo_src, output_dir):
-    """Kotlin's tree-sitter callgraph builder — verified against
-    tree-sitter-kotlin 1.1.0 directly, and genuinely NOT a config swap on
-    Java's builder despite both targeting the JVM: Kotlin's grammar uses
-    entirely different node types throughout (function_declaration for both
-    top-level and member functions -- no separate "method" node the way
-    Java splits method_declaration from constructor_declaration;
-    class_declaration's `name` field for owner tracking; companion_object
-    nests as its own scope, tracked here as a synthetic ".Companion" owner
-    segment; package_header's qualified_identifier for the package name).
-    call_expression exposes no named "function" field in this grammar
-    (confirmed directly, unlike Go/Rust) -- the callee is always the node's
-    first child: either a bare `identifier` (direct call) or a
-    `navigation_expression` (dotted call like `s.start()`/`Server.create()`),
-    whose own text is already in the right "qualifier.name" shape, so no
-    further field extraction is needed for that case."""
-    parser = _generic_tree_sitter_language("tree_sitter_kotlin")
-    user_funcs = set()
-    func_files = {}
-    raw_calls = []
-    files_seen = 0
-    parse_error_count = 0
-
-    def package_name_of(source_bytes, root):
-        for c in root.children:
-            if c.type == "package_header":
-                for gc in c.children:
-                    if gc.type == "qualified_identifier":
-                        return source_bytes[gc.start_byte:gc.end_byte].decode("utf-8", "ignore")
-        return ""
-
-    def resolve_call_name(source_bytes, call_node):
-        if not call_node.children:
-            return ""
-        first = call_node.children[0]
-        if first.type in ("identifier", "navigation_expression"):
-            return source_bytes[first.start_byte:first.end_byte].decode("utf-8", "ignore")
-        return ""
-
-    def walk(source_bytes, node, package_name, class_stack, rel_path, current_func):
-        next_class_stack = class_stack
-        next_func = current_func
-        if node.type == "class_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node is not None:
-                next_class_stack = class_stack + [source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore")]
-        if node.type == "companion_object":
-            next_class_stack = class_stack + ["Companion"]
-        if node.type == "function_declaration":
-            name_node = node.child_by_field_name("name")
-            func_name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", "ignore") if name_node else ""
-            owner = ".".join(([package_name] if package_name else []) + class_stack)
-            full_name = f"{owner}.{func_name}" if owner else func_name
-            if func_name:
-                user_funcs.add(full_name)
-                func_files[full_name] = rel_path
-                next_func = {"full_name": full_name}
-        if current_func and node.type == "call_expression":
-            callee = resolve_call_name(source_bytes, node)
-            if callee:
-                raw_calls.append({
-                    "caller": current_func["full_name"],
-                    "callee": callee,
-                    "file": rel_path,
-                    "line": node.start_point[0] + 1,
-                    "call_text": source_bytes[node.start_byte:node.end_byte].decode("utf-8", "ignore")[:300],
-                })
-        for child in node.children:
-            walk(source_bytes, child, package_name, next_class_stack, rel_path, next_func)
-
-    for path in iter_supported_repo_files(repo_src, {".kt", ".kts"}):
-        files_seen += 1
-        with open(path, "rb") as fh:
-            source_bytes = fh.read()
-        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
-        tree = parser.parse(source_bytes)
-        if tree.root_node.has_error:
-            parse_error_count += 1
-        package_name = package_name_of(source_bytes, tree.root_node)
-        walk(source_bytes, tree.root_node, package_name, [], rel_path, None)
-
-    edges, ordered_calls = _resolve_generic_language_calls(raw_calls, user_funcs, ".")
-    return _write_generic_tree_sitter_graph(output_dir, "tree_sitter_kotlin", "tree-sitter-kotlin", files_seen, parse_error_count, user_funcs, func_files, edges, ordered_calls)
-
-
-TREE_SITTER_GENERIC_TIMEOUT_SECONDS = int(os.getenv("CODEVAL_TREE_SITTER_GENERIC_TIMEOUT_SECONDS", "90") or 90)
-
-
-def _generic_tree_sitter_worker(builder_fn, repo_src, output_dir, filename_stem, result_queue):
-    try:
-        graph_path = builder_fn(repo_src, output_dir)
-        ordered_path = os.path.join(output_dir, f"{filename_stem}_ordered_call_sequence.json")
-        result_queue.put({
-            "ok": True,
-            "graph_path": graph_path,
-            "ordered_path": ordered_path if os.path.exists(ordered_path) else "",
-        })
-    except BaseException as exc:
-        result_queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-
-
-def run_generic_tree_sitter_callgraph_isolated(builder_fn, repo_src, output_dir, filename_stem, language_label, timeout_seconds=None):
-    """Same isolation strategy as run_tree_sitter_java_callgraph_isolated
-    (a subprocess with a hard timeout, so one pathological file can't hang
-    the whole analysis run) — shared here across Go/Rust/Kotlin instead of
-    three near-identical copies of the multiprocessing boilerplate, since
-    only the builder function and output filenames differ between them."""
-    timeout_seconds = timeout_seconds or TREE_SITTER_GENERIC_TIMEOUT_SECONDS
-    result_queue = multiprocessing.Queue(maxsize=1)
-    process = multiprocessing.Process(
-        target=_generic_tree_sitter_worker,
-        args=(builder_fn, repo_src, output_dir, filename_stem, result_queue),
-        name=f"codeval-tree-sitter-{language_label}",
-    )
-    process.start()
-    process.join(timeout_seconds)
-
-    if process.is_alive():
-        process.terminate()
-        process.join(5)
-        if process.is_alive():
-            process.kill()
-            process.join(5)
-        result_queue.close()
-        result_queue.join_thread()
-        raise TimeoutError(f"tree-sitter {language_label} analysis timed out after {timeout_seconds}s")
-
-    try:
-        result = result_queue.get(timeout=2)
-    except queue.Empty:
-        exit_code = process.exitcode
-        raise RuntimeError(f"tree-sitter {language_label} analysis worker exited without a result (exit code {exit_code})")
-    finally:
-        result_queue.close()
-        result_queue.join_thread()
-
-    if process.exitcode not in (0, None):
-        raise RuntimeError(f"tree-sitter {language_label} analysis worker exited with code {process.exitcode}")
-    if not result.get("ok"):
-        raise RuntimeError(result.get("error") or f"tree-sitter {language_label} analysis failed")
-    return result
-
-
-def build_tree_sitter_go_outputs(repo_src, output_repo_dir, results):
-    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_go")
-    os.makedirs(tree_sitter_path, exist_ok=True)
-    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_go_callgraph, repo_src, tree_sitter_path, "tree_sitter_go", "go")
-    tree_sitter_json_path = worker_result.get("graph_path", "")
-    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
-        raise RuntimeError("tree-sitter Go analysis completed without a callgraph JSON artifact")
-    results["tree_sitter_go_json_path"] = tree_sitter_json_path
-    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_go_ordered_call_sequence.json")
-    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
-        results["tree_sitter_go_ordered_call_sequence_path"] = tree_sitter_ordered_path
-    logger.info("DONE build_tree_sitter_go_callgraph %s", results["tree_sitter_go_json_path"])
-    return results
-
-
-def build_tree_sitter_rust_outputs(repo_src, output_repo_dir, results):
-    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_rust")
-    os.makedirs(tree_sitter_path, exist_ok=True)
-    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_rust_callgraph, repo_src, tree_sitter_path, "tree_sitter_rust", "rust")
-    tree_sitter_json_path = worker_result.get("graph_path", "")
-    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
-        raise RuntimeError("tree-sitter Rust analysis completed without a callgraph JSON artifact")
-    results["tree_sitter_rust_json_path"] = tree_sitter_json_path
-    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_rust_ordered_call_sequence.json")
-    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
-        results["tree_sitter_rust_ordered_call_sequence_path"] = tree_sitter_ordered_path
-    logger.info("DONE build_tree_sitter_rust_callgraph %s", results["tree_sitter_rust_json_path"])
-    return results
-
-
-def build_tree_sitter_kotlin_outputs(repo_src, output_repo_dir, results):
-    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_kotlin")
-    os.makedirs(tree_sitter_path, exist_ok=True)
-    worker_result = run_generic_tree_sitter_callgraph_isolated(build_tree_sitter_kotlin_callgraph, repo_src, tree_sitter_path, "tree_sitter_kotlin", "kotlin")
-    tree_sitter_json_path = worker_result.get("graph_path", "")
-    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
-        raise RuntimeError("tree-sitter Kotlin analysis completed without a callgraph JSON artifact")
-    results["tree_sitter_kotlin_json_path"] = tree_sitter_json_path
-    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_kotlin_ordered_call_sequence.json")
-    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
-        results["tree_sitter_kotlin_ordered_call_sequence_path"] = tree_sitter_ordered_path
-    logger.info("DONE build_tree_sitter_kotlin_callgraph %s", results["tree_sitter_kotlin_json_path"])
-    return results
+# _generic_tree_sitter_language / _generic_callee_tail_name / _resolve_generic_language_calls / _write_generic_tree_sitter_graph /
+# _generic_tree_sitter_worker / run_generic_tree_sitter_callgraph_isolated now live in
+# parsers/generic_tree_sitter.py; build_tree_sitter_go/rust/kotlin_callgraph and their
+# _outputs wrappers now live in parsers/go|rust|kotlin/tree_sitter_parser.py (imported
+# near the top of this file).
 
 
 JS_SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
@@ -30382,244 +28437,9 @@ def build_javascript_callgraph(repo_src, output_dir, progress_callback=None):
         return build_javascript_regex_callgraph(repo_src, output_dir, progress_callback=progress_callback)
 
 
-CSHARP_CALL_KEYWORDS = {
-    "if", "for", "foreach", "while", "switch", "catch", "using", "lock", "return",
-    "throw", "new", "typeof", "nameof", "sizeof", "default", "checked", "unchecked",
-}
-
-
-def strip_csharp_comments_and_strings(text: str) -> str:
-    result = []
-    i = 0
-    length = len(text)
-    state = "code"
-    while i < length:
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < length else ""
-        if state == "code":
-            if ch == "/" and nxt == "/":
-                result.extend("  ")
-                i += 2
-                state = "line_comment"
-                continue
-            if ch == "/" and nxt == "*":
-                result.extend("  ")
-                i += 2
-                state = "block_comment"
-                continue
-            if ch == "@":
-                result.append(" ")
-                i += 1
-                if i < length and text[i] == '"':
-                    result.append(" ")
-                    i += 1
-                    state = "verbatim_string"
-                continue
-            if ch == '"':
-                result.append(" ")
-                i += 1
-                state = "string"
-                continue
-            if ch == "'":
-                result.append(" ")
-                i += 1
-                state = "char"
-                continue
-            result.append(ch)
-            i += 1
-        elif state == "line_comment":
-            result.append("\n" if ch == "\n" else " ")
-            state = "code" if ch == "\n" else state
-            i += 1
-        elif state == "block_comment":
-            if ch == "*" and nxt == "/":
-                result.extend("  ")
-                i += 2
-                state = "code"
-            else:
-                result.append("\n" if ch == "\n" else " ")
-                i += 1
-        elif state == "string":
-            if ch == "\\" and nxt:
-                result.extend("  ")
-                i += 2
-            else:
-                result.append("\n" if ch == "\n" else " ")
-                state = "code" if ch == '"' else state
-                i += 1
-        elif state == "verbatim_string":
-            if ch == '"' and nxt == '"':
-                result.extend("  ")
-                i += 2
-            else:
-                result.append("\n" if ch == "\n" else " ")
-                state = "code" if ch == '"' else state
-                i += 1
-        elif state == "char":
-            if ch == "\\" and nxt:
-                result.extend("  ")
-                i += 2
-            else:
-                result.append("\n" if ch == "\n" else " ")
-                state = "code" if ch == "'" else state
-                i += 1
-    return "".join(result)
-
-
-def find_matching_brace(text: str, open_index: int) -> int:
-    depth = 0
-    for index in range(open_index, len(text)):
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-    return -1
-
-
-def build_csharp_callgraph(repo_src, output_dir, progress_callback=None):
-    method_decl = re.compile(
-        r"(?m)^\s*(?:\[[^\]]+\]\s*)*"
-        r"(?:(?:public|private|protected|internal|static|virtual|override|async|sealed|partial|extern|unsafe|new)\s+)*"
-        r"(?:(?P<return_type>[\w<>\[\],?.]+\s+)+)?"
-        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
-        r"(?:<[^>{};=]*>\s*)?\([^;{}]*\)\s*"
-        r"(?:where\s+[^{]+)?\{"
-    )
-    class_decl = re.compile(r"\b(?:class|struct|record|interface)\s+([A-Za-z_][A-Za-z0-9_]*)[^{;]*\{")
-    call_pattern = re.compile(r"(?:\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-    namespace_block = re.compile(r"\bnamespace\s+([A-Za-z_][\w.]*)\s*\{")
-    namespace_file = re.compile(r"(?m)^\s*namespace\s+([A-Za-z_][\w.]*)\s*;")
-
-    nodes = set()
-    edges = set()
-    edge_meta = {}
-    ordered_calls = []
-    function_files = {}
-    method_records = []
-
-    def report_progress(message, current_file=None):
-        if not progress_callback:
-            return
-        try:
-            progress_callback(message, current_file=current_file)
-        except TypeError:
-            progress_callback(message)
-
-    cs_files = []
-    for path in iter_supported_repo_files(repo_src, {".cs"}):
-        cs_files.append(path)
-    cs_files.sort()
-
-    for path in cs_files:
-        rel_path = os.path.relpath(path, repo_src).replace("\\", "/")
-        report_progress("Parsing C# files.", rel_path)
-        raw_text = Path(path).read_text(encoding="utf-8", errors="ignore")
-        text = strip_csharp_comments_and_strings(raw_text)
-        namespaces = []
-        file_namespace_match = namespace_file.search(text)
-        file_namespace = file_namespace_match.group(1) if file_namespace_match else ""
-        for match in namespace_block.finditer(text):
-            open_index = text.find("{", match.end() - 1)
-            close_index = find_matching_brace(text, open_index)
-            if close_index > open_index:
-                namespaces.append((match.start(), close_index, match.group(1)))
-        classes = []
-        for match in class_decl.finditer(text):
-            open_index = text.find("{", match.end() - 1)
-            close_index = find_matching_brace(text, open_index)
-            if close_index > open_index:
-                classes.append((match.start(), close_index, match.group(1)))
-        for match in method_decl.finditer(text):
-            name = match.group("name")
-            if name in CSHARP_CALL_KEYWORDS:
-                continue
-            open_index = text.find("{", match.end() - 1)
-            close_index = find_matching_brace(text, open_index)
-            if close_index <= open_index:
-                continue
-            containing_class = next((item for item in classes if item[0] <= match.start() <= item[1]), None)
-            class_name = containing_class[2] if containing_class else Path(path).stem
-            namespace_name = file_namespace or next((item[2] for item in namespaces if item[0] <= match.start() <= item[1]), "")
-            full_name = ".".join(part for part in (namespace_name, class_name, name) if part)
-            body = text[open_index + 1:close_index]
-            start_line = raw_text.count("\n", 0, match.start()) + 1
-            record = {
-                "symbol": full_name,
-                "name": name,
-                "class_name": class_name,
-                "namespace": namespace_name,
-                "path": rel_path,
-                "body": body,
-                "body_offset": open_index + 1,
-                "start_line": start_line,
-            }
-            method_records.append(record)
-            nodes.add(full_name)
-            function_files[full_name] = rel_path
-
-    by_class_method = {}
-    for record in method_records:
-        by_class_method[(record["class_name"], record["name"])] = record["symbol"]
-
-    edge_order = 1
-    for record in method_records:
-        caller = record["symbol"]
-        for match in call_pattern.finditer(record["body"]):
-            qualifier, call_name = match.groups()
-            if call_name in CSHARP_CALL_KEYWORDS or call_name == record["name"]:
-                continue
-            target = ""
-            if qualifier:
-                target = by_class_method.get((qualifier, call_name), "")
-            if not target:
-                target = by_class_method.get((record["class_name"], call_name), "")
-            if not target or target == caller:
-                continue
-            line = record["body"][:match.start()].count("\n") + record["start_line"]
-            edge = (caller, target)
-            edges.add(edge)
-            previous = edge_meta.get(edge)
-            if previous is None or edge_order < (previous.get("order") or edge_order):
-                edge_meta[edge] = {"order": edge_order, "line": line}
-            ordered_calls.append({
-                "caller": caller,
-                "callee": target,
-                "order": edge_order,
-                "line": line,
-                "file": record["path"],
-                "call_text": call_name,
-            })
-            edge_order += 1
-
-    os.makedirs(output_dir, exist_ok=True)
-    json_path = os.path.join(output_dir, "csharp_callgraph.json")
-    graph = {
-        "mode": "csharp_regex_callgraph",
-        "parser": "csharp-regex",
-        "nodes": sorted(nodes),
-        "edges": [
-            [src, dst, edge_meta.get((src, dst), {}).get("order"), edge_meta.get((src, dst), {}).get("line")]
-            for src, dst in sorted(edges, key=lambda edge: (
-                edge_meta.get(edge, {}).get("order") if edge_meta.get(edge, {}).get("order") is not None else 10**12,
-                edge[0],
-                edge[1],
-            ))
-        ],
-        "function_files": function_files,
-        "file_count": len(cs_files),
-    }
-    Path(json_path).write_text(json.dumps(graph, separators=(",", ":")), encoding="utf-8")
-    ordered_path = os.path.join(output_dir, "csharp_ordered_call_sequence.json")
-    if ordered_calls:
-        write_ordered_call_sequence(
-            ordered_calls,
-            ordered_path,
-            parser="csharp-regex",
-            source_callgraph=os.path.basename(json_path),
-        )
-    return json_path, "", ordered_path if ordered_calls else ""
+# CSHARP_CALL_KEYWORDS / strip_csharp_comments_and_strings / find_matching_brace (C# copy) /
+# build_csharp_callgraph now live in parsers/csharp/csharp_parser.py (imported near the top
+# of this file).
 
 
 def detect_languages(repo_src):
@@ -32318,163 +30138,14 @@ def joern_enabled_by_default():
     return value.lower() not in {"0", "false", "no", "off"}
 
 
-def build_javalang_outputs(repo_src, output_repo_dir, results, progress_callback=None):
-    javalang_path = os.path.join(output_repo_dir, "javalang")
-    os.makedirs(javalang_path, exist_ok=True)
-    callgraph_javalang_json_path = build_javalang_callgraph(repo_src, javalang_path, progress_callback=progress_callback)
-    results["callgraph_javalang_json_path"] = callgraph_javalang_json_path
-    javalang_ordered_path = os.path.join(javalang_path, "javalang_ordered_call_sequence.json")
-    if os.path.exists(javalang_ordered_path):
-        results["javalang_ordered_call_sequence_path"] = javalang_ordered_path
-    logger.info("DONE build_javalang_callgraph %s", results["callgraph_javalang_json_path"])
-
-    return results
+# build_javalang_outputs now lives in parsers/java/javalang_parser.py;
+# build_tree_sitter_java_outputs now lives in parsers/java/tree_sitter_parser.py
+# (both imported near the top of this file).
 
 
-def build_tree_sitter_java_outputs(repo_src, output_repo_dir, results):
-    tree_sitter_path = os.path.join(output_repo_dir, "tree_sitter_java")
-    os.makedirs(tree_sitter_path, exist_ok=True)
-    worker_result = run_tree_sitter_java_callgraph_isolated(repo_src, tree_sitter_path)
-    tree_sitter_json_path = worker_result.get("graph_path", "")
-    if not tree_sitter_json_path or not os.path.exists(tree_sitter_json_path):
-        raise RuntimeError("tree-sitter Java analysis completed without a callgraph JSON artifact")
-    results["tree_sitter_java_json_path"] = tree_sitter_json_path
-    tree_sitter_ordered_path = worker_result.get("ordered_path") or os.path.join(tree_sitter_path, "tree_sitter_java_ordered_call_sequence.json")
-    if tree_sitter_ordered_path and os.path.exists(tree_sitter_ordered_path):
-        results["tree_sitter_java_ordered_call_sequence_path"] = tree_sitter_ordered_path
-    logger.info("DONE build_tree_sitter_java_callgraph %s", results["tree_sitter_java_json_path"])
-
-    return results
-
-
-def ordered_sequence_candidates_for_graph(path):
-    if not path:
-        return []
-    graph_path = Path(path)
-    parent = graph_path.parent
-    name = graph_path.name
-    candidates = []
-    explicit = {
-        "python_callgraph.json": "python_ordered_call_sequence.json",
-        "javascript_callgraph.json": "javascript_ordered_call_sequence.json",
-        "java_merged_callgraph.json": "java_merged_ordered_call_sequence.json",
-        "tree_sitter_java_callgraph.json": "tree_sitter_java_ordered_call_sequence.json",
-        "javalang_callgraph.json": "javalang_ordered_call_sequence.json",
-        "combined_callgraph.json": "combined_ordered_call_sequence.json",
-        "joern_callgraph.json": "joern_ordered_call_sequence.json",
-        "reduced_joern_callgraph.json": "joern_ordered_call_sequence.json",
-    }
-    if name in explicit:
-        candidates.append(parent / explicit[name])
-    stem = graph_path.stem
-    for candidate_name in (
-        f"{stem}_ordered_call_sequence.json",
-        f"{stem}_ordered.json",
-        "ordered_call_sequence.json",
-    ):
-        candidates.append(parent / candidate_name)
-    seen = set()
-    unique = []
-    for candidate in candidates:
-        key = str(candidate)
-        if key not in seen:
-            seen.add(key)
-            unique.append(candidate)
-    return unique
-
-
-def load_ordered_edge_meta_for_graph(path):
-    edge_meta = {}
-    for ordered_path in ordered_sequence_candidates_for_graph(path):
-        if not ordered_path.exists():
-            continue
-        try:
-            with open(ordered_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except Exception:
-            continue
-        calls = payload.get("calls", []) if isinstance(payload, dict) else payload
-        for index, call in enumerate(calls or [], start=1):
-            if not isinstance(call, dict):
-                continue
-            src = call.get("caller") or call.get("source") or call.get("method") or ""
-            dst = call.get("callee") or call.get("target") or call.get("callee_fullName") or ""
-            if not src or not dst:
-                continue
-            try:
-                order = int(call.get("order")) if call.get("order") not in (None, "") else index
-            except (TypeError, ValueError):
-                order = index
-            try:
-                line = int(call.get("line")) if call.get("line") not in (None, "") else None
-            except (TypeError, ValueError):
-                line = None
-            key = (str(src), str(dst))
-            previous = edge_meta.get(key)
-            if previous is None or order < (previous.get("order") or order):
-                edge_meta[key] = {"order": order, "line": line}
-    return edge_meta
-
-
-def _load_edge_graph_with_meta(path):
-    if not path or not os.path.exists(path):
-        return set(), set(), {}
-    with open(path, "r", encoding="utf-8") as f:
-        graph = json.load(f)
-    raw_edges = graph.get("edges", graph) if isinstance(graph, dict) else graph
-    raw_edges = raw_edges if isinstance(raw_edges, list) else []
-    nodes = set()
-    if isinstance(graph, dict):
-        for node in graph.get("nodes", []) or []:
-            if isinstance(node, str):
-                nodes.add(node)
-            elif isinstance(node, dict):
-                node_data = node.get("data") if isinstance(node.get("data"), dict) else node
-                node_id = node_data.get("id") or node_data.get("name") or node_data.get("label")
-                if node_id:
-                    nodes.add(str(node_id))
-    edges = set()
-    edge_meta = load_ordered_edge_meta_for_graph(path)
-    for edge in raw_edges:
-        src = ""
-        dst = ""
-        order = None
-        line = None
-        if isinstance(edge, list) and len(edge) >= 2:
-            src, dst = str(edge[0]), str(edge[1])
-            if len(edge) >= 3:
-                order = edge[2]
-            if len(edge) >= 4:
-                line = edge[3]
-        elif isinstance(edge, dict):
-            edge_data = edge.get("data") if isinstance(edge.get("data"), dict) else edge
-            src = edge_data.get("caller") or edge_data.get("source")
-            dst = edge_data.get("callee") or edge_data.get("target")
-            order = edge_data.get("order")
-            line = edge_data.get("line")
-            if src is not None:
-                src = str(src)
-            if dst is not None:
-                dst = str(dst)
-        else:
-            continue
-        if src and dst:
-            nodes.add(src)
-            nodes.add(dst)
-            edges.add((src, dst))
-            if order is not None or line is not None:
-                try:
-                    order = int(order) if order not in (None, "") else None
-                except (TypeError, ValueError):
-                    order = None
-                try:
-                    line = int(line) if line not in (None, "") else None
-                except (TypeError, ValueError):
-                    line = None
-                previous = edge_meta.get((src, dst))
-                if previous is None or (order is not None and order < (previous.get("order") or order)):
-                    edge_meta[(src, dst)] = {"order": order, "line": line}
-    return nodes, edges, edge_meta
+# ordered_sequence_candidates_for_graph / load_ordered_edge_meta_for_graph /
+# _load_edge_graph_with_meta now live in parsers/common.py (imported near the top of
+# this file) -- used well beyond Java merging (file/feature graph outputs etc.).
 
 
 def _load_edge_graph(path):
@@ -32539,82 +30210,8 @@ def _load_graph_edge_labels(path):
     return {str(key): str(value) for key, value in graph.get("edge_labels", {}).items() if key and value}
 
 
-def build_merged_java_outputs(output_repo_dir, results):
-    source_paths = [
-        ("tree-sitter-java", results.get("tree_sitter_java_json_path", "")),
-        ("javalang", results.get("callgraph_javalang_json_path", "")),
-    ]
-    merged_nodes = set()
-    merged_edges = set()
-    merged_edge_meta = {}
-    merged_ordered_calls = []
-    sources = []
-
-    for source, path in source_paths:
-        nodes, edges, edge_meta = _load_edge_graph_with_meta(path)
-        if nodes or edges:
-            sources.append(source)
-            merged_nodes.update(nodes)
-            merged_edges.update(edges)
-            for edge, meta in edge_meta.items():
-                previous = merged_edge_meta.get(edge)
-                order = meta.get("order")
-                if previous is None or (order is not None and order < (previous.get("order") or order)):
-                    merged_edge_meta[edge] = meta
-
-        ordered_path = ""
-        if source == "tree-sitter-java":
-            ordered_path = results.get("tree_sitter_java_ordered_call_sequence_path", "")
-        elif source == "javalang":
-            ordered_path = results.get("javalang_ordered_call_sequence_path", "")
-        if ordered_path and os.path.exists(ordered_path):
-            try:
-                with open(ordered_path, "r", encoding="utf-8") as f:
-                    ordered_data = json.load(f)
-                for call in ordered_data.get("calls", []):
-                    merged_ordered_calls.append({**call, "parser": source})
-            except Exception as e:
-                logger.warning("Unable to merge ordered Java sequence %s: %s", ordered_path, e)
-
-    if not merged_nodes and not merged_edges:
-        return results
-
-    merged_path = os.path.join(output_repo_dir, "java_merged")
-    os.makedirs(merged_path, exist_ok=True)
-    merged_json_path = os.path.join(merged_path, "java_merged_callgraph.json")
-    graph = {
-        "mode": "merged_java_graph",
-        "parser": "+".join(sources),
-        "nodes": sorted(merged_nodes),
-        "edges": [
-            [src, dst, merged_edge_meta.get((src, dst), {}).get("order"), merged_edge_meta.get((src, dst), {}).get("line")]
-            if (src, dst) in merged_edge_meta else [src, dst]
-            for src, dst in sorted(merged_edges)
-        ],
-        "source_count": len(sources),
-    }
-    with open(merged_json_path, "w", encoding="utf-8") as f:
-        json.dump(graph, f, separators=(",", ":"))
-
-    merged_ordered_path = os.path.join(merged_path, "java_merged_ordered_call_sequence.json")
-    if merged_ordered_calls:
-        write_ordered_call_sequence(
-            merged_ordered_calls,
-            merged_ordered_path,
-            parser="+".join(sources),
-            source_callgraph=os.path.basename(merged_json_path),
-        )
-        results["java_merged_ordered_call_sequence_path"] = merged_ordered_path
-
-    logger.info(
-        "Merged Java graph written: %s sources=%s nodes=%s edges=%s",
-        merged_json_path,
-        ",".join(sources),
-        len(merged_nodes),
-        len(merged_edges),
-    )
-    results["java_merged_json_path"] = merged_json_path
-    return results
+# build_merged_java_outputs now lives in parsers/java/merge.py (imported near the top
+# of this file).
 
 
 def normalize_joern_ordered_call_sequence(joern_ordered_path, output_dir):
@@ -33983,7 +31580,7 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         if not os.path.exists(repo_comments_path):
             repo_comments = extract_repo_comments(cached_src_dir)
             write_json_artifact(repo_comments, output_repo_dir, "repo_comments.json")
-        if not os.path.exists(repo_text_path):
+        if not os.path.exists(repo_text_path) or not artifacts_newer_than_source([repo_text_path], cached_src_dir):
             repo_text = extract_repo_text(cached_src_dir)
             write_json_artifact(repo_text, output_repo_dir, "repo_text.json")
             build_docs_sqlite_from_repo_text(output_repo_dir, repo_text)
@@ -34193,6 +31790,8 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
             scim_embedding_model_path = scim_result.get("scim_embedding_model_path") or scim_embedding_model_path
             scim_functions_path = scim_result.get("scim_functions_path") or scim_functions_path
             scim_train_pairs_path = scim_result.get("scim_train_pairs_path") or scim_train_pairs_path
+            callgraph_code_index_path = scim_result.get("callgraph_code_index_path") or callgraph_code_index_path
+            callgraph_code_index_jsonl_path = scim_result.get("callgraph_code_index_jsonl_path") or callgraph_code_index_jsonl_path
 
     download_zip_path = BASE_OUTPUT / f"{Path(output_repo_dir).name}.zip"
     static_quality_signals_json = ""
@@ -34213,8 +31812,8 @@ def cached_analyze_results(output_repo_dir, owner="", repo="", repo_info=None, d
         "scim_train_pairs_path": scim_train_pairs_path if os.path.exists(scim_train_pairs_path) else "",
         "scim_error": scim_result.get("scim_error", "") if isinstance(scim_result, dict) else "",
         "feature_catalog_path": feature_catalog_path if os.path.exists(feature_catalog_path) else "",
-        "callgraph_code_index_path": "",
-        "callgraph_code_index_jsonl_path": "",
+        "callgraph_code_index_path": callgraph_code_index_path if os.path.exists(callgraph_code_index_path) else "",
+        "callgraph_code_index_jsonl_path": callgraph_code_index_jsonl_path if os.path.exists(callgraph_code_index_jsonl_path) else "",
         "python_callgraph_json_path": python_callgraph_json if os.path.exists(python_callgraph_json) else "",
         "python_ordered_call_sequence_path": python_ordered_sequence if os.path.exists(python_ordered_sequence) else "",
         "python_callgraph_html_path": "",

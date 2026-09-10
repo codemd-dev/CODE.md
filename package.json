@@ -2,7 +2,7 @@
   "name": "codemd-graphs",
   "displayName": "CODEMD",
   "description": "The auto test harness for AI-written code. CODEMD traces your callgraph to find exactly what changed, instantly re-runs the existing tests that cover it, and has Claude write the ones you're missing — one click, always under your control.",
-  "version": "0.0.146",
+  "version": "0.0.203",
   "publisher": "codemd",
   "homepage": "https://www.codemd.dev",
   "icon": "media/icon.png",
@@ -53,6 +53,9 @@
     "onCommand:codemdGraphs.openDebugLog",
     "onCommand:codemdlocal.generate",
     "onCommand:codemdLocal.generate"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -173,7 +176,7 @@
         "codemdGraphs.port": {
           "type": "number",
           "default": 8100,
-          "description": "Port the local FastAPI server binds to."
+          "description": "Port the local FastAPI server binds to. Leave unset to let CODEMD derive a stable per-workspace port automatically (so multiple VS Code windows, each on a different repo, never fight over the same port) — set this explicitly only to pin one fixed port."
         },
         "codemdGraphs.readOnlyMode": {
           "type": "boolean",
@@ -195,10 +198,10 @@
           "enumDescriptions": [
             "Nothing runs without a click, and Claude is never invoked.",
             "CODEMD types each prompt into your own `claude` CLI terminal instead of running Claude itself — you review it, can edit it, and press Enter yourself. CODEMD spends none of your Claude usage this way.",
-            "CODEMD invokes Claude itself (writing tests, discovering how to run a test, fixing a failure) when you click a Claude-powered action."
+            "(Disabled) CODEMD invokes Claude itself (writing tests, discovering how to run a test, fixing a failure) when you click a Claude-powered action."
           ],
           "default": "manual",
-          "description": "Whether, and how, this panel can use Claude. 'promptOnly' requires the `claude` CLI running in an actual terminal — it cannot type into the separate Claude Code VS Code extension's own chat panel, since one extension's webview has no API surface another extension can write into."
+          "description": "Whether, and how, this panel can use Claude. 'promptOnly' requires the `claude` CLI running in an actual terminal — it cannot type into the separate Claude Code VS Code extension's own chat panel, since one extension's webview has no API surface another extension can write into. 'agent' is temporarily disabled in this release — selecting it is harmless, but Claude-powered actions (and Auto Mode) will show a message instead of running."
         },
         "codemdGraphs.maxCostPerActionUsd": {
           "type": "number",
@@ -244,6 +247,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
   },

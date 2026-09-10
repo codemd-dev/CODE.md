@@ -1,5 +1,220 @@
 # CODEMD test-verification roadmap
 
+## Research: three RTS/test-gen papers cross-checked against CODEMD (flagged 2026-09-06, not started — for later analysis)
+
+Read three papers on regression-test-selection and AI-agent test generation and
+cross-checked their techniques against the actual current code (not guessed):
+TDAD (arXiv:2603.17973v2 — graph-based pre-change impact analysis delivered as
+an agent skill, 70% regression reduction on SWE-bench Verified), Frechette et
+al. (ISRN Software Engineering 2013 — Control Call Graph based regression test
+selection/generation for Java), and Pacheco et al. (Randoop — feedback-directed
+random test generation, found 210 real bugs in 780KLOC of already-tested
+Java/.NET libraries via universal object-contract checking).
+
+**Languages CODEMD runs tests for free today (confirmed against code, not
+assumed)**: direct run, no Claude ever — Python, Go, Rust, Java, C#, Kotlin
+(`DIRECT_RUN_EXTS`, [src/extension.ts:14195](src/extension.ts#L14195)). JS/TS
+is free too, Claude only as a rare fallback (`detectJsTestRunner`,
+[src/extension.ts:3039](src/extension.ts#L3039)). But "runs for free" ≠ "gets
+callgraph-driven generation" — per the language-tier table further down this
+file, only Python/JS-TS/Java/C# have a real callgraph wired to the four
+generators; Go/Rust/Kotlin can run an *existing* test file for free but have
+no callgraph to drive Call-Path Opportunities or new-test generation.
+
+### Findings (highest-value first)
+
+1. **Multi-hop transitive impact, with confidence-weighted scoring (TDAD).**
+   TDAD's core technique is exactly item #4/#5 below (numeric risk score,
+   entry-point-to-change tracing), just with a proven formula: merge
+   Direct/Transitive/Coverage/Imports strategies via
+   `score = (1-cw)·w_strategy + cw·confidence`, confidence decaying by hop
+   distance. CODEMD's "Call-Path Opportunities" today only fires when **both**
+   functions changed in the same commit — it doesn't trace 2-3 hops out
+   through unmodified intermediate callers the way TDAD's Transitive strategy
+   does. Real detection gap: a regression in a caller-of-a-caller of a changed
+   function could go unflagged.
+
+2. **Control-flow-path-level test selection (Frechette et al.).** CODEMD's
+   generators reason at the function/caller level. The CCG paper
+   selects/generates tests per distinct control-call-path through a caller —
+   distinguishing "caller X invokes the changed function on the if-branch"
+   from "...on the else-branch." A caller that only breaks on one branch could
+   pass CODEMD's current per-caller test and still ship a regression on the
+   untested branch.
+
+3. **Contract/property-based fuzzing (Randoop) — a genuinely missing
+   category.** The biggest finding. Randoop doesn't use a callgraph at all —
+   it randomly builds method sequences and checks universal object contracts
+   (equals reflexivity, hashCode/toString never throwing, no unexpected
+   NullPointerException/AssertionError). Found 210 real bugs in 780KLOC of
+   already heavily-tested Java/.NET libraries this way — bugs that existed
+   despite good test suites, because nobody thought to test that specific
+   contract. None of CODEMD's four generators check this class of bug;
+   they're all example-based, driven by "which callers exist," which
+   structurally can't catch "does this object obey its own contract
+   regardless of caller." Randoop itself is a real, mature CLI — could be
+   invoked scoped to just the changed classes, no Claude call needed, same
+   spirit as how coverage confirmation got bolted onto existing run paths.
+
+4. **Regression oracles across before/after state (Randoop §3.3).**
+   Auto-generate observer assertions (`toString()`, `size()`, getters) on a
+   sequence, snapshot behavior *before* Claude's patch, rerun the same
+   sequence *after*, diff. Caught 12 real JDK-implementation inconsistencies
+   in Randoop's own case study. CODEMD has nothing like this today — a
+   different signal from "does the test pass," closer to "did observable
+   behavior silently change."
+
+**Not new, already known and declined**: mutation testing (the one signal
+that proves a test would actually catch a regression) — already scoped below
+and explicitly declined over file-safety concerns, per
+[[project_codemd_test_verification_roadmap]] (auto-memory).
+
+**Minor prompting note from TDAD, not actionable**: the "TDD Prompting
+Paradox" (verbose procedural instructions increased regressions on a small
+*local* model) is a caveat, not a proven risk here — TDAD's own limitations
+section says frontier models may not exhibit it, and CODEMD uses Claude, not
+a quantized 30B local model.
+
+### Implementation scoping for #1 and #3 (2026-09-06) — per user's "small incremental only, no big fixes" constraint
+
+**#1, tuning-only first step (small, hours not days).** `findTestsViaCallgraph`
+in `scripts/codemd-mcp-server.js`
+([codemd-mcp-server.js:1159](scripts/codemd-mcp-server.js#L1159)) *already*
+does hop-counted backward BFS and *already* computes an ad hoc score
+(`minDepth === 1 ? 100 : Math.max(10, 90 - minDepth*15)`). Adopting TDAD's
+principled decay curve/confidence tiers (high ≥0.8 / medium 0.5-0.8 / low
+<0.5) there is a pure scoring-formula edit inside a function that already
+exists — no new traversal, no new data. Rough size: ~20-line diff in one
+function, verifiable the same way the `text_response_server` fix was (a
+standalone `node -e` sanity check against known call chains before touching
+the UI). Estimate: **1-2 hours**.
+The *fuller* version of #1 — actually wiring Call-Path Opportunities to fire
+on unmodified-intermediate-caller chains (original item #5 below,
+entry-point tracing) — is NOT small: needs a `call_paths` CLI arm, a
+set-intersection between `entry_points` and `get_impact_radius`, and new UI
+rendering. That's the "big fix" version; not recommended under the
+small-only constraint right now.
+
+**#3, Randoop-for-Java (bounded but not tiny — a new feature, not a tweak).**
+Nothing exists for this today. Realistic smallest useful slice:
+- Step 1 (spike, ~1-2 hrs, no extension code touched): fetch Randoop's jar
+  once, hand-run it against one real changed Java class from a real repo, by
+  hand, to confirm classpath/output-format assumptions before committing to
+  an integration design.
+- Step 2 (one new manual button, reusing existing Java run plumbing rather
+  than inventing new infrastructure — same Maven/JUnit invocation pattern
+  `runJavaTestFileForResult` already uses): "🎲 Check contracts (Randoop)" on
+  a Modified Java function card, scoped to just that class, parses JUnit-style
+  output, shows pass/fail. Stays behind an explicit click (design rule
+  already in this file: automatic firing is fine for pure-local checks, but
+  a multi-second fuzz run per commit would surprise a user the way an
+  uncapped auto-fire already nearly did — see the parallel-test-run note
+  below).
+Comparable in size to the already-shipped C#/Java/Kotlin coverage
+confirmation ("Mode A") work — that was estimated "small-medium per
+language, each independently bounded." Estimate: **1-2 focused days** for a
+Java-only, manual-button version. Kotlin/C# would each be separate follow-on
+work, not included in this estimate. This is bigger than #1 — flagging
+explicitly since the ask was for small-only work; #1 is a same-session-sized
+tweak, #3 is a small *feature*, not a tweak.
+
+### #3 follow-up research: callgraph is NOT the targeting mechanism — class membership already is (2026-09-07)
+
+Checked against the actual existing plumbing (not guessed) whether callgraph
+tools (`codemd_get_impact_radius`/`get_callees`) are needed to scope a
+Randoop run, and confirmed the smallest real path:
+
+**Java confirmed as the right first language, concretely (not just "already
+free-run" as stated above)** — the exact plumbing Randoop needs already
+exists: `findJavaBuildRootDir` ([extension.ts:4238](src/extension.ts#L4238))
+resolves the Maven/Gradle root; the `mvn dependency:get` → `~/.m2` cache
+pattern already used for `junit-platform-console-standalone`
+([extension.ts:9888](src/extension.ts#L9888),
+[extension.ts:10022-10025](src/extension.ts#L10022-L10025)) is the same
+recipe a Randoop jar fetch would need; `mvn dependency:build-classpath`
+([extension.ts:10007](src/extension.ts#L10007)) already produces the real
+project classpath to load the target class against. Randoop doesn't run
+tests itself — it generates JUnit source files — so the existing javac +
+JUnit Console Launcher execution step that already runs generated `.java`
+files is reusable unchanged for the back half of the pipeline.
+
+**Callgraph is not required for MVP.** Randoop's unit of work is a *class*
+(`--testclass=<FQCN>` or a `--classlist` file), not a function or a call
+edge. CODEMD already knows which class a changed function belongs to as
+ordinary AST metadata (same info `testLanguageFor`/`callgraphArtifactFor`
+already carry) — no graph traversal needed to answer "what class do I point
+Randoop at." The core value (equals/hashCode/toString contract checks,
+unexpected NPE/AssertionError) fires off a single class with zero callgraph
+queries.
+
+**Where callgraph *would* genuinely help — phase 2, not phase 1:** Randoop
+builds richer test sequences when its class pool includes a changed class's
+collaborator/dependency types (e.g. if `Foo.bar()` takes a `Baz`, Randoop
+can only construct interesting `Baz` objects if `Baz` is also in
+`--classlist`). That's a legitimate use for `codemd_get_callees`/
+`codemd_get_impact_radius` (1-hop collaborators) — but it's a quality
+upgrade on top of a working MVP, not something the MVP needs.
+
+**One new concrete unknown for the Phase 0 spike** (sharper than the
+existing "confirm classpath/output-format assumptions" note above): Randoop
+is not reliably a clean Maven Central artifact the way
+`junit-platform-console-standalone` is — historically distributed as a
+shaded `randoop-all-<version>.jar` off Randoop's own GitHub Releases page.
+The `mvn dependency:get` pattern likely does NOT transfer as-is; the fetch
+step probably needs a one-time direct-URL download into a `.codemd`-owned
+cache dir instead. Confirm this in the spike before assuming the Maven
+pattern transfers.
+
+**Concrete MVP command shape** (to verify in the spike, not yet run for
+real): `java -cp "<projectClasspath>:<compiledClasses>:randoop-all.jar"
+randoop.main.Main gentests --testclass=<FQCN> --time-limit=30
+--junit-output-dir=<tmp>`. Randoop writes `RegressionTest0.java` +
+`ErrorTest0.java` — only the latter matters for "found a bug," since Randoop
+only emits an error test when it hit an unexpected exception/contract
+violation; its presence with nonzero content *is* the signal. Then compile +
+run both via the exact same javac + JUnit Console Launcher steps
+`runJavaTestFileForResult` already does today, and parse pass/fail the same
+way.
+
+Net effect on the existing estimate above: unchanged (~1-2 focused days,
+Java-only, manual button) — the new information is that callgraph is off
+the critical path entirely for the MVP, and the Randoop-jar-distribution
+unknown is now a specifically named risk for Phase 0's spike to resolve
+before writing any extension code.
+
+### Aside: "Run all N tests" has no concurrency cap (noted 2026-09-06, not changed — informational only)
+
+User asked whether running all matched tests via the "▶ Run all N tests"
+button (`runAllBtn` click handler,
+[src/extension.ts:16420-16428](src/extension.ts#L16420-L16428)) is safe on a
+laptop. Confirmed by reading the code: `runners.forEach((r) => r.runTest())`
+fires every matched test's run **simultaneously**, no throttle — unlike the
+*automatic* per-symbol existing-tests check, which IS capped (3 matched
+files in parallel per symbol, `maxAutoWritesPerBatch` symbols per batch,
+[src/extension.ts:13984-13995](src/extension.ts#L13984-L13995), explicitly
+reasoned about there as "floods the OS with coverage-run/pytest processes").
+Clicking "Run all 14 tests" therefore does launch up to 14 concurrent
+Python-interpreter + coverage.py subprocess pipelines at once. Not likely to
+crash a laptop, but a real, noticeable CPU/fan spike for the run's duration,
+especially for tests importing heavy dependencies. Explicitly not fixed this
+session per the user's "don't make any changes, just asking" — a bounded
+concurrency queue for `runAllBtn` (e.g. reusing the same 3-at-a-time pattern
+already proven for the automatic flow) would be a small, well-precedented
+fix if it's ever worth picking up.
+
+### Aside: competition/moat note (flagged 2026-09-06, for later analysis, not actionable now)
+
+No one bundles this full loop today — that's less "no competition" and more
+that the category is brand new. Code-graph-for-agents tooling (e.g.
+open-source projects like CodeGraph, call-graph impact tools like
+codemap-impact) and AI test-generation tools (Qodo, Diffblue Cover) are both
+emerging fast in 2026, but each covers one piece — graph context, or test
+generation — not the closed loop of blast radius → find/generate → run for
+real → fix. The real risk is future, not present: any of those players, or
+Anthropic/GitHub/OpenAI building it natively into their own agents, is the
+natural next move once this category (which only exists because agentic
+coding itself is new) gets more attention.
+
 ## NEXT: local LLM mode (flagged 2026-09-04, not started)
 
 **Motivation**: with the Claude API's promised $20 free SDK quota not

@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import networkx as nx
@@ -7,6 +8,16 @@ from pyparsing import line
 import re
 
 logger = logging.getLogger(__name__)
+
+# pyan3 does whole-program semantic analysis (AST + type inference across
+# every file), which scales far worse than the tree-sitter based JS/TS lane.
+# A single oversized file (e.g. this project's own ~1.5MB backend/main.py)
+# can make it grind for a very long time, and since analysis runs
+# synchronously in-process, the next window reload / Regenerate click kills
+# the server mid-analysis (see killStaleServerOnPort) before it ever
+# finishes -- looking like an indefinite hang. Mirror the JS/TS lane's
+# JS_MAX_TREE_SITTER_PARSE_BYTES 1.5MB convention here too.
+PYTHON_MAX_PYAN_PARSE_BYTES = int(os.getenv("CODEVAL_PYTHON_MAX_PARSE_BYTES", "1500000"))
 
 
 class PyCGParser:
@@ -27,8 +38,8 @@ class PyCGParser:
             ".pytest_cache", ".venv", "venv", "env", "node_modules",
             "dist", "build", "target", "vendor", "vendors", "output",
         }
-        return [
-            str(p)
+        all_files = [
+            p
             for p in self.repo_root.rglob("*.py")
             if not any(
                 part.lower() in skip_parts or
@@ -36,6 +47,24 @@ class PyCGParser:
                 for part in p.relative_to(self.repo_root).parts
             )
         ]
+        py_files = []
+        skipped_large = []
+        for p in all_files:
+            try:
+                if p.stat().st_size > PYTHON_MAX_PYAN_PARSE_BYTES:
+                    skipped_large.append(p)
+                    continue
+            except OSError:
+                continue
+            py_files.append(str(p))
+        if skipped_large:
+            logger.info(
+                "Skipping %s oversized Python file(s) over %s bytes (too slow for pyan3's whole-program analysis). Sample: %s",
+                len(skipped_large),
+                PYTHON_MAX_PYAN_PARSE_BYTES,
+                ", ".join(str(p.relative_to(self.repo_root)).replace("\\", "/") for p in skipped_large[:5]),
+            )
+        return py_files
 
     # ----------------------------------------
     # generate graph

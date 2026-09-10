@@ -7,7 +7,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-call npx vsce package
+call npm run package
+
 if errorlevel 1 (
     echo VSIX packaging failed.
     pause

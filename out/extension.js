@@ -33,12 +33,19 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.removeCodexMcpServerTables = removeCodexMcpServerTables;
 exports.formatReportEntryMarkdown = formatReportEntryMarkdown;
 exports.activate = activate;
 exports.deactivate = deactivate;
+exports.resolveServerPort = resolveServerPort;
+exports.ensureServerRunningExclusive = ensureServerRunningExclusive;
 exports.rewriteHtmlArtifactForWebview = rewriteHtmlArtifactForWebview;
+exports.csharpImportHint = csharpImportHint;
+exports.rustImportHint = rustImportHint;
 exports.findCallersOf = findCallersOf;
+exports.insertGradleJUnitDependency = insertGradleJUnitDependency;
 exports.mcpSetupHelpText = mcpSetupHelpText;
+exports.getHtml = getHtml;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
@@ -68,6 +75,19 @@ const DEFAULT_EXCLUDES = [
 ];
 const ARTIFACT_OUTPUT_DIR = '.codemd';
 const MCP_OUTPUT_DIR = 'mcp';
+// Auto Mode's unattended serial pipeline (see runAutoMode) is re-enabled —
+// gated the same way every other Claude-invoking action is, via
+// ensureClaudeAgentConsent's one-time QuickPick consent flow. Kept as a
+// named flag rather than inlined so a future stabilization concern can flip
+// it back off in one place without hunting down every call site.
+const AUTO_MODE_DISABLED = true;
+// "Use Coding Agent" mode is temporarily disabled for this release (see the
+// claudeAgentMode enum description in package.json) — checked inside
+// ensureClaudeAgentConsent, the shared gate in front of every real Claude
+// subprocess invocation, so it blocks regardless of a workspace's persisted
+// claudeAgentConsent/claudeAgentMode settings. Named flag for the same
+// one-place-to-flip reason as AUTO_MODE_DISABLED above.
+const CLAUDE_AGENT_MODE_DISABLED = true;
 // deletion-report.py scores impact off whatever callgraph is already on disk
 // (see its docstring) — it doesn't need a fresh regeneration to produce a
 // useful uncommitted-edits report. This lets startup show that report
@@ -159,6 +179,21 @@ async function safeWorkspaceCreateDirectory(uri) {
 async function safeWorkspaceWriteFile(uri, content) {
     assertWorkspaceWriteAllowed(uri, 'file write', 'file');
     await vscode.workspace.fs.writeFile(uri, content);
+}
+// Same as safeWorkspaceWriteFile, but the destination is never observable
+// half-written: written to a sibling temp file first, then swapped in with
+// a rename (atomic on the underlying filesystem). Use this for any file a
+// webview might be concurrently reading (e.g. the mirrored combined graph
+// HTML, rewritten by repairMirroredArtifactsForWebview on every background
+// regenerate while the graph panel may already be loading it) — a plain
+// writeFile streams into the destination in place, so a reader that opens
+// the file mid-write can get a truncated read and the webview's JSON.parse
+// / HTML parse fails as a "Graph render error".
+async function safeWorkspaceWriteFileAtomic(uri, content) {
+    assertWorkspaceWriteAllowed(uri, 'file write', 'file');
+    const tmpUri = uri.with({ path: `${uri.path}.tmp${process.pid}` });
+    await vscode.workspace.fs.writeFile(tmpUri, content);
+    await vscode.workspace.fs.rename(tmpUri, uri, { overwrite: true });
 }
 async function safeWorkspaceCopy(source, target) {
     assertWorkspaceWriteAllowed(target, 'file copy', 'file');
@@ -910,8 +945,9 @@ function extractClaudeResultEnvelope(stdout) {
 // Total token throughput for one Claude CLI call, straight off the result
 // envelope's own "usage" object — input + output + both cache buckets, not
 // just input+output, since a cache-heavy call still moves real tokens.
-// Feeds the webview's running per-session token tally (see sessionUsageTotals
-// below); the CLI has no separate "tokens used" field, only this breakdown.
+// Feeds the webview's running all-time/session token tallies (see
+// allTimeUsageTotals/sessionOnlyUsageTotals below); the CLI has no separate
+// "tokens used" field, only this breakdown.
 function tokensFromEnvelope(envelope) {
     const usage = envelope?.usage;
     if (!usage || typeof usage !== 'object') {
@@ -1320,6 +1356,18 @@ async function sendPromptToUsersClaudeTerminal(folder, prompt) {
     return { ok: true };
 }
 const LAST_ACTIVE_VERSION_KEY = 'codemdGraphs.lastActiveVersionSession';
+// Cumulative tokens/time across every Claude CLI call this extension has ever
+// made in this VS Code profile (test generation + Fix-with-Claude), persisted
+// in globalState so it survives webview reloads, panel close/reopen, and
+// extension host restarts — not just the current webview instance. See
+// GraphsViewProvider.accumulateClaudeUsage/postClaudeUsageTotals.
+const CLAUDE_USAGE_TOTALS_KEY = 'codemdGraphs.claudeUsageTotals';
+// Mirrors the webview's own USAGE_MESSAGE_TYPES set (src/extension.ts webview
+// script) — kept in sync manually since the two run in separate JS contexts.
+const HOST_USAGE_MESSAGE_TYPES = new Set([
+    'newFunctionTestResult', 'callChainTestResult', 'contractTestResult',
+    'broadCoverageTestResult', 'callPathTestResult', 'fixTestResult',
+]);
 function extensionBundleSignature(context) {
     try {
         const bundlePath = path.join(context.extensionUri.fsPath, 'out', 'extension.js');
@@ -1367,6 +1415,49 @@ function warnIfReactivatedInStaleWindow(context) {
             vscode.commands.executeCommand('workbench.action.reloadWindow');
         }
     });
+}
+// Regenerates on a commit landing (HEAD moving to a new commit — also covers
+// checkout/merge/pull/rebase, all reasonable "the tree just settled" points)
+// instead of on every file save: a file-watcher-triggered auto-refresh was
+// tried before and reverted (see ensureUncommittedChangeWatcher's
+// onWorkspaceFileChanged above) because it kept yanking the panel mid-task on
+// routine edits and build output. A commit is a deliberate, infrequent
+// checkpoint, so it doesn't hit that same problem, and runGenerate({quiet:
+// true}) is already safe to call liberally — it no-ops via its own git-state
+// hash check when nothing changed, and never forces the panel open.
+function setupGitCommitRegenerateWatcher(context, provider, folder) {
+    const gitExtension = vscode.extensions.getExtension('vscode.git');
+    if (!gitExtension) {
+        return;
+    }
+    const attach = () => {
+        try {
+            const gitApi = gitExtension.exports.getAPI(1);
+            const repo = gitApi.repositories.find((r) => r.rootUri.fsPath === folder.uri.fsPath) || gitApi.repositories[0];
+            if (!repo) {
+                return;
+            }
+            let lastHead = repo.state.HEAD?.commit;
+            context.subscriptions.push(repo.state.onDidChange(() => {
+                const currentHead = repo.state.HEAD?.commit;
+                if (currentHead && currentHead !== lastHead) {
+                    lastHead = currentHead;
+                    void provider.runGenerate({ quiet: true });
+                }
+            }));
+        }
+        catch (err) {
+            outputChannel?.appendLine(`[gitCommitRegenerateWatcher] failed to attach: ${err?.message || String(err)}`);
+        }
+    };
+    if (gitExtension.isActive) {
+        attach();
+    }
+    else {
+        gitExtension.activate().then(attach, (err) => {
+            outputChannel?.appendLine(`[gitCommitRegenerateWatcher] vscode.git activation failed: ${err?.message || String(err)}`);
+        });
+    }
 }
 async function activate(context) {
     outputChannel = vscode.window.createOutputChannel('CODEMD');
@@ -1423,9 +1514,14 @@ async function activate(context) {
     // ensureLocalGraphLoaded() (called from the provider's constructor above)
     // already showed whatever graph was mirrored on disk before this runs, so
     // this only ever builds/refreshes — it never blocks that first paint.
+    // Uses runGenerateAfterInitialGraphShown (not runGenerate directly) so the
+    // background regenerate's own artifact writes land only after that
+    // on-disk graph has actually been posted to the webview, rather than
+    // racing reveal() below to open the panel.
     if (vscode.workspace.workspaceFolders?.length) {
         const folder = vscode.workspace.workspaceFolders[0];
-        const startupAnalysis = provider.runGenerate({ quiet: true });
+        setupGitCommitRegenerateWatcher(context, provider, folder);
+        const startupAnalysis = provider.runGenerateAfterInitialGraphShown({ quiet: true });
         // Surface the panel itself, unprompted — previously the extension only
         // prepared the graph in the background and waited for the user to
         // discover and click the new "CODEMD" activity bar icon, so the
@@ -1679,6 +1775,40 @@ async function isServerReachable(baseUrl) {
     }
 }
 /**
+ * Every VS Code window running this extension spawns its own local FastAPI
+ * companion server (see ensureServerRunning). With a single hardcoded
+ * default port, two windows open at once (e.g. two different repos) raced
+ * for the same socket — the loser's server crashed on bind (Windows
+ * WSAEADDRINUSE / *nix EADDRINUSE), and every server-dependent feature in
+ * that window (search, subgraph rendering, blast-radius views) then
+ * silently failed or hung, since nothing there could tell "a server is
+ * already live" apart from "MY server is live". Deriving the port from the
+ * workspace path instead gives each window its own stable port, so
+ * simultaneously open windows never collide. An explicit codemdGraphs.port
+ * (at any settings scope) always wins — config.get() can't distinguish that
+ * from the schema's own default of 8100, so this uses inspect() instead.
+ */
+function resolveServerPort(config, folder) {
+    const inspected = config.inspect('port');
+    const explicit = inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? inspected?.globalValue;
+    if (explicit !== undefined && explicit !== null) {
+        return Number(explicit);
+    }
+    const workspacePath = folder?.uri.fsPath || '';
+    if (!workspacePath) {
+        return Number(inspected?.defaultValue ?? 8100);
+    }
+    // Lowercased so Windows' inconsistent drive-letter casing across sessions
+    // ("c:\..." vs "C:\...") doesn't derive a different port for what's really
+    // the same workspace.
+    const hash = crypto.createHash('sha256').update(workspacePath.toLowerCase()).digest();
+    // 900 candidate ports (8100-8999) is plenty to make a collision between a
+    // handful of simultaneously open windows very unlikely, while staying
+    // clear of common well-known ports.
+    const offset = hash.readUInt16BE(0) % 900;
+    return 8100 + offset;
+}
+/**
  * Serializes concurrent callers (e.g. a search-result-graph request and a
  * "Generate" run both wanting the FastAPI companion up at the same time)
  * onto a single in-flight attempt. Without this, two callers could both
@@ -1699,7 +1829,7 @@ async function ensureServerRunning(context, onStatus, quiet) {
 async function ensureServerRunningExclusive(context, onStatus, quiet) {
     const config = vscode.workspace.getConfiguration('codemdGraphs');
     const host = String(config.get('host') || '127.0.0.1');
-    const port = Number(config.get('port') || 8100);
+    const port = resolveServerPort(config, vscode.workspace.workspaceFolders?.[0]);
     const baseUrl = `http://${host}:${port}`;
     if (await isServerReachable(baseUrl)) {
         outputChannel.appendLine(`\n--- Reusing existing local analysis service at ${baseUrl} ---`);
@@ -1863,11 +1993,14 @@ function localScimFunctionsFileUri(outDirUri) {
 // in-memory generatedTestsBySymbol/testRunsBySymbol maps (which start empty
 // every time the webview script re-runs). One JSON file per workspace,
 // keyed by (target file, symbol). Two kinds of fact, both invalidated the
-// same way: a sha256 of the relevant file's current bytes no longer matching
-// what was hashed when the fact was recorded means "something changed since,
-// don't trust this" — coarse (whole-file, not just the one function) but
-// safe: it can only ever cause an unnecessary extra generate/run, never a
-// false "still valid" that hides a real change.
+// same way: a sha256 of the target's current bytes no longer matching what
+// was hashed when the fact was recorded means "something changed since,
+// don't trust this". targetHash is scoped to just the tested function's own
+// line span (via scim/functions.jsonl, see hashFunctionSpan) when the index
+// has one, falling back to the whole file otherwise — hashing the whole file
+// unconditionally used to mean any edit ANYWHERE in a large shared file
+// (e.g. backend/main.py, 30k+ lines) invalidated every cached test record
+// for every function in it, even ones that never moved.
 //   generated[kind]: this generator kind's test file + the target file's hash
 //     at generation time. kind is 'new'|'contract'|'broad'|'callpath'|'callchain'.
 //   runs[kind]: the last run outcome for that same kind (or 'existing:<file>'
@@ -1891,6 +2024,64 @@ function hashFileContents(absPath) {
 }
 function resolveWorkspacePath(folder, maybeRelative) {
     return path.isAbsolute(maybeRelative) ? maybeRelative : path.join(folder.uri.fsPath, maybeRelative);
+}
+// Looks up one symbol's own line span from the already-generated
+// scim/functions.jsonl index (the same per-function start_line/end_line data
+// codemd-mcp-server.js's find_tests uses) so the test-status cache can hash
+// just that function's body instead of its entire file. Returns null (not an
+// error) when the index doesn't have this symbol — a not-yet-indexed
+// language, a brand-new function, or a stale/missing scim/ dir — so callers
+// can fall back to whole-file hashing rather than treating this as a failure.
+function findScimFunctionSpan(folder, targetFile, symbol) {
+    const jsonlPath = path.join(folder.uri.fsPath, ARTIFACT_OUTPUT_DIR, 'scim', 'functions.jsonl');
+    let text;
+    try {
+        text = fs.readFileSync(jsonlPath, 'utf8');
+    }
+    catch {
+        return null;
+    }
+    const normalizedFile = String(targetFile || '').replace(/\\/g, '/');
+    for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) {
+            continue;
+        }
+        let rec;
+        try {
+            rec = JSON.parse(line);
+        }
+        catch {
+            continue;
+        }
+        if (rec?.symbol !== symbol || String(rec?.path || '').replace(/\\/g, '/') !== normalizedFile) {
+            continue;
+        }
+        const startLine = Number(rec.start_line);
+        const endLine = Number(rec.end_line);
+        if (Number.isFinite(startLine) && Number.isFinite(endLine) && startLine > 0 && endLine >= startLine) {
+            return { startLine, endLine };
+        }
+    }
+    return null;
+}
+// The test-status cache's targetHash: scoped to just the tested function's
+// own source span when scim/functions.jsonl has one indexed, otherwise the
+// whole file (see the TEST_STATUS_CACHE_FILE comment above for why
+// whole-file-only was too coarse for large shared files).
+function hashFunctionSpan(folder, targetFile, symbol) {
+    const absPath = resolveWorkspacePath(folder, targetFile);
+    const span = findScimFunctionSpan(folder, targetFile, symbol);
+    if (!span) {
+        return hashFileContents(absPath);
+    }
+    try {
+        const lines = fs.readFileSync(absPath, 'utf8').split(/\r?\n/);
+        const body = lines.slice(span.startLine - 1, span.endLine).join('\n');
+        return crypto.createHash('sha256').update(body).digest('hex');
+    }
+    catch {
+        return null;
+    }
 }
 function readTestStatusCache(folder) {
     try {
@@ -1917,7 +2108,7 @@ function writeTestStatusCache(folder, cache) {
     }
 }
 function recordGeneratedTestInCache(folder, targetFile, symbol, kind, testFile) {
-    const targetHash = hashFileContents(resolveWorkspacePath(folder, targetFile));
+    const targetHash = hashFunctionSpan(folder, targetFile, symbol);
     if (!targetHash) {
         return;
     }
@@ -1930,7 +2121,7 @@ function recordGeneratedTestInCache(folder, targetFile, symbol, kind, testFile) 
     writeTestStatusCache(folder, cache);
 }
 function recordTestRunInCache(folder, targetFile, symbol, kind, testFile, result) {
-    const targetHash = hashFileContents(resolveWorkspacePath(folder, targetFile));
+    const targetHash = hashFunctionSpan(folder, targetFile, symbol);
     const testHash = hashFileContents(resolveWorkspacePath(folder, testFile));
     if (!targetHash || !testHash) {
         return;
@@ -1955,7 +2146,7 @@ function validCachedGeneratedKinds(folder, cache, targetFile, symbol) {
     if (!entry?.generated) {
         return out;
     }
-    const currentHash = hashFileContents(resolveWorkspacePath(folder, targetFile));
+    const currentHash = hashFunctionSpan(folder, targetFile, symbol);
     if (!currentHash) {
         return out;
     }
@@ -1974,7 +2165,7 @@ function hasValidCachedPassingRun(folder, cache, targetFile, symbol) {
     if (!entry?.runs) {
         return null;
     }
-    const currentTargetHash = hashFileContents(resolveWorkspacePath(folder, targetFile));
+    const currentTargetHash = hashFunctionSpan(folder, targetFile, symbol);
     if (!currentTargetHash) {
         return null;
     }
@@ -2002,7 +2193,7 @@ function validCachedRunForKind(folder, cache, targetFile, symbol, kind) {
     if (!run) {
         return null;
     }
-    const currentTargetHash = hashFileContents(resolveWorkspacePath(folder, targetFile));
+    const currentTargetHash = hashFunctionSpan(folder, targetFile, symbol);
     const currentTestHash = hashFileContents(resolveWorkspacePath(folder, run.testFile));
     if (!currentTargetHash || !currentTestHash) {
         return null;
@@ -2348,7 +2539,7 @@ async function repairMirroredArtifactsForWebview(context, outDirUri) {
             const original = Buffer.from(await vscode.workspace.fs.readFile(htmlUri)).toString('utf8');
             const rewritten = rewriteHtmlArtifactForWebview(original, relPath);
             if (rewritten !== original) {
-                await safeWorkspaceWriteFile(htmlUri, Buffer.from(rewritten, 'utf8'));
+                await safeWorkspaceWriteFileAtomic(htmlUri, Buffer.from(rewritten, 'utf8'));
             }
         }
         catch (err) {
@@ -3194,6 +3385,29 @@ function ensureJsSymbolExported(folder, file, tail) {
         // this always produced, no worse off than before this existed.
     }
 }
+/**
+ * extension.ts (and any other file that does `import * as vscode from
+ * 'vscode'` / `require('vscode')` at module scope) cannot be imported
+ * directly in a Vitest/Jest run outside the real VS Code extension host —
+ * Node has no 'vscode' package to resolve, so the import throws before the
+ * target function's actual behavior is ever reached. Without an explicit
+ * instruction, Claude only sometimes adds a `vi.mock('vscode', ...)` stub on
+ * its own initiative (test_newfunc_hashFileContents.test.ts got it right by
+ * chance); every test that didn't reliably failed with "Cannot find package
+ * 'vscode'" (test_codemd_callpath_renderCallChainsSection.test.ts's original
+ * generation, before it was hand-fixed). This makes the stub deterministic
+ * instead of relying on chance.
+ */
+function jsFileRequiresVscodeStub(folder, file) {
+    const abs = path.join(folder.uri.fsPath, file);
+    try {
+        const source = fs.readFileSync(abs, 'utf8');
+        return /from\s+['"]vscode['"]|require\(\s*['"]vscode['"]\s*\)/.test(source);
+    }
+    catch {
+        return false;
+    }
+}
 function importHintFor(language, file, folder, tail) {
     if (language === 'python') {
         return `importable as \`from ${pythonModuleNameFor(file)} import ${tail}\``;
@@ -3225,11 +3439,23 @@ function importHintFor(language, file, folder, tail) {
     // ARTIFACT_OUTPUT_DIR/generated_tests/, its one real, fixed location.
     ensureJsSymbolExported(folder, file, tail);
     const importPath = jsImportPathFor(folder, file);
-    return `importable via a relative import from "${importPath}" — this is the exact, correct relative path from where your test file`
+    let hint = `importable via a relative import from "${importPath}" — this is the exact, correct relative path from where your test file`
         + ` will actually be saved (always flatly under ${ARTIFACT_OUTPUT_DIR}/generated_tests/, never a conventional colocated`
         + ' \\`__tests__/\\` folder or any other location), so use this path verbatim rather than recomputing your own relative import based on'
         + ' an assumed save location. (Check package.json\'s "type" field and neighboring test files to see whether this project uses ESM'
         + ' `import` or CommonJS `require`, and match that — but the path itself is fixed, not something to re-derive.)';
+    if (jsFileRequiresVscodeStub(folder, file)) {
+        const runner = detectJsTestRunner(folder, file).runner;
+        const mockLine = runner === 'jest'
+            ? "jest.mock('vscode', () => ({}), { virtual: true });"
+            : "vi.mock('vscode', () => ({}));";
+        hint += ` IMPORTANT: "${file}" imports the \`vscode\` module at the top of the file, which does not exist outside the real VS Code`
+            + ' extension host and will make ANY import from this file throw `Cannot find package \'vscode\'` before your test body ever runs.'
+            + ` You MUST stub it before importing — put \`${mockLine}\` (adjust to whichever of Vitest's \`vi.mock\` or Jest's \`jest.mock(...,`
+            + ' { virtual: true })\` this project actually uses) as the very first statement in the test file, before the import of'
+            + ` "${importPath}", not after it.`;
+    }
+    return hint;
 }
 /** The test-framework phrase to drop into a prompt's final "write ONE test
  * file" instruction — pytest for Python (this project always uses it), or a
@@ -4578,6 +4804,19 @@ function confirmedAndInferredNodes(impactedNodes, nodeConfidence) {
 function directCallersFromLevels(change) {
     return Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
 }
+// Real, literal callers of the changed symbol — level 1 in the BFS radius
+// AND high-confidence, unlike `impactedFunctions` (the full multi-hop
+// transitive impact radius from get_impact_radius, capped at 200 nodes).
+// That list is right for "how far could this ripple" but wrong for anything
+// claiming to show actual call sites: a level-3+ ancestor never calls this
+// symbol directly, so feeding it to resolveCallSites (Multi-Caller/contract
+// test generation) or labeling it "confirmed caller(s)" in the no-tests-found
+// note is misleading and, for generation, silently drops most of the
+// "callers" it claimed to have because there's no real call site to find.
+function directCallerNamesFromChange(change, nodeConfidence) {
+    const levels = change?.levels || {};
+    return Object.keys(levels).filter((node) => Number(levels[node]) === 1 && nodeConfidence[node] === 'high');
+}
 function impactScoreForModifiedChange(change) {
     const impactedNodes = impactedNodesFromChange(change).length;
     const impactedFiles = impactedFilesFromChange(change).length;
@@ -4830,13 +5069,14 @@ function buildModifiedChangeCard(change) {
     const impactedNodes = impactedNodesFromChange(change);
     const nodeConfidence = nodeConfidenceFromChange(change);
     const { confirmed } = confirmedAndInferredNodes(impactedNodes, nodeConfidence);
-    const directCallers = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
+    const directCallerNames = directCallerNamesFromChange(change, nodeConfidence);
+    const directCallerCount = Object.values(change?.levels || {}).filter((level) => Number(level) === 1).length;
     const risk = modifiedRisk(change);
     const sigDiff = signatureDiffFromChange(change);
     const callSiteIssues = callSiteIssuesFromChange(change);
     const metrics = [
         { label: 'Files', value: String(impactedFiles.length) },
-        { label: 'Direct callers', value: String(directCallers) },
+        { label: 'Direct callers', value: String(directCallerCount) },
         { label: 'Confirmed impact', value: String(confirmed.length) },
     ];
     if (callSiteIssues.length) {
@@ -4881,6 +5121,11 @@ function buildModifiedChangeCard(change) {
         // out inline, so a wide fan-out (e.g. 30 nodes) doesn't dump every name
         // in front of the user by default.
         impactedFunctions: confirmed.map(compactSymbolName),
+        // Real, literal callers only (see directCallerNamesFromChange) — this is
+        // what the no-tests-found note's "confirmed caller(s)" wording and the
+        // Multi-Caller/contract test generators should read from, as opposed to
+        // impactedFunctions above which is the full transitive blast radius.
+        directCallers: directCallerNames.map(compactSymbolName),
         // Generate-test actions live only on the "no tests found" flow below the
         // Search/Check-tests chips, contextual to that finding and sequenced
         // (mechanical first, Claude fallback only if that fails) — they used to
@@ -5005,6 +5250,7 @@ function blastRadiusEntriesFromReport(report) {
     const entries = [];
     for (const change of modified) {
         const directCallers = directCallersFromLevels(change);
+        const directCallerNames = directCallerNamesFromChange(change, nodeConfidenceFromChange(change));
         // Which changes get flagged stays based on total reachable nodes
         // (confirmed + inferred) on purpose — filtering this to confirmed-only
         // would silently drop wide-but-mostly-inferred changes from the report
@@ -5015,6 +5261,7 @@ function blastRadiusEntriesFromReport(report) {
                 symbol: String(change?.symbol || ''),
                 file: String(change?.file || ''),
                 directCallers,
+                directCallerNames,
                 totalUpstream,
                 affectedFiles: impactedFilesFromChange(change),
                 affectedNodes: impactedNodesFromChange(change),
@@ -5054,6 +5301,7 @@ function buildBlastRadiusCard(entry) {
             node_confidence: entry.nodeConfidence,
         }),
         impactedFunctions: confirmed.map(compactSymbolName),
+        directCallers: entry.directCallerNames.map(compactSymbolName),
         actions: ['View diff', 'View impact graph'],
         startCollapsed: true,
     };
@@ -5391,9 +5639,29 @@ class GraphsViewProvider {
     // specific requestId's result goes out, without changing what any of
     // those methods do for the normal webview-round-trip case.
     pendingAutoAwaits = new Map();
+    // Same tokens/ms accumulation as CLAUDE_USAGE_TOTALS_KEY (persisted,
+    // all-time) but held only in memory, so it naturally resets whenever this
+    // extension host instance restarts (VS Code reload/restart) instead of
+    // ever being written to globalState — deliberately NOT reset by a webview
+    // reload/second panel, since the extension host (this class instance) is
+    // what a "session" means here, matching how the persisted counter already
+    // survives webview reloads. See accumulateClaudeUsage/postClaudeUsageTotals.
+    sessionUsageTotals = { tokens: 0, ms: 0 };
     autoModeRunning = false;
     autoModeCancelRequested = false;
     autoModeRequestSeq = 0;
+    // Survives a Stop -> Start cycle (cleared only when a run finishes its
+    // whole queue without being cancelled) so clicking Start again after
+    // Stop resumes right after the last fully-processed change instead of
+    // re-walking the whole queue from the top — see runAutoMode's use of
+    // this below. Keyed by "file::symbol", one entry per queue item whose
+    // Step 1-4 pipeline ran to completion (covered, or every applicable
+    // genType summarized) without the stop landing mid-item; an item
+    // interrupted partway through its own genType loop is deliberately left
+    // out so it gets reprocessed on resume — cheap, since the per-genType
+    // disk cache (validCachedGeneratedKinds/validCachedRunForKind) already
+    // skips redoing whatever that item finished before the stop.
+    autoModeCompletedItemKeys = new Set();
     initialGraphPosted = false;
     initialGraphPostWaiters = [];
     // Set when a caller asks to focus the highest-impact change while a check
@@ -5441,7 +5709,7 @@ class GraphsViewProvider {
         };
         const config = vscode.workspace.getConfiguration('codemdGraphs');
         const host = String(config.get('host') || '127.0.0.1');
-        const port = Number(config.get('port') || 8100);
+        const port = resolveServerPort(config, folder);
         webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message, 'view'));
         this.viewReady = false;
         webviewView.webview.html = getHtml(host, port, webviewView.webview.cspSource);
@@ -5481,7 +5749,7 @@ class GraphsViewProvider {
         }
         const config = vscode.workspace.getConfiguration('codemdGraphs');
         const host = String(config.get('host') || '127.0.0.1');
-        const port = Number(config.get('port') || 8100);
+        const port = resolveServerPort(config, folder);
         this.sidePanelReady = false;
         this.sidePanel.webview.html = getHtml(host, port, this.sidePanel.webview.cspSource);
         this.sidePanel.reveal(vscode.ViewColumn.Beside, false);
@@ -5776,7 +6044,7 @@ class GraphsViewProvider {
         this.postGraph();
     }
     rememberSearchResult(message) {
-        if (message?.kind === 'changes' || message?.kind === 'blastRadius' || message?.kind === 'commits') {
+        if (message?.kind === 'changes' || message?.kind === 'blastRadius' || message?.kind === 'commits' || message?.kind === 'mcpSetup') {
             this.searchHistory = this.searchHistory.filter((item) => item?.kind !== message.kind);
         }
         else if (message?.kind === 'commitDetail') {
@@ -5871,6 +6139,10 @@ class GraphsViewProvider {
         // through ~20 call sites. Never awaited — must not make post() (called
         // from deep inside synchronous-looking result-building code) async.
         this.maybeAppendReportEntry(message);
+        // Same funnel, for the persistent Claude-usage tally: accumulates and
+        // re-broadcasts on every usage-carrying result, a no-op for every other
+        // message type.
+        this.accumulateClaudeUsage(message);
         // Same reasoning, for Auto Mode: every existing*/generate*/run*/fix*
         // method already posts its result keyed by requestId — this just also
         // wakes up whichever awaitPostedResult call (if any) is waiting on this
@@ -5882,6 +6154,53 @@ class GraphsViewProvider {
             this.pendingAutoAwaits.delete(requestId);
             resolve(message);
         }
+    }
+    // Persists cumulative tokens/time to globalState (see CLAUDE_USAGE_TOTALS_KEY)
+    // whenever an outgoing message carries usage data, then re-broadcasts the
+    // new all-time totals so every open webview instance (main view + side
+    // panel) stays in sync without either one owning the source of truth
+    // itself. Field names mirror generateNewFunctionTest/generateCallChainTest/
+    // etc. (generationTokens/generationMs) and runFixWithClaude (tokensUsed/
+    // durationMs) — whichever pair a given result type actually sets.
+    accumulateClaudeUsage(message) {
+        if (!message || !HOST_USAGE_MESSAGE_TYPES.has(message.type)) {
+            return;
+        }
+        const tokens = typeof message.generationTokens === 'number' ? message.generationTokens
+            : typeof message.tokensUsed === 'number' ? message.tokensUsed : 0;
+        const ms = typeof message.generationMs === 'number' ? message.generationMs
+            : typeof message.durationMs === 'number' ? message.durationMs : 0;
+        if (!tokens && !ms) {
+            return;
+        }
+        const totals = this.context.globalState.get(CLAUDE_USAGE_TOTALS_KEY) || { tokens: 0, ms: 0 };
+        const updated = { tokens: totals.tokens + tokens, ms: totals.ms + ms };
+        this.context.globalState.update(CLAUDE_USAGE_TOTALS_KEY, updated);
+        this.sessionUsageTotals = { tokens: this.sessionUsageTotals.tokens + tokens, ms: this.sessionUsageTotals.ms + ms };
+        this.postClaudeUsageTotals(updated);
+    }
+    // Sends the current all-time totals (persisted) plus this extension host
+    // instance's own session-only totals down to the webview — called after
+    // every accumulation above, and once on webview ready (see
+    // markWebviewReady) so a freshly opened/reloaded panel shows the real
+    // cumulative figures immediately instead of starting back at zero. The
+    // session figure is never passed in by a caller (unlike `totals`, which
+    // resetClaudeUsageTotals overrides to zero) since there is no equivalent
+    // "reset the session" action — it always reads the live in-memory field.
+    postClaudeUsageTotals(totals) {
+        const value = totals || this.context.globalState.get(CLAUDE_USAGE_TOTALS_KEY) || { tokens: 0, ms: 0 };
+        this.post({
+            type: 'claudeUsageTotals', tokens: value.tokens, ms: value.ms,
+            sessionTokens: this.sessionUsageTotals.tokens, sessionMs: this.sessionUsageTotals.ms,
+        });
+    }
+    // Zeroes the persisted all-time totals (user-triggered via the reset link
+    // next to the "Claude Usage (All-Time)" heading) and re-broadcasts so
+    // every open webview instance reflects the reset immediately.
+    resetClaudeUsageTotals() {
+        const zero = { tokens: 0, ms: 0 };
+        this.context.globalState.update(CLAUDE_USAGE_TOTALS_KEY, zero);
+        this.postClaudeUsageTotals(zero);
     }
     awaitPostedResult(requestId, timeoutMs = 300000) {
         return new Promise((resolve) => {
@@ -6043,6 +6362,9 @@ class GraphsViewProvider {
      * requestClaudeMcpApproval already makes for MCP approval.
      */
     async ensureClaudeAgentConsent() {
+        if (CLAUDE_AGENT_MODE_DISABLED) {
+            return false;
+        }
         const config = vscode.workspace.getConfiguration('codemdGraphs');
         if (config.get('claudeAgentConsent', false) === true) {
             return true;
@@ -6182,14 +6504,18 @@ class GraphsViewProvider {
         this.writeDefectStatusIndex(folder, data);
     }
     /**
-     * Logs a defect record under ARTIFACT_OUTPUT_DIR/defects/ when — and only
-     * when — a CODEMD-*generated* test actually ran and a real assertion
-     * failed. Deliberately narrow: a run that never really executed the test
+     * Logs a defect record under ARTIFACT_OUTPUT_DIR/defects/ whenever any
+     * test — CODEMD-generated or a hand-written one already in the repo,
+     * found via find_tests/"Check tests"/"Run CODEMD (Free) Tests" — actually
+     * ran and a real assertion failed, so every genuine failure lands in one
+     * place (Bugs, Issues & Defects) with its output for the user to review
+     * or hand to Claude themselves, regardless of which kind of test found
+     * it. `generator` records which: a recognized CODEMD generator kind
+     * (contract/call_path/new_function/broad_coverage/...) when the test file
+     * matches that naming convention, else 'existing'. Still deliberately
+     * excludes runs that never really executed the test
      * (payload.environmentIssue — missing package, bad pytest config, import
-     * error) says nothing about the target code and is excluded, same as any
-     * test that isn't one of ours (found via find_tests, or hand-written) —
-     * this is meant to answer "how often do CODEMD's own generated tests
-     * catch a real bug," not "how often does any test fail." One JSON file
+     * error), since those say nothing about the target code. One JSON file
      * per failing run so records are easy to diff/grep/aggregate later; the
      * bug this belongs to is also (re-)marked 'active' in the status index —
      * see markDefectStatus — so a bug previously marked fixed but still (or
@@ -6204,10 +6530,10 @@ class GraphsViewProvider {
             return null;
         }
         const testFile = String(message?.file || '').replace(/\\/g, '/');
-        const generator = generatorKindFromTestFileName(testFile);
-        if (!generator || !testFile.includes(`${ARTIFACT_OUTPUT_DIR}/generated_tests/`)) {
+        if (!testFile) {
             return null;
         }
+        const generator = generatorKindFromTestFileName(testFile) || 'existing';
         const targetSymbol = String(message?.targetSymbol || '');
         const targetPath = String(message?.targetPath || '');
         if (!targetSymbol || !targetPath) {
@@ -6246,8 +6572,9 @@ class GraphsViewProvider {
     /**
      * "Bugs, Issues & Defects" report — reads the JSON records
      * recordDefectIfGenuine writes under ARTIFACT_OUTPUT_DIR/defects/ (one
-     * file per failing run of a genuine CODEMD-generated test), groups them by
-     * (targetPath, targetSymbol) so re-running the same failing test doesn't
+     * file per failing run of any genuine test failure, CODEMD-generated or
+     * hand-written), groups them by (targetPath, targetSymbol) so re-running
+     * the same failing test doesn't
      * pile up as separate rows, and merges in each group's status from
      * _status.json (markDefectStatus). `items` holds every bug, active or
      * fixed, whether it turned out to be a real code bug or just a bad
@@ -6414,6 +6741,9 @@ class GraphsViewProvider {
         else if (message.type === 'openGraphPanel') {
             this.openGraphPanel(message.currentGraphUrl);
         }
+        else if (message.type === 'openCodemdSite') {
+            vscode.env.openExternal(vscode.Uri.parse('https://www.codemd.dev'));
+        }
         else if (message.type === 'graphForResult') {
             this.runResultGraph(message.result || {});
         }
@@ -6422,6 +6752,9 @@ class GraphsViewProvider {
         }
         else if (message.type === 'runExistingTestsForResult') {
             this.runExistingTestsForResult(message.result || {}, String(message.requestId || ''));
+        }
+        else if (message.type === 'resetClaudeUsageTotals') {
+            this.resetClaudeUsageTotals();
         }
         else if (message.type === 'setAutoMode') {
             this.setAutoMode(message.value);
@@ -6595,6 +6928,7 @@ class GraphsViewProvider {
         this.postSearchHistory();
         this.postSearchSuggestions();
         this.postModesConfig();
+        this.postClaudeUsageTotals();
         // Cheap directory read (a handful of small JSON files at most) — eager,
         // unlike Critical Functions' opt-in-on-expand, because the card's title
         // needs a live Active/Fixed count even while collapsed.
@@ -6885,6 +7219,20 @@ class GraphsViewProvider {
         }
         const bestMatch = matches.find((candidate) => candidate.fsPath.replace(/\\/g, '/').endsWith(normalized)) || matches[0];
         return bestMatch;
+    }
+    // Startup-only entry point: waits for whatever graph is already on disk
+    // to actually be shown (posted to the webview via ensureLocalGraphLoaded,
+    // or the 2s fallback in waitForInitialGraphPost if there's nothing to
+    // show yet) before kicking off the background regenerate. Firing
+    // runGenerate immediately at activation — racing reveal() opening the
+    // panel — used to mean the CLI's mirrored-artifact rewrite could land
+    // while the webview was mid-load of that exact file; the writes it races
+    // against are now atomic (see repairMirroredArtifactsForWebview /
+    // atomic_write_text), but there's no reason to spend that background work
+    // before the user has anything on screen to look at.
+    async runGenerateAfterInitialGraphShown(options) {
+        await this.waitForInitialGraphPost();
+        return this.runGenerate(options);
     }
     async runGenerate(options) {
         const { quiet } = options;
@@ -7480,8 +7828,8 @@ class GraphsViewProvider {
         }
         const jsRunnerHint = language === 'javascript' ? detectJsTestRunner(folder, file).runner : undefined;
         const tail = symbol.split('.').pop() || symbol;
-        const callers = Array.isArray(result?.changeCard?.impactedFunctions)
-            ? result.changeCard.impactedFunctions.slice(0, 8)
+        const callers = Array.isArray(result?.changeCard?.directCallers)
+            ? result.changeCard.directCallers.slice(0, 8)
             : [];
         const callSites = callers.length ? await resolveCallSites(folder, language, symbol, callers) : new Map();
         // "removed" change cards point at a symbol that no longer exists in
@@ -7596,7 +7944,14 @@ class GraphsViewProvider {
         // wanted to see what's actually being asked for while they wait, the same
         // way the Fix-with-Claude live transcript already works. The rest of the
         // transcript below (stream-json events) appends after this same chunk.
-        this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${prompt}\n\n--- live output ---\n` });
+        // Marked `queued: true` so the webview's beginIfNotStarted() (see
+        // startClaudeTicker) does NOT start the "Generating… Ns" counter here —
+        // this can be posted well before the call actually reaches the front of
+        // runClaudeCliExclusive's shared queue, and counting from here made a
+        // request queued behind several other in-flight Claude calls display as
+        // Claude itself having run for that whole time. The real start marker is
+        // posted (without the flag) right before spawning below.
+        this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${prompt}\n`, queued: true });
         try {
             let stdoutLineBuffer = '';
             const handleChunk = (text, stream) => {
@@ -7640,6 +7995,10 @@ class GraphsViewProvider {
                 if (canceledBeforeStart) {
                     return Promise.resolve({ status: null, stdout: '', stderr: '', timedOut: false, canceled: true });
                 }
+                // The real "Claude has actually started" marker (no `queued` flag) —
+                // this is what starts the live "Generating… Ns" counter now, not the
+                // queued prompt-echo above.
+                this.post({ type: 'testGenProgress', requestId, chunk: '\n--- live output ---\n' });
                 const spawned = execCommandCancelableAsync(claudeCommand, [
                     '-p', prompt,
                     // Verified against a real function: even with the scoped-prompt
@@ -7668,12 +8027,17 @@ class GraphsViewProvider {
             finally {
                 this.activeTestGenCancelers.delete(requestId);
             }
-            // Wall-clock fallback for branches with no result envelope to read a
-            // real duration from (canceled/spawnError/timedOut/non-zero exit) —
-            // overwritten below with Claude's own reported duration_ms the moment
-            // an envelope is available, since that excludes any time this process
-            // spent queued behind another in-flight Claude call (runClaudeCliExclusive)
-            // and is the actual number the session-usage tiles should show.
+            // Wall-clock fallback for the one remaining branch below with no result
+            // envelope to read a real duration from (a clean exit whose output
+            // still didn't parse) — overwritten below with Claude's own reported
+            // duration_ms the moment an envelope is available, since that excludes
+            // any time this process spent queued behind another in-flight Claude
+            // call (runClaudeCliExclusive) and is the actual number the
+            // session-usage tiles should show. canceled/spawnError/timedOut below
+            // deliberately omit a duration entirely rather than guess one — the
+            // process was killed or never ran, so there's no real number to report,
+            // same as tokens already do for these cases (tokensFromEnvelope has
+            // nothing to read either).
             let generationMs = Date.now() - startedAt;
             // Raw CLI transcript (stdout+stderr), independent of whether it parses
             // as JSON — surfaced to the user on every branch below (behind a "View
@@ -7682,7 +8046,7 @@ class GraphsViewProvider {
             // error summary alone.
             const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
             if (run.canceled) {
-                this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Stopped by user.', generationMs, output: rawOutput, targetPath: file, targetSymbol: symbol });
+                this.post({ type: 'callPathTestResult', requestId, ok: false, error: 'Stopped by user.', output: rawOutput, targetPath: file, targetSymbol: symbol });
                 return;
             }
             if (run.spawnError) {
@@ -7690,12 +8054,21 @@ class GraphsViewProvider {
                 return;
             }
             if (run.timedOut) {
-                this.post({ type: 'callPathTestResult', requestId, ok: false, error: `Claude did not finish within ${CALL_PATH_TEST_TIMEOUT_MS / 1000}s — this can happen for a function in a large file with many callers. Safe to just try again.`, generationMs, output: rawOutput, targetPath: file, targetSymbol: symbol });
+                this.post({ type: 'callPathTestResult', requestId, ok: false, error: `Claude did not finish within ${CALL_PATH_TEST_TIMEOUT_MS / 1000}s — this can happen for a function in a large file with many callers. Safe to just try again.`, output: rawOutput, targetPath: file, targetSymbol: symbol });
                 return;
             }
             if (run.status !== 0) {
                 const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
                 const turnsError = parseClaudeMaxTurnsError(run.stdout, 16);
+                // Hitting --max-turns/--max-budget-usd still prints a full result
+                // envelope with a real duration_ms (parseClaudeBudgetError/
+                // parseClaudeMaxTurnsError above already parse it out of this same
+                // stdout to build their error text) — prefer it over the wall-clock
+                // fallback, which otherwise overcounts by including queue-wait time.
+                const errorEnvelope = extractClaudeResultEnvelope(run.stdout);
+                if (typeof errorEnvelope?.duration_ms === 'number') {
+                    generationMs = errorEnvelope.duration_ms;
+                }
                 this.post({ type: 'callPathTestResult', requestId, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput, targetPath: file, targetSymbol: symbol });
                 return;
             }
@@ -7796,8 +8169,12 @@ class GraphsViewProvider {
         // curious user can see what's being asked for before Claude produces
         // anything), then every stream-json event appends after it as it happens
         // — instead of "Generating… Ns" being the only sign of life for up to
-        // three minutes.
-        this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${promptWithPolicy}\n\n--- live output ---\n` });
+        // three minutes. Marked `queued: true` — see the matching comment in
+        // generateCallPathTestForResult above — so this doesn't start the
+        // "Generating… Ns" counter before the call has even reached the front of
+        // runClaudeCliExclusive's shared queue; the real start marker is posted
+        // right before spawning below.
+        this.post({ type: 'testGenProgress', requestId, chunk: `Asking Claude:\n${promptWithPolicy}\n`, queued: true });
         try {
             let stdoutLineBuffer = '';
             const handleChunk = (text, stream) => {
@@ -7841,6 +8218,10 @@ class GraphsViewProvider {
                 if (canceledBeforeStart) {
                     return Promise.resolve({ status: null, stdout: '', stderr: '', timedOut: false, canceled: true });
                 }
+                // The real "Claude has actually started" marker (no `queued` flag) —
+                // this is what starts the live "Generating… Ns" counter now, not the
+                // queued prompt-echo above.
+                this.post({ type: 'testGenProgress', requestId, chunk: '\n--- live output ---\n' });
                 const spawned = execCommandCancelableAsync(claudeCommand, ['-p', promptWithPolicy, '--max-turns', '16', '--allowedTools', 'Read,Grep,Glob', '--output-format', 'stream-json', '--verbose', '--json-schema', schema, '--max-budget-usd', String(costCapUsd)], folder.uri.fsPath, { ...process.env }, TIMEOUT_MS, handleChunk);
                 liveCancel = spawned.cancel;
                 return spawned.promise;
@@ -7854,21 +8235,31 @@ class GraphsViewProvider {
             }
             // See the matching comment in generateCallPathTestForResult above —
             // wall-clock fallback until an envelope is available, then overwritten
-            // with Claude's own reported duration_ms.
+            // with Claude's own reported duration_ms. canceled/spawnError/timedOut
+            // below omit a duration entirely rather than guess one — there's no
+            // envelope in those cases, same as tokens already report nothing there.
             let generationMs = Date.now() - startedAt;
             const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
             if (run.canceled) {
-                return { ok: false, error: 'Stopped by user.', generationMs, output: rawOutput };
+                return { ok: false, error: 'Stopped by user.', output: rawOutput };
             }
             if (run.spawnError) {
-                return { ok: false, error: `Couldn't launch Claude Code CLI: ${run.spawnError}`, generationMs, output: rawOutput };
+                return { ok: false, error: `Couldn't launch Claude Code CLI: ${run.spawnError}`, output: rawOutput };
             }
             if (run.timedOut) {
-                return { ok: false, error: `Claude did not finish within ${TIMEOUT_MS / 1000}s — safe to just try again.`, generationMs, output: rawOutput };
+                return { ok: false, error: `Claude did not finish within ${TIMEOUT_MS / 1000}s — safe to just try again.`, output: rawOutput };
             }
             if (run.status !== 0) {
                 const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
                 const turnsError = parseClaudeMaxTurnsError(run.stdout, 16);
+                // See the matching comment in generateCallPathTestForResult — a
+                // max-turns/max-budget exit still has a real duration_ms sitting in
+                // the same stdout parseClaudeBudgetError/parseClaudeMaxTurnsError
+                // just parsed for their error text; prefer it over wall-clock.
+                const errorEnvelope = extractClaudeResultEnvelope(run.stdout);
+                if (typeof errorEnvelope?.duration_ms === 'number') {
+                    generationMs = errorEnvelope.duration_ms;
+                }
                 return { ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', generationMs, output: rawOutput };
             }
             const envelope = extractClaudeResultEnvelope(run.stdout);
@@ -8171,7 +8562,7 @@ class GraphsViewProvider {
      * Broader regression coverage for a high-fan-in changed function — the
      * existing single call-path test only reads ONE real caller, which misses
      * genuinely different calling patterns a function with many callers has in
-     * practice. Reuses the same confirmed-caller data (changeCard.impactedFunctions
+     * practice. Reuses the same confirmed-caller data (changeCard.directCallers
      * + resolveCallSites), just asks Claude for one test per distinct
      * pattern instead of one test total.
      */
@@ -8203,7 +8594,7 @@ class GraphsViewProvider {
         // starts from real context instead of having to go fetch it.
         const MAX_BROAD_COVERAGE_CALLERS = 8;
         const MAX_BROAD_COVERAGE_SNIPPET_LINES = 180;
-        const candidatePool = Array.isArray(result?.changeCard?.impactedFunctions) ? result.changeCard.impactedFunctions.slice(0, 20) : [];
+        const candidatePool = Array.isArray(result?.changeCard?.directCallers) ? result.changeCard.directCallers.slice(0, 20) : [];
         if (candidatePool.length < 2) {
             this.post({ type: 'broadCoverageTestResult', requestId, ok: false, error: 'Fewer than 2 confirmed callers — a single Call Path Test already covers this well enough.', targetPath: file, targetSymbol: symbol });
             return;
@@ -8291,6 +8682,7 @@ class GraphsViewProvider {
     }
     async runFindTestsForResult(result, requestId) {
         const query = String(result?.graphSymbol || result?.fullName || result?.symbol || result?.name || '').trim();
+        const file = String(result?.file || '');
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!query || !folder) {
             this.post({ type: 'testGapResult', requestId, ok: false, error: 'No symbol to check.' });
@@ -8319,19 +8711,43 @@ class GraphsViewProvider {
                     symbol: String(data.target_candidates[0].symbol || ''),
                 }
                 : null;
+            // Only ever surface — let alone auto-run — matches find_tests itself
+            // marks 'callgraph' (a confirmed call edge to the target). Its
+            // 'keyword' fallback (no resolved callgraph node, or no edge found) is
+            // explicitly documented as unconfirmed and meant for a human/agent to
+            // read and judge before trusting — this fully-automated path ("Check
+            // tests" chip, "Run CODEMD (Free) Tests", Auto-Run Tests) can't apply
+            // that judgment, so it used to run keyword guesses anyway and report
+            // whatever passed/failed as if it were real coverage of the target.
+            // In practice that meant an unrelated test — matched only because it
+            // happened to mention a common substring like "__init__" — got run and
+            // its pass/fail reported against a completely unrelated function.
+            const confirmedMatches = data.method === 'callgraph' && Array.isArray(data.matches) ? data.matches : [];
+            // Same gap as runExistingTestsForResult had before its own fallback:
+            // a test CODEMD just generated writes straight to generated_tests/
+            // without triggering a re-index, so it has no callgraph edge yet and
+            // find_tests won't see it. Without this, this chip reports "no tests
+            // found" for a symbol the "Existing test(s) found" card (which does
+            // have this fallback) is simultaneously showing a passing test for.
+            const testStatusCache = readTestStatusCache(folder);
+            const knownFiles = new Set(confirmedMatches.map((m) => String(m.file || '')));
+            const generatedKinds = file ? validCachedGeneratedKinds(folder, testStatusCache, file, query) : {};
+            const generatedMatches = Object.entries(generatedKinds)
+                .filter(([, testFile]) => !knownFiles.has(testFile))
+                .map(([kind, testFile]) => ({ file: testFile, kind, test_names: [] }));
             this.post({
                 type: 'testGapResult',
                 requestId,
                 ok: true,
                 query,
-                matchCount: Number(data.match_count || 0),
+                matchCount: (data.method === 'callgraph' ? Number(data.match_count || 0) : 0) + generatedMatches.length,
                 target: targetCandidate,
-                matches: Array.isArray(data.matches) ? data.matches
+                matches: [...confirmedMatches, ...generatedMatches]
                     .map((m) => {
-                    const file = String(m.file || '');
-                    const kind = generatorKindFromTestFileName(file);
+                    const matchFile = String(m.file || '');
+                    const kind = m.kind || generatorKindFromTestFileName(matchFile);
                     return {
-                        file,
+                        file: matchFile,
                         kind,
                         kindLabel: TEST_KIND_LABELS[kind] || 'Test',
                         testNames: Array.isArray(m.test_names) ? m.test_names.slice(0, 6).map((t) => ({
@@ -8345,7 +8761,7 @@ class GraphsViewProvider {
                     // low-priority broad-coverage match can't bump a proven-broken
                     // contract/call-chain match out of the visible list.
                     .sort((a, b) => testKindRank(a.kind) - testKindRank(b.kind))
-                    .slice(0, 5) : [],
+                    .slice(0, 5),
             });
         }
         catch (err) {
@@ -8378,7 +8794,8 @@ class GraphsViewProvider {
         // Already confirmed passing, and nothing's changed since — same
         // disk-backed cache Auto Mode uses, so a manual "Check tests" click
         // doesn't re-spawn pytest for a function that hasn't moved.
-        const cachedPass = hasValidCachedPassingRun(folder, readTestStatusCache(folder), file, query);
+        const testStatusCache = readTestStatusCache(folder);
+        const cachedPass = hasValidCachedPassingRun(folder, testStatusCache, file, query);
         if (cachedPass) {
             this.post({
                 type: 'existingTestsResult', requestId, ok: true, symbol: query,
@@ -8398,12 +8815,30 @@ class GraphsViewProvider {
                 return;
             }
             const data = JSON.parse(stdout);
-            const rawMatches = Array.isArray(data.matches) ? data.matches.slice(0, 3) : [];
-            if (!rawMatches.length) {
+            // Same reasoning as runFindTestsForResult above: only auto-run matches
+            // find_tests itself marks 'callgraph'-confirmed. Its 'keyword' fallback
+            // is unconfirmed by design, and this path executes whatever it's given
+            // with no human/agent in the loop to judge relevance first.
+            const rawMatches = data.method === 'callgraph' && Array.isArray(data.matches) ? data.matches.slice(0, 3) : [];
+            // CODEMD's own generated tests for this exact symbol are trustworthy
+            // even when the static callgraph hasn't caught up to them yet —
+            // generating a test writes straight to generated_tests/ without
+            // triggering a re-index, so a brand-new test's call into the target
+            // has no edge in python_callgraph.json until the next full analyze.
+            // .test-status-cache.json already recorded the (symbol -> test file)
+            // mapping at generation time, so use it as a supplementary confirmed
+            // source instead of waiting on a re-index.
+            const knownFiles = new Set(rawMatches.map((m) => String(m.file || '')));
+            const generatedKinds = validCachedGeneratedKinds(folder, testStatusCache, file, query);
+            const generatedMatches = Object.values(generatedKinds)
+                .filter((testFile) => !knownFiles.has(testFile))
+                .map((testFile) => ({ file: testFile, test_names: [] }));
+            const combinedMatches = [...rawMatches, ...generatedMatches];
+            if (!combinedMatches.length) {
                 this.post({ type: 'existingTestsResult', requestId, ok: true, symbol: query, matches: [] });
                 return;
             }
-            const matches = await Promise.all(rawMatches.map(async (m) => {
+            const matches = await Promise.all(combinedMatches.map(async (m) => {
                 const matchFile = String(m.file || '');
                 const testNames = Array.isArray(m.test_names) ? m.test_names : [];
                 const nodeId = testNames[0] ? String(testNames[0].nodeId || testNames[0].name || '') : '';
@@ -8710,6 +9145,16 @@ class GraphsViewProvider {
                     + `a conftest.py that adds it). Not a bug in the test's logic or the code it's testing — a setup/import-path problem.`,
             };
         }
+        // "ERROR: not found: <path>::<nodeId>" means pytest parsed the command
+        // line fine but the node id we asked it to collect doesn't exist in that
+        // file — almost always CODEMD itself passing a malformed/stale node id
+        // (e.g. a dotted module-qualified name instead of pytest's own
+        // `Class::method` syntax), not a problem with the user's project. Say so
+        // instead of blaming "environment/config", which points the user
+        // nowhere useful for this specific failure.
+        if (/ERROR: not found:.*\(no match in any of/is.test(output)) {
+            return { error: 'CODEMD asked pytest to collect a test id that doesn\'t exist in that file — this looks like a bug in how CODEMD built the test id, not a problem with your project or the test itself. See output for the exact id pytest rejected.' };
+        }
         const match = output.match(/Unknown config option:\s*(\S+)/i);
         if (!match) {
             return { error: 'pytest rejected its own command line/config (exit code 4: usage error) — this is an environment/config problem, not a bug in the test or the code it tests. See output.' };
@@ -8729,6 +9174,77 @@ class GraphsViewProvider {
             return { error: `${base} Install "${missingPackage}" and re-run.`, missingPackage };
         }
         return { error: `${base} Common examples: pytest-timeout for "timeout", pytest-asyncio for "asyncio_mode", pytest-django for "DJANGO_SETTINGS_MODULE".` };
+    }
+    /**
+     * A per-test "ERROR at setup of ..." naming a recursive-fixture-dependency
+     * or fixture-not-found problem is a distinct failure mode from both a
+     * normal assertion failure and describePytestUsageError's exit-code-4
+     * cases: pytest still exits 1 here (same as an ordinary failed test) since
+     * other tests in the same run can pass fine, so it was previously falling
+     * straight through to "test failed" — exactly the case that prompted this
+     * method (see the "requests" repo's own tests/conftest.py, which overrides
+     * pytest-httpbin's `httpbin` fixture with `def httpbin(httpbin): ...`, a
+     * standard pytest idiom that only recurses into itself when the plugin
+     * providing the outer fixture isn't installed). Not a bug in the test's
+     * logic or the code it tests — telling Claude to "decide whether the test
+     * or the code is wrong" here would be actively misleading. Returns null
+     * when the output doesn't match either shape, so callers can fall through
+     * to normal pass/fail handling untouched.
+     */
+    async describePytestFixtureSetupError(pythonPath, output, folder) {
+        if (!/ERROR at setup of /i.test(output)) {
+            return null;
+        }
+        const recursiveMatch = output.match(/recursive dependency involving fixture ['"]([\w]+)['"] detected/i);
+        const notFoundMatch = output.match(/fixture ['"]([\w]+)['"] not found/i);
+        const fixtureName = recursiveMatch?.[1] || notFoundMatch?.[1];
+        if (!fixtureName) {
+            return null;
+        }
+        const missingPackage = await this.findDeclaredPackageForFixture(folder, fixtureName);
+        const reason = recursiveMatch
+            ? `pytest reported a recursive dependency on fixture "${fixtureName}" during test setup`
+            : `pytest couldn't find fixture "${fixtureName}" during test setup`;
+        const base = `${reason} in ${pythonPath}. This usually means a conftest.py overrides a fixture that a plugin normally provides `
+            + `(a standard pytest pattern — e.g. \`def httpbin(httpbin): ...\` wrapping pytest-httpbin's own fixture), but that plugin isn't `
+            + 'installed in this environment, so the override resolves to itself. Not a bug in the test\'s logic or the code it tests — a '
+            + 'setup/dependency problem.';
+        if (missingPackage) {
+            return { error: `${base} This project declares "${missingPackage}" as a dependency but it isn't importable in ${pythonPath} — install it and re-run.`, missingPackage };
+        }
+        return { error: base };
+    }
+    /**
+     * Best-effort match from a bare fixture name (e.g. "httpbin") to a
+     * same-named plugin package the project itself already declares (e.g.
+     * "pytest-httpbin==2.1.0" in requirements-dev.txt) but that isn't
+     * importable in the resolved interpreter. Deliberately only a substring
+     * heuristic on the package name, not a hardcoded fixture->package map —
+     * fixture names are unbounded, unlike the small, fixed set of pytest.ini
+     * option names describePytestUsageError maps. A miss (e.g. "mocker" vs
+     * "pytest-mock") just means no "Install & retry" button, not a wrong one.
+     */
+    async findDeclaredPackageForFixture(folder, fixtureName) {
+        const normalizedFixture = fixtureName.toLowerCase().replace(/_/g, '-');
+        const candidateFiles = ['requirements-dev.txt', 'requirements-test.txt', 'requirements.txt', 'pyproject.toml', 'setup.cfg'];
+        for (const rel of candidateFiles) {
+            let content;
+            try {
+                content = await fs.promises.readFile(path.join(folder.uri.fsPath, rel), 'utf8');
+            }
+            catch {
+                continue;
+            }
+            const packageMatches = content.match(/[A-Za-z0-9_.]*pytest[-_][A-Za-z0-9_.-]+/gi) || [];
+            for (const rawPkg of packageMatches) {
+                const pkgName = rawPkg.split(/[<>=~!\s"',]/)[0];
+                const normalizedPkg = pkgName.toLowerCase().replace(/[_.]/g, '-');
+                if (normalizedPkg !== 'pytest' && normalizedPkg.includes(normalizedFixture)) {
+                    return pkgName;
+                }
+            }
+        }
+        return undefined;
     }
     /**
      * When a generated test's `from <dotted.module> import X` fails to collect
@@ -8882,6 +9398,19 @@ class GraphsViewProvider {
                 if (!ranAtAll) {
                     return { ok: false, error: 'pytest could not collect/run this test — see output.', output: output.slice(-4000) };
                 }
+                if (!passed) {
+                    const fixtureError = await this.describePytestFixtureSetupError(pythonPath, output, folder);
+                    if (fixtureError) {
+                        return {
+                            ok: false,
+                            error: fixtureError.error,
+                            environmentIssue: true,
+                            missingPackage: fixtureError.missingPackage,
+                            pythonPath,
+                            output: output.slice(-4000),
+                        };
+                    }
+                }
                 return {
                     ok: true, passed, coverageConfirmed: false,
                     reason: 'coverage.py is not installed in this Python environment.', output: output.slice(-4000),
@@ -8903,6 +9432,19 @@ class GraphsViewProvider {
                 return { ok: false, error: 'pytest could not collect/run this test — see output.', output: output.slice(-4000) };
             }
             const passed = covRun.status === 0;
+            if (!passed) {
+                const fixtureError = await this.describePytestFixtureSetupError(pythonPath, output, folder);
+                if (fixtureError) {
+                    return {
+                        ok: false,
+                        error: fixtureError.error,
+                        environmentIssue: true,
+                        missingPackage: fixtureError.missingPackage,
+                        pythonPath,
+                        output: output.slice(-4000),
+                    };
+                }
+            }
             if (!targetPath || !targetStartLine) {
                 return { ok: true, passed, coverageConfirmed: false, reason: 'No target line range available to check.', output: output.slice(-4000) };
             }
@@ -9871,14 +10413,19 @@ class GraphsViewProvider {
             // Vitest/Vite has a reproducible cold-start race the first time it
             // runs in a fresh process: its dependency optimizer throws "Cannot
             // read properties of undefined (reading 'config')" while collecting
-            // the test file, before any test body executes. Confirmed by hand —
-            // the same file passes cleanly on every following run with zero code
-            // changes. That exact message is internal to Vite itself (no
-            // generated test or its target ever reads a `.config` property), so
-            // it's a safe, narrow fingerprint to retry once rather than surface
-            // as a false "test failed" that sends the user chasing a bug that
-            // isn't there.
+            // the test file, before any test body executes. That exact message is
+            // internal to Vite itself (no generated test or its target ever reads
+            // a `.config` property), so it's a safe, narrow fingerprint to retry
+            // rather than surface as a false "test failed" that sends the user
+            // chasing a bug that isn't there. A plain re-run isn't always enough
+            // on its own, though — the race can leave node_modules/.vite's
+            // dependency-optimizer cache in the half-written state that caused the
+            // crash, and a fresh process reading that same cache hits the
+            // identical error again. Clearing that cache directory before the
+            // retry forces a truly clean re-optimize instead of hoping the same
+            // on-disk state resolves itself.
             if (isJsTs && run.status !== 0 && /Cannot read properties of undefined \(reading 'config'\)/.test(`${run.stdout}\n${run.stderr}`)) {
+                await fs.promises.rm(path.join(runCwd, 'node_modules', '.vite'), { recursive: true, force: true }).catch(() => { });
                 run = await execShellLineAsync(buildCommand(usedCoverageWrap), runCwd, env, 120000);
             }
             const rawOutput = `${run.stdout}\n${run.stderr}`.trim().slice(-4000);
@@ -10195,17 +10742,22 @@ class GraphsViewProvider {
             }
             output = `${run.stdout}\n${run.stderr}`.trim();
             const rawOutput = output.slice(-4000);
+            // Wall-clock fallback for branches below with a clean exit but no
+            // usable envelope. canceled/spawnError/timedOut omit a duration
+            // entirely instead — the process was killed or never ran, so there's
+            // no real number to report, same as tokensUsed already reports nothing
+            // there.
             const durationMs = () => Date.now() - startedAt;
             if (run.canceled) {
-                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Stopped — Claude may have already made partial edits before it was stopped; check your working tree.', durationMs: durationMs(), output: rawOutput });
+                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Stopped — Claude may have already made partial edits before it was stopped; check your working tree.', output: rawOutput });
                 return;
             }
             if (run.spawnError) {
-                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: `Couldn't launch "claude": ${run.spawnError}`, durationMs: durationMs(), output: rawOutput });
+                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: `Couldn't launch "claude": ${run.spawnError}`, output: rawOutput });
                 return;
             }
             if (run.timedOut) {
-                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: `Claude did not finish within ${FIX_TIMEOUT_MS / 1000}s.`, durationMs: durationMs(), output: rawOutput });
+                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: `Claude did not finish within ${FIX_TIMEOUT_MS / 1000}s.`, output: rawOutput });
                 return;
             }
             const envelope = extractClaudeResultEnvelope(run.stdout);
@@ -10251,7 +10803,10 @@ class GraphsViewProvider {
                 }
                 const budgetError = parseClaudeBudgetError(run.stdout, costCapUsd);
                 const turnsError = parseClaudeMaxTurnsError(run.stdout, 24);
-                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', durationMs: durationMs(), output: rawOutput });
+                // Same envelope this branch already parsed above for structured_output
+                // still carries a real duration_ms on a plain max-turns/max-budget
+                // exit — prefer it over wall-clock, which overcounts queue-wait time.
+                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: budgetError || turnsError || 'Claude Code CLI exited with an error — it may not be logged in (run `claude` and sign in, then try again).', durationMs: typeof envelope?.duration_ms === 'number' ? envelope.duration_ms : durationMs(), output: rawOutput });
                 return;
             }
             if (!envelope) {
@@ -10260,7 +10815,7 @@ class GraphsViewProvider {
             }
             const structured = envelope?.structured_output;
             if (!structured || typeof structured.summary !== 'string') {
-                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Claude Code CLI did not return the expected structured result.', durationMs: durationMs(), output: rawOutput });
+                this.post({ type: 'fixTestResult', requestId, kind, targetPath, targetSymbol, ok: false, error: 'Claude Code CLI did not return the expected structured result.', durationMs: typeof envelope?.duration_ms === 'number' ? envelope.duration_ms : durationMs(), output: rawOutput });
                 return;
             }
             const filesChanged = Array.isArray(structured.filesChanged) ? structured.filesChanged.map((f) => String(f)) : [];
@@ -10776,6 +11331,10 @@ class GraphsViewProvider {
             this.post({ type: 'autoModeProgress', done: true, error: 'Read-only mode is on — CODEMD will not invoke Claude or write files. Turn off codemdGraphs.readOnlyMode in Settings to use Auto Mode.' });
             return;
         }
+        if (AUTO_MODE_DISABLED) {
+            this.post({ type: 'autoModeProgress', done: true, error: 'Auto Mode is temporarily disabled in this release. Manual mode (free, local test discovery, running, and coverage confirmation) is fully available in the meantime.' });
+            return;
+        }
         // Auto Mode's whole premise is an unattended serial pipeline — it can't
         // pause mid-run for a human to review and press Enter on each prompt the
         // way Prompt-Only Mode requires, so rather than silently firing a wall of
@@ -10836,6 +11395,15 @@ class GraphsViewProvider {
                 const symbol = String(r.fullName || r.graphSymbol || r.symbol || r.name || '');
                 const file = String(r.file || '');
                 const startLine = Number(r.line || 0) || 0;
+                // Resume support: this exact item was already fully processed in a
+                // run that got stopped before reaching the end of the queue — skip
+                // it silently (no subprocess spawn, no progress post) so Start
+                // after Stop picks up right after where it left off instead of
+                // replaying every already-done item first.
+                const itemKey = `${file}::${symbol}`;
+                if (this.autoModeCompletedItemKeys.has(itemKey)) {
+                    continue;
+                }
                 const progress = (text, activeRequestId, activeHasOutput) => this.post({
                     type: 'autoModeProgress', stage: 'change', index: i + 1, total: queue.length, symbol,
                     text: `[${i + 1}/${queue.length}] ${text}`, activeRequestId: activeRequestId || null,
@@ -10878,7 +11446,11 @@ class GraphsViewProvider {
                             const { status, stdout, timedOut } = await execNodeCliAsync(scriptPath, ['--workspace', folder.uri.fsPath, '--cli', 'find_tests', '--query', symbol, '--limit', '5'], folder.uri.fsPath);
                             if (!timedOut && status === 0) {
                                 const data = JSON.parse(stdout);
-                                const rawMatches = Array.isArray(data.matches) ? data.matches.slice(0, 3) : [];
+                                // Only 'callgraph'-confirmed matches — see runFindTestsForResult's
+                                // comment above for why an unattended pipeline can't trust
+                                // find_tests's unconfirmed 'keyword' fallback the way an
+                                // agent reading the raw MCP result is expected to.
+                                const rawMatches = data.method === 'callgraph' && Array.isArray(data.matches) ? data.matches.slice(0, 3) : [];
                                 const directMatches = rawMatches.filter((m) => DIRECT_TEST_EXTENSIONS.some((ext) => String(m.file || '').toLowerCase().endsWith(ext)));
                                 const skippedMatches = rawMatches.filter((m) => !directMatches.includes(m));
                                 if (skippedMatches.length && !directMatches.length) {
@@ -10906,6 +11478,7 @@ class GraphsViewProvider {
                 }
                 if (covered) {
                     summary.push(coveredEntry);
+                    this.autoModeCompletedItemKeys.add(itemKey);
                     continue;
                 }
                 // Step 2 — every generator that legitimately applies, not just the
@@ -10914,7 +11487,7 @@ class GraphsViewProvider {
                 // modified function.
                 const kind = r.changeCard.kind;
                 const hasBrokenCallers = Array.isArray(r.changeCard.callSiteIssues) && r.changeCard.callSiteIssues.length > 0;
-                const impactedCount = Array.isArray(r.changeCard.impactedFunctions) ? r.changeCard.impactedFunctions.length : 0;
+                const impactedCount = Array.isArray(r.changeCard.directCallers) ? r.changeCard.directCallers.length : 0;
                 const genTypes = [];
                 if (kind === 'added') {
                     genTypes.push('new');
@@ -10933,9 +11506,11 @@ class GraphsViewProvider {
                         genTypes.push('callpath');
                     }
                 }
+                let itemInterrupted = false;
                 for (const genType of genTypes) {
                     if (this.autoModeCancelRequested) {
                         summary.push({ symbol, file, status: 'stopped', testKind: GEN_KIND_LABELS[genType], steps: [`Stopped by user before this generator ran (${i}/${queue.length} functions reached).`] });
+                        itemInterrupted = true;
                         break;
                     }
                     const entry = { symbol, file, status: 'unknown', testKind: GEN_KIND_LABELS[genType], steps: [] };
@@ -11034,6 +11609,17 @@ class GraphsViewProvider {
                     entry.status = runMsg?.passed ? 'passed' : (runMsg?.ok === false ? 'couldnt-run' : 'still-failing');
                     summary.push(entry);
                 }
+                if (!itemInterrupted) {
+                    this.autoModeCompletedItemKeys.add(itemKey);
+                }
+            }
+            // Ran the whole queue without being stopped — this session's resume
+            // point is no longer meaningful (the next Start click is a fresh,
+            // deliberate run, not a resume), so clear it and let that run
+            // re-evaluate everything (still cheap for anything already passing,
+            // via the disk-backed test-status cache above).
+            if (!this.autoModeCancelRequested) {
+                this.autoModeCompletedItemKeys.clear();
             }
             const passedCount = summary.filter((s) => s.status === 'passed' || s.status === 'already-covered').length;
             this.post({
@@ -11388,8 +11974,15 @@ function getHtml(host, port, cspSource) {
   #mcpUsageByClient:empty { display: none; margin-top: 0; }
   #mcpUsageByClient .clientLine { display: block; padding: 1px 0; }
   #mcpRegressionNote { margin: 8px 0 0 18px; padding: 6px 8px 6px 20px; font-size: 11px; line-height: 1.6; border-left: 2px solid var(--vscode-terminal-ansiGreen, #3fb950); opacity: 0.9; max-width: 70ch; }
-  #mcpRegressionNote li { margin: 2px 0; }
+  #mcpToolsWhy { margin-top: 4px; }
+  #mcpToolCounts { margin-top: 6px; }
+  #mcpToolCounts .toolCountLine { display: block; padding: 1px 0; }
+  #mcpToolCounts:empty { display: none; }
+  #checkChangesNoteCard { margin: 2px 0 0 2px; }
+  #checkChangesNoteHeadline { display: flex; align-items: center; gap: 6px; }
+  #checkChangesNoteLabel { font-size: 11px; opacity: 0.7; }
   #checkChangesNote { font-size: 11px; opacity: 0.7; margin: 2px 0 0 2px; line-height: 1.4; }
+  #checkChangesNoteCard.is-collapsed #checkChangesNote { display: none; }
   #mcpUsageCard.is-collapsed #mcpUsageDetails { display: none; }
   #mcpUsageCard.is-collapsed #mcpActionRow { display: none; }
   #setupMcpBtn { flex: 0 0 auto; padding: 2px 8px; font-size: 11px; line-height: 1.2; }
@@ -11449,7 +12042,7 @@ function getHtml(host, port, cspSource) {
   .defectRowTime { flex: 0 0 auto; opacity: 0.6; font-size: 10px; white-space: nowrap; }
   .defectRowFile { opacity: 0.6; margin: 1px 0 0 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .defectRowActions { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-  #messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
+  #messages { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 10px 12px; scrollbar-gutter: stable; }
   .msg { margin-bottom: 12px; }
   /* Commit-detail results stack (replace:false — each "Check Latest Commits"
      click adds another block instead of replacing the last one), so its
@@ -11481,6 +12074,10 @@ function getHtml(host, port, cspSource) {
   .testRunAllSummaryGood { color: var(--vscode-terminal-ansiGreen, #3fb950); opacity: 1; }
   .testRunAllSummaryBad { color: var(--vscode-errorForeground); opacity: 1; }
   .resultToolbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0 0 8px; font-size: 11px; opacity: 0.9; }
+  .freeRunBar { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+  .freeRunBar select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 2px 6px; font-size: 11px; }
+  .freeRunBar .btn.is-running { opacity: 1; background: color-mix(in srgb, #d29922 16%, transparent); }
+  .freeRunStatus { font-size: 11px; opacity: 0.8; }
 
   /* ---- Test execution: a generated/existing test's own card, the run row
      inside it, and the "Fix with Claude" outcome banner. One consistent
@@ -11525,16 +12122,16 @@ function getHtml(host, port, cspSource) {
   .btn.is-quiet { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-panel-border); }
   .btn.is-quiet:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
 
-  .statusPill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; line-height: 1.5; white-space: nowrap; }
+  .statusPill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; line-height: 1.5; max-width: 100%; overflow-wrap: anywhere; }
   .statusPill.is-good { background: color-mix(in srgb, var(--vscode-terminal-ansiGreen, #3fb950) 18%, transparent); color: var(--vscode-terminal-ansiGreen, #3fb950); }
   .statusPill.is-bad { background: color-mix(in srgb, var(--vscode-errorForeground) 18%, transparent); color: var(--vscode-errorForeground); }
   .statusPill.is-warn { background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 20%, transparent); color: var(--vscode-editorWarning-foreground); }
   .statusPill.is-neutral { background: color-mix(in srgb, var(--vscode-descriptionForeground) 16%, transparent); color: var(--vscode-descriptionForeground); }
-  .statusDetail { font-size: 11px; opacity: 0.75; flex-basis: 100%; }
+  .statusDetail { font-size: 11px; opacity: 0.75; flex-basis: 100%; overflow-wrap: anywhere; }
   .statusDetail.is-notable { opacity: 1; color: var(--vscode-editorWarning-foreground); }
   .outputLink { margin-left: auto; background: none; border: none; padding: 2px; font: inherit; font-size: 11px; color: var(--vscode-textLink-foreground); cursor: pointer; }
   .outputLink:hover { color: var(--vscode-textLink-activeForeground); }
-  .testRunOutput { width: 100%; max-height: 180px; overflow: auto; margin: 4px 0 0; padding: 6px 8px; font-size: 10.5px; white-space: pre-wrap; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border); border-radius: 3px; }
+  .testRunOutput { width: 100%; max-height: 180px; overflow: auto; margin: 4px 0 0; padding: 6px 8px; font-size: 10.5px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border); border-radius: 3px; }
 
   /* Fix-with-Claude outcome — tone encodes what actually happened (bug in
      your code vs. bug in the test vs. environment vs. still broken), not
@@ -11603,6 +12200,10 @@ function getHtml(host, port, cspSource) {
   .summaryTile-primary .summaryTileValue { color: var(--vscode-focusBorder, #4daafc); }
   .summaryTile-info .summaryTileValue { color: var(--vscode-charts-blue, #4daafc); }
   .summaryTileSectionLabel { font-size: 9px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.03em; margin: 8px 0 4px; }
+  .summaryTileSectionHeadingRow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .summaryTileSectionHeadingRow .summaryTileSectionLabel { margin: 8px 0 4px; }
+  .summaryTileResetLink { font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--vscode-textLink-foreground); cursor: pointer; opacity: 0.8; }
+  .summaryTileResetLink:hover { opacity: 1; text-decoration: underline; }
   .changeSection { opacity: 0.88; line-height: 1.35; }
   .changeSectionTitle { font-weight: 700; opacity: 0.85; margin-bottom: 2px; }
   .changeSummary { color: var(--vscode-foreground); font-weight: 600; line-height: 1.4; }
@@ -11612,8 +12213,15 @@ function getHtml(host, port, cspSource) {
   .signatureCode { display: block; margin: 0; padding: 5px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
   .expandToggle { display: block; width: 100%; text-align: left; border: none; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer; }
   .expandToggle:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
-  .actionRow { display: flex; flex-wrap: wrap; gap: 4px; }
+  .actionRow { display: flex; flex-wrap: wrap; gap: 4px; align-items: flex-start; }
   .actionChip { border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 1px 5px; opacity: 0.88; }
+  /* Wraps one generator chip together with a one-line caption naming which
+     kind of test it will create (Call-path/Contract/New-function/Multi-caller)
+     — without this, two differently-labeled "Generate…" buttons sitting side
+     by side (e.g. the free mechanical one and the Claude fallback) gave no
+     way to tell what each would actually produce before clicking. */
+  .actionChipGroup { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .actionChipHint { font-size: 10px; opacity: 0.6; padding: 0 2px; }
   .actionChipClickable { cursor: pointer; }
   .actionChipClickable:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
   /* The entry points into the create-test/run-test feature — deliberately
@@ -11720,9 +12328,24 @@ function getHtml(host, port, cspSource) {
       <button id="blastRadiusBtn" title="Show only changed functions whose callers are numerous enough to be risky.">Blast Radius Report</button>
       <button id="checkCommitsBtn" title="Show the latest commits in this Git repository.">Check Latest Commits</button>
       <button id="generateBtn">Regenerate</button>
+      <button id="loginGithubBtn" title="Sign in with GitHub on codemd.dev">Login to GitHub</button>
+      <button id="openCodemdBtn" title="Open codemd.dev in your browser">Open Codemd.dev</button>
     </div>
-    <p id="checkChangesNote">Checking your changes doesn't just show what changed — CODEMD traces the callgraph to work out which real test(s) actually cover each changed function, so you (or Claude/Codex, via MCP below) know exactly what to rerun instead of guessing or retesting everything. Research on AI coding agents has found that giving them a targeted map of which tests actually cover a change substantially reduces regressions compared to no guidance.</p>
+    <div id="checkChangesNoteCard" class="is-collapsed">
+      <div id="checkChangesNoteHeadline">
+        <button id="checkChangesNoteToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show why checking changes matters">+</button>
+        <span id="checkChangesNoteLabel">Why check changes?</span>
+      </div>
+      <p id="checkChangesNote">Checking your changes doesn't just show what changed — CODEMD traces the callgraph to work out which real test(s) actually cover each changed function, so you (or Claude/Codex, via MCP below) know exactly what to rerun instead of guessing or retesting everything. Research on AI coding agents has found that giving them a targeted map of which tests actually cover a change substantially reduces regressions compared to no guidance.</p>
+    </div>
     <div id="messages"></div>
+    <div id="defectsCard" class="is-collapsed" title="Every genuine test failure — CODEMD-generated or your own hand-written tests — with its output, in one place, so you can debug it or hand it to Claude yourself. Excludes tooling/environment failures that never really ran the test.">
+      <div id="defectsHeadline">
+        <button id="defectsToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show bugs found by generated tests">+</button>
+        <span id="defectsLabel">Bugs, Issues &amp; Defects</span>
+      </div>
+      <div id="defectsDetails"></div>
+    </div>
     <div id="mcpUsageCard" class="is-collapsed" title="Claude/Codex CODEMD MCP usage observed by the MCP wrapper.">
       <div id="mcpUsageContent">
         <div id="mcpUsageHeadline">
@@ -11738,18 +12361,10 @@ function getHtml(host, port, cspSource) {
           <div id="mcpUsageSubtitle"></div>
           <div id="mcpSetupStatus"></div>
           <div id="mcpUsageByClient"></div>
-          <ul id="mcpRegressionNote">
-            <li><code>codemd_search_artifacts</code> — find likely symbols/files before reading code.</li>
-            <li><code>codemd_semantic_search</code> — ranked semantic code search over indexed vectors.</li>
-            <li><code>codemd_get_impact_radius</code> — everything reachable from a symbol (callers/callees), for blast-radius checks.</li>
-            <li><code>codemd_get_callers</code> — a symbol's direct callers only.</li>
-            <li><code>codemd_get_callees</code> — a symbol's direct callees only.</li>
-            <li><code>codemd_get_call_paths</code> — shortest routes between two symbols in the callgraph.</li>
-            <li><code>codemd_find_tests</code> — which test file(s) cover a symbol.</li>
-            <li><code>codemd_review_changes</code> — summarizes the local git diff plus the exact test(s) to verify it.</li>
-            <li><code>codemd_read_artifact</code> — read a generated CODE.md artifact.</li>
-            <li><code>codemd_status</code> — whether CODE.md artifacts exist for this workspace.</li>
-          </ul>
+          <div id="mcpRegressionNote">
+            <div id="mcpToolsWhy">Why this helps: these tools hand Claude, Codex, and other coding agents a verified map of this codebase — real callers/callees, blast radius, and test coverage from a pre-built index — instead of them grepping and re-reading files to guess it. Fewer missed callers, fewer wrong edits, faster answers on every task.</div>
+            <div id="mcpToolCounts"></div>
+          </div>
         </div>
       </div>
       <div id="mcpActionRow">
@@ -11776,13 +12391,6 @@ function getHtml(host, port, cspSource) {
         <span id="criticalFunctionsLabel">Critical Functions</span>
       </div>
       <div id="criticalFunctionsDetails"></div>
-    </div>
-    <div id="defectsCard" class="is-collapsed" title="Genuine bugs found when a CODEMD-generated test actually failed against real code — not every test failure, just ones traced to a real defect.">
-      <div id="defectsHeadline">
-        <button id="defectsToggleBtn" type="button" class="detailsToggle" aria-expanded="false" title="Show bugs found by generated tests">+</button>
-        <span id="defectsLabel">Bugs, Issues &amp; Defects</span>
-      </div>
-      <div id="defectsDetails"></div>
     </div>
     <form id="searchForm">
       <input id="queryInput" type="text" placeholder="Search this codebase…" autocomplete="off" aria-autocomplete="list" aria-controls="querySuggestionPanel" />
@@ -11812,19 +12420,19 @@ function getHtml(host, port, cspSource) {
             </span>
             <span class="modesOptionCheck">✓</span>
           </button>
-          <button type="button" id="modeAgentOption" class="modesOption" data-mode="agent" role="menuitemradio">
+          <button type="button" id="modeAgentOption" class="modesOption" data-mode="agent" role="menuitemradio" title="${CLAUDE_AGENT_MODE_DISABLED ? 'Temporarily disabled in this release.' : 'Lets this panel invoke Claude for writing tests, discovering how to run a test, and fixing failures.'}">
             <span class="modesOptionIcon">🤖</span>
             <span class="modesOptionBody">
-              <span class="modesOptionTitle">Use Coding Agent</span>
-              <span class="modesOptionDesc">Claude can write tests, discover test commands, and fix failures when you click a Claude-powered action.</span>
+              <span class="modesOptionTitle">Use Coding Agent${CLAUDE_AGENT_MODE_DISABLED ? ' (Disabled)' : ''}</span>
+              <span class="modesOptionDesc">Lets Claude write tests, discover test commands, and fix failures for you.</span>
             </span>
             <span class="modesOptionCheck">✓</span>
           </button>
-          <button type="button" id="autoPipelineBtn" class="modesOption" data-mode="auto" role="menuitem" title="For every medium/high-priority uncommitted change, one at a time: check existing tests (any language with a local runner), generate every applicable test (new-function, contract, multi-caller, call-path — not just one), run each, and ask Claude to fix a genuine failure, then move on. Requires Claude to be allowed to run. Not capped by codemdGraphs.maxAutoWritesPerBatch — each Claude call still respects maxCostPerActionUsd, and Stop (once running) ends it after the current step.">
+          <button type="button" id="autoPipelineBtn" class="modesOption" data-mode="auto" role="menuitem" title="${AUTO_MODE_DISABLED ? 'Temporarily disabled in this release.' : 'Runs the comprehensive check/generate/run/fix pipeline across every medium/high-priority uncommitted change, unattended.'}">
             <span class="modesOptionIcon">⚡</span>
             <span class="modesOptionBody">
-              <span class="modesOptionTitle">Auto Mode</span>
-              <span class="modesOptionDesc">Comprehensive pipeline for every medium/high-priority uncommitted change: check, generate every applicable test, run, fix. Not capped — Stop anytime.</span>
+              <span class="modesOptionTitle">Auto Mode${AUTO_MODE_DISABLED ? ' (Disabled)' : ''}</span>
+              <span class="modesOptionDesc">One click: checks existing tests, generates every applicable test, runs it, asks Claude to fix a real failure and re-runs — across every medium/high-priority change.</span>
             </span>
           </button>
         </div>
@@ -11885,7 +12493,10 @@ function getHtml(host, port, cspSource) {
   const removeMcpBtn = document.getElementById('removeMcpBtn');
   const cleanArtifactsBtn = document.getElementById('cleanArtifactsBtn');
   const mcpUsageByClient = document.getElementById('mcpUsageByClient');
+  const mcpToolCounts = document.getElementById('mcpToolCounts');
   const setupMcpBtn = document.getElementById('setupMcpBtn');
+  const checkChangesNoteCard = document.getElementById('checkChangesNoteCard');
+  const checkChangesNoteToggleBtn = document.getElementById('checkChangesNoteToggleBtn');
   const featureListCard = document.getElementById('featureListCard');
   const featureListToggleBtn = document.getElementById('featureListToggleBtn');
   const featureListLabel = document.getElementById('featureListLabel');
@@ -11906,6 +12517,8 @@ function getHtml(host, port, cspSource) {
   const checkChangesBtn = document.getElementById('checkChangesBtn');
   const blastRadiusBtn = document.getElementById('blastRadiusBtn');
   const checkCommitsBtn = document.getElementById('checkCommitsBtn');
+  const loginGithubBtn = document.getElementById('loginGithubBtn');
+  const openCodemdBtn = document.getElementById('openCodemdBtn');
   const openGraphBtn = document.getElementById('openGraphBtn');
   const expandGraphBtn = document.getElementById('expandGraphBtn');
   const searchForm = document.getElementById('searchForm');
@@ -12266,6 +12879,13 @@ function getHtml(host, port, cspSource) {
     vscode.postMessage({ type: 'generate' });
   });
 
+  checkChangesNoteToggleBtn.addEventListener('click', () => {
+    const collapsed = checkChangesNoteCard.classList.toggle('is-collapsed');
+    checkChangesNoteToggleBtn.textContent = collapsed ? '+' : '-';
+    checkChangesNoteToggleBtn.title = collapsed ? 'Show why checking changes matters' : 'Hide this note';
+    checkChangesNoteToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  });
+
   mcpToggleBtn.addEventListener('click', () => {
     const collapsed = mcpUsageCard.classList.toggle('is-collapsed');
     mcpToggleBtn.textContent = collapsed ? '+' : '-';
@@ -12350,6 +12970,14 @@ function getHtml(host, port, cspSource) {
 
   checkCommitsBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'checkCommits' });
+  });
+
+  loginGithubBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openCodemdSite' });
+  });
+
+  openCodemdBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openCodemdSite' });
   });
 
   openGraphBtn.addEventListener('click', () => {
@@ -12528,7 +13156,7 @@ function getHtml(host, port, cspSource) {
     toggle.type = 'button';
     toggle.className = 'changeSectionTitle expandToggle';
     toggle.setAttribute('aria-expanded', startsExpanded ? 'true' : 'false');
-    const label = () => title + (count ? ' (' + count + ')' : '') + ' ' + (toggle.getAttribute('aria-expanded') === 'true' ? 'v' : '>');
+    const label = () => title + (count ? ' (' + count + ')' : '') + ' ' + (toggle.getAttribute('aria-expanded') === 'true' ? '-' : '+');
     toggle.textContent = label();
     body.style.display = startsExpanded ? '' : 'none';
     toggle.addEventListener('click', (event) => {
@@ -13043,6 +13671,22 @@ function getHtml(host, port, cspSource) {
   let testGapRequestSeq = 0;
   const testRunRowsByRequestId = new Map();
   let testRunRequestSeq = 0;
+  // Per-symbol handle onto that card's own fireCheckTests closure, set by
+  // appendResultItem below — lets "Run CODEMD (Free) Tests" (the
+  // Functions-toolbar button) drive each card's existing "Check tests" flow
+  // one function at a time instead of re-implementing test discovery. Rebuilt
+  // on every render, so it never points at a stale/removed card.
+  const freeRunRegistryBySymbol = new Map();
+  let freeTestRunActive = false;
+  let freeTestRunStopRequested = false;
+  // Which risk tiers "Run CODEMD (Free) Tests" targets — a rank cutoff
+  // straight off resultRiskBucket's own ladder (1=Critical..4=Medium), so
+  // "Critical only" vs "Medium and higher" reuses the exact same risk
+  // classification the results list already sorts/groups by, no separate
+  // taxonomy. Deliberately a plain in-memory variable, not a persisted
+  // setting or workspace state — resets to the default (4, today's fixed
+  // behavior) every time the panel reloads.
+  let freeRunRiskThreshold = 4;
   const jsTestRunnerSetupByRequestId = new Map();
   const fixTestRowsByRequestId = new Map();
   let fixTestRequestSeq = 0;
@@ -13059,6 +13703,32 @@ function getHtml(host, port, cspSource) {
   // handler's row-status sync is simply skipped for these (guarded on
   // statusPill being present). Fixed rows skip all of that — there's nothing
   // left to act on — and just show what was fixed and when.
+  // Composes everything a person would need to paste this bug somewhere
+  // else (a Slack message, an issue tracker, a message to a teammate) —
+  // not just the raw pytest/jest output the "View failure output" toggle
+  // already shows inline, but the identifying details above it too.
+  function defectRowInfoText(item, isFixed) {
+    const lines = [];
+    lines.push(item.targetSymbol + (item.occurrences > 1 ? ' (failed ' + item.occurrences + '×)' : ''));
+    if (item.targetPath) {
+      lines.push(item.targetPath + (item.targetStartLine ? ':' + item.targetStartLine : ''));
+    }
+    if (item.kind === 'code' || item.kind === 'test') {
+      lines.push('Kind: ' + item.kind);
+    }
+    lines.push('Status: ' + (isFixed ? 'Fixed' : 'Active (unresolved)'));
+    if (item.timestamp) {
+      const parsed = new Date(item.timestamp);
+      lines.push('When: ' + (isNaN(parsed.getTime()) ? item.timestamp : parsed.toLocaleString()));
+    }
+    if (item.output) {
+      lines.push('');
+      lines.push('Output:');
+      lines.push(item.output);
+    }
+    return lines.join('\n');
+  }
+
   function createDefectRow(item) {
     const isFixed = item.status === 'fixed';
     const row = document.createElement('div');
@@ -13098,6 +13768,24 @@ function getHtml(host, port, cspSource) {
       time.textContent = isNaN(parsed.getTime()) ? item.timestamp : parsed.toLocaleString();
       head.appendChild(time);
     }
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'outputLink';
+    copyBtn.textContent = '📋 Copy bug info';
+    copyBtn.title = 'Copy this bug\\'s details (function, file, status, output) to your clipboard.';
+    copyBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const original = copyBtn.textContent;
+      try {
+        await navigator.clipboard.writeText(defectRowInfoText(item, isFixed));
+        copyBtn.textContent = '✓ Copied';
+      } catch (err) {
+        copyBtn.textContent = '⚠ Copy failed';
+      }
+      setTimeout(() => { copyBtn.textContent = original; }, 1500);
+    });
+    head.appendChild(copyBtn);
     row.appendChild(head);
 
     if (item.targetPath) {
@@ -13336,7 +14024,7 @@ function getHtml(host, port, cspSource) {
   const modePromptOnlyOption = document.getElementById('modePromptOnlyOption');
   const modeAgentOption = document.getElementById('modeAgentOption');
   const MODE_ICONS = { manual: '✋', promptOnly: '📋', agent: '🤖' };
-  const MODE_LABELS = { manual: 'Manual', promptOnly: 'Prompt-Only', agent: 'Use Coding Agent' };
+  const MODE_LABELS = { manual: 'Manual', promptOnly: 'Prompt-Only', agent: 'Use Coding Agent${CLAUDE_AGENT_MODE_DISABLED ? ' (Disabled)' : ''}' };
 
   function closeModesPopup() {
     modesPopup.classList.remove('is-open');
@@ -13347,7 +14035,7 @@ function getHtml(host, port, cspSource) {
     modesBtnLabel.textContent = MODE_LABELS[claudeAgentMode] || MODE_LABELS.manual;
     modesBtn.className = 'modesTrigger' + (claudeAgentMode === 'agent' ? ' is-agent' : claudeAgentMode === 'promptOnly' ? ' is-prompt-only' : '');
     modesBtn.title = claudeAgentMode === 'agent'
-      ? 'Claude is currently allowed to run (writing tests, discovering a test command, fixing a failure). Click to change modes.'
+      ? 'Claude is allowed to run test generation, run-command discovery, and fixes for you. Click to change modes.'
       : claudeAgentMode === 'promptOnly'
         ? 'CODEMD types each prompt into your own Claude Code terminal instead of running Claude itself — nothing runs until you press Enter there. Click to change modes.'
         : 'Claude is currently not allowed to run anything — you\\'ll be asked to allow it the first time you click a Claude-powered action. Click here to change modes.';
@@ -13447,7 +14135,7 @@ function getHtml(host, port, cspSource) {
     autoPipelineProgressToggle.title = collapsed ? 'Show individual results' : 'Hide individual results';
     autoPipelineProgressToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   });
-  autoPipelineBtn.addEventListener('click', () => {
+  function startAutoPipeline() {
     if (autoPipelineRunning) { return; }
     closeModesPopup();
     autoPipelineRunning = true;
@@ -13462,7 +14150,8 @@ function getHtml(host, port, cspSource) {
     autoPipelineProgressText.textContent = 'Starting…';
     stopAutoPipelineActiveStep();
     vscode.postMessage({ type: 'startAutoMode' });
-  });
+  }
+  autoPipelineBtn.addEventListener('click', () => startAutoPipeline());
   autoPipelineStopBtn.addEventListener('click', () => {
     autoPipelineStopBtn.disabled = true;
     autoPipelineStopBtn.textContent = 'Stopping after current change…';
@@ -13534,6 +14223,13 @@ function getHtml(host, port, cspSource) {
 
     const lowerFile = file.toLowerCase();
     const isDirect = DIRECT_RUN_EXTS.some((ext) => lowerFile.endsWith(ext));
+    // JS/TS isn't in DIRECT_RUN_EXTS (it's dispatched as 'runTestViaClaude'
+    // below), but runTestViaClaudeForResult skips Claude entirely whenever it
+    // can build a deterministic vitest/jest/mocha/ava command itself — the
+    // common case — and only asks Claude when that fails. Labeling every
+    // JS/TS run "Ask Claude to run" was misleading nearly always; this flag
+    // lets the label/tooltip match what will actually happen most of the time.
+    const isJsTs = /\.(jsx?|tsx?|mjs|cjs)$/i.test(lowerFile);
 
     const runBtn = document.createElement('button');
     runBtn.type = 'button';
@@ -13541,9 +14237,12 @@ function getHtml(host, port, cspSource) {
     if (isDirect) {
       runBtn.textContent = '▶ Run with CODEMD (free)';
       runBtn.title = 'Run this test directly in your own environment — no Claude call, free. Pass/fail is a real result; whether it actually exercised the changed lines is confirmed via coverage when available, otherwise marked best effort.';
+    } else if (isJsTs) {
+      runBtn.textContent = '▶ Run with CODEMD (free)';
+      runBtn.title = 'CODEMD runs this with your project\\'s detected test runner (vitest/jest/mocha/ava) directly — no Claude call, free, with real coverage via c8. Only if it can\\'t determine the exact command does it briefly ask Claude to find one instead.';
     } else {
       runBtn.textContent = '🤖 Ask Claude to run';
-      runBtn.title = 'CODEMD doesn\\'t know this language\\'s test command by convention, so Claude finds it (read-only, no fixing or editing) — then CODEMD runs it directly and reads the real exit code, same as a direct run. JS/TS also gets real coverage via c8; other languages get a real pass/fail without coverage confirmation yet.';
+      runBtn.title = 'CODEMD doesn\\'t know this language\\'s test command by convention, so Claude finds it (read-only, no fixing or editing) — then CODEMD runs it directly and reads the real exit code, same as a direct run. This language gets a real pass/fail without coverage confirmation yet.';
     }
 
     const statusPill = document.createElement('span');
@@ -13604,6 +14303,42 @@ function getHtml(host, port, cspSource) {
     fixStopBtn.textContent = 'Stop';
     fixStopBtn.style.display = 'none';
 
+    // Only shown once a run actually fails (couldn't-run or ran-but-failed
+    // alike, toggled alongside outputToggle/fixBtn in the testRunResult
+    // handler below) — reads the row's own live DOM text at click time
+    // rather than recomposing it per-result, so it always matches exactly
+    // what's currently on screen (including after "Run again").
+    const copyFailureBtn = document.createElement('button');
+    copyFailureBtn.type = 'button';
+    copyFailureBtn.className = 'outputLink';
+    copyFailureBtn.textContent = '📋 Copy failure info';
+    copyFailureBtn.title = 'Copy the function under test, file, status, and full output to your clipboard.';
+    copyFailureBtn.style.display = 'none';
+    copyFailureBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const lines = [];
+      lines.push((targetInfo && targetInfo.symbol) || label);
+      if (targetInfo && targetInfo.path) {
+        lines.push(targetInfo.path + (targetInfo.startLine ? ':' + targetInfo.startLine : ''));
+      }
+      lines.push('Test: ' + label + ' (' + file + ')');
+      if (statusPill.textContent) { lines.push('Status: ' + statusPill.textContent); }
+      if (statusDetail.textContent) { lines.push(statusDetail.textContent); }
+      if (outputPre.textContent) {
+        lines.push('');
+        lines.push('Output:');
+        lines.push(outputPre.textContent);
+      }
+      const original = copyFailureBtn.textContent;
+      try {
+        await navigator.clipboard.writeText(lines.join('\\n'));
+        copyFailureBtn.textContent = '✓ Copied';
+      } catch (err) {
+        copyFailureBtn.textContent = '⚠ Copy failed';
+      }
+      setTimeout(() => { copyFailureBtn.textContent = original; }, 1500);
+    });
+
     // Only shown when a run fails with a named missing package (see
     // missingPackage/pythonPath on testRunResult) — installs into the exact
     // interpreter the failed run used, then re-runs the same test. Never
@@ -13625,10 +14360,11 @@ function getHtml(host, port, cspSource) {
       statusPill.style.display = 'none';
       statusDetail.style.display = 'none';
       outputToggle.style.display = 'none';
+      copyFailureBtn.style.display = 'none';
       outputPre.style.display = 'none';
       outputPre.textContent = '';
       const installRequestId = 'testinstall_' + (testRunRequestSeq++) + '_' + Date.now();
-      testRunRowsByRequestId.set(installRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, resolveBtn, isDirect, onResult, symbolKey: (targetInfo && targetInfo.symbol) || '' });
+      testRunRowsByRequestId.set(installRequestId, { runBtn, statusPill, statusDetail, outputToggle, copyFailureBtn, outputPre, fixBtn, fixNote, installBtn, resolveBtn, isDirect, onResult, symbolKey: (targetInfo && targetInfo.symbol) || '' });
       vscode.postMessage({
         type: 'installTestDependency',
         requestId: installRequestId,
@@ -13709,6 +14445,7 @@ function getHtml(host, port, cspSource) {
       // an old, unrelated failure. Claude's live transcript below (via
       // fixTestProgress) is the new source of truth for "what's happening".
       outputToggle.style.display = 'none';
+      copyFailureBtn.style.display = 'none';
       outputPre.style.display = 'none';
       outputPre.textContent = '';
       // A prior fix attempt's "View/Hide Claude output" toggle (inserted by
@@ -13735,7 +14472,7 @@ function getHtml(host, port, cspSource) {
       // handler sync this row's own run-status pill (e.g. a stale "Couldn't
       // run") once the fix outcome makes it stale, instead of leaving it
       // frozen next to a banner that says the test now passes.
-      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote, testFile: file, sourceFile: (targetInfo && targetInfo.path) || '', tickInterval, fixOutputPre, fixStopBtn, statusPill, statusDetail, runBtn, outputToggle, outputPre, isDirect, resolveBtn });
+      fixTestRowsByRequestId.set(fixRequestId, { fixBtn, fixNote, testFile: file, sourceFile: (targetInfo && targetInfo.path) || '', tickInterval, fixOutputPre, fixStopBtn, statusPill, statusDetail, runBtn, outputToggle, copyFailureBtn, outputPre, isDirect, resolveBtn });
       vscode.postMessage({
         type: 'fixTestFailure',
         requestId: fixRequestId,
@@ -13753,10 +14490,19 @@ function getHtml(host, port, cspSource) {
       event.stopPropagation();
       if (runBtn.dataset.pending === '1') { return; }
       runBtn.dataset.pending = '1';
-      const tickInterval = startPendingTicker(runBtn, isDirect ? 'Running' : 'Asking Claude');
+      // The button's own current label already carries the best guess for
+      // whether this run needs Claude — set from isDirect/isJsTs above on
+      // the first run, and relabeled from the backend's real viaClaude flag
+      // after every result since (see the testRunResult handler below).
+      // Reading it here (before startPendingTicker overwrites it) keeps the
+      // ticker consistent with whatever the label just told the user,
+      // instead of re-deriving a possibly-stale guess from isDirect alone.
+      const likelyViaClaude = /Claude/i.test(runBtn.textContent);
+      const tickInterval = startPendingTicker(runBtn, likelyViaClaude ? 'Asking Claude' : 'Running');
       statusPill.style.display = 'none';
       statusDetail.style.display = 'none';
       outputToggle.style.display = 'none';
+      copyFailureBtn.style.display = 'none';
       outputPre.style.display = 'none';
       outputPre.textContent = '';
       fixBtn.style.display = 'none';
@@ -13777,7 +14523,7 @@ function getHtml(host, port, cspSource) {
       setupBtn.dataset.pending = '0';
       resolveBtn.style.display = 'none';
       const runRequestId = 'testrun_' + (testRunRequestSeq++) + '_' + Date.now();
-      testRunRowsByRequestId.set(runRequestId, { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, fixNote, installBtn, setupBtn, resolveBtn, isDirect, onResult, tickInterval, symbolKey: (targetInfo && targetInfo.symbol) || '' });
+      testRunRowsByRequestId.set(runRequestId, { runBtn, statusPill, statusDetail, outputToggle, copyFailureBtn, outputPre, fixBtn, fixNote, installBtn, setupBtn, resolveBtn, isDirect, onResult, tickInterval, symbolKey: (targetInfo && targetInfo.symbol) || '', domRow: row });
       vscode.postMessage({
         type: isDirect ? 'runTestFile' : 'runTestViaClaude',
         requestId: runRequestId,
@@ -13797,17 +14543,28 @@ function getHtml(host, port, cspSource) {
     row.appendChild(fixStopBtn);
     row.appendChild(resolveBtn);
     row.appendChild(outputToggle);
+    row.appendChild(copyFailureBtn);
     row.appendChild(statusDetail);
     row.appendChild(outputPre);
     row.appendChild(fixNote);
     row.appendChild(fixOutputPre);
-    // Lets a batch runner ("Run all", below, or Auto-Run Tests) trigger this
-    // row's run without duplicating the click handler's own pending/reset
-    // logic. isDirect is exposed too so a caller can tell, without knowing
-    // this row's internals, whether running it needs Claude (to find the
-    // command) or not — Auto-Run Tests only ever fires the direct ones.
-    row.runTest = () => runBtn.click();
+    // Lets a batch runner ("Run all", below, Auto-Run Tests, or "Run CODEMD
+    // (Free) Tests") trigger this row's run without duplicating the click
+    // handler's own pending/reset logic. isDirect/isJsTs are exposed too so
+    // a caller can tell, without knowing this row's internals, whether
+    // running it needs Claude (to find the command) or not — Auto-Run Tests
+    // and "Run CODEMD (Free) Tests" only ever fire the free ones.
+    // Returns a Promise that resolves once this run's testRunResult has been
+    // fully handled (see the _doneListeners drain in that handler below) —
+    // "Run CODEMD (Free) Tests" awaits it so it never has two test runs in
+    // flight at once.
+    row.runTest = () => new Promise((resolve) => {
+      row._doneListeners = row._doneListeners || [];
+      row._doneListeners.push(resolve);
+      runBtn.click();
+    });
     row.isDirect = isDirect;
+    row.isJsTs = isJsTs;
     return row;
   }
 
@@ -14135,6 +14892,25 @@ function getHtml(host, port, cspSource) {
         + (m.coverageConfirmed && m.executed ? ' · exercises this change' : '');
     }
     row.appendChild(pill);
+    // Same "✓ Resolve" affordance the generated-test run rows get once they
+    // pass (see the resolveBtn built in the run/fix row above) — an existing
+    // test found for this change is just as resolvable once it's confirmed
+    // passing, and users shouldn't have to run it again via that other row
+    // just to get a dismiss button. Same semantics: hides this row only,
+    // nothing persisted, still counted in "N other test(s) checked" or "Run
+    // all" as before, and reappears on the next "Check Uncommitted Edits".
+    if (m.ok && m.passed) {
+      const resolveBtn = document.createElement('button');
+      resolveBtn.type = 'button';
+      resolveBtn.className = 'btn is-outline';
+      resolveBtn.textContent = '✓ Resolve';
+      resolveBtn.title = 'This test passed — hide it for now. Nothing about the test itself changes; this only hides the row until the next "Check Uncommitted Edits".';
+      resolveBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        row.style.display = 'none';
+      });
+      row.appendChild(resolveBtn);
+    }
     container.appendChild(row);
     // The pill's own text ("see output") used to be a dead end — the
     // pytest stdout/stderr this refers to never left the extension host.
@@ -14264,7 +15040,43 @@ function getHtml(host, port, cspSource) {
     if (msg.ok && msg.path && symbolKey) {
       generatedTestsBySymbol.set(symbolKey, opts);
       updateVerdictCard(symbolKey.split('#')[0]);
+      refreshTestGapForSymbol(symbolKey.split('#')[0]);
     }
+  }
+
+  // Wraps a "Generate…" chip together with a one-line caption naming which
+  // kind of test clicking it will actually create — several of these chips
+  // can sit in the same row (e.g. the free mechanical generator next to its
+  // Claude fallback, or Contract next to Multi-Caller), and their button
+  // labels alone don't say which of "regression/call-path/contract/
+  // new-function/multi-caller" comes out the other end. Returns the wrapper
+  // so the caller appends that instead of the bare chip.
+  function appendChipWithHint(container, chip, hintText) {
+    const group = document.createElement('div');
+    group.className = 'actionChipGroup';
+    group.appendChild(chip);
+    if (hintText) {
+      const hint = document.createElement('div');
+      hint.className = 'actionChipHint';
+      hint.textContent = hintText;
+      group.appendChild(hint);
+    }
+    container.appendChild(group);
+    return group;
+  }
+
+  // Re-runs a symbol's own "Check tests" chip (see fireCheckTests /
+  // freeRunRegistryBySymbol below) after some other action just made its
+  // last result stale — a generator writing a brand-new test, or an
+  // existing-test run confirming one. Without this, a card could show "No
+  // tests found" up top while the Verification card right below it (kept
+  // live by updateVerdictCard) already reports a passing test — same
+  // symbol, contradicting status, just because the top chip only checks once
+  // and never hears about what happened after. A no-op if this symbol's
+  // card never registered a check (e.g. an unsupported language).
+  function refreshTestGapForSymbol(symbol) {
+    const reg = symbol ? freeRunRegistryBySymbol.get(symbol) : null;
+    if (reg && reg.fireCheckTests) { reg.fireCheckTests(); }
   }
 
   // Revealed either after the mechanical generator reports it couldn't help
@@ -14331,7 +15143,9 @@ function getHtml(host, port, cspSource) {
       callPathTestChipsByRequestId.set(requestId, { chip: claudeChip, actionsEl: genActions, tickInterval, result: gapResult, symbol, stopBtn });
       vscode.postMessage({ type: 'generateCallPathTest', result: gapResult, requestId });
     });
-    genActions.appendChild(claudeChip);
+    appendChipWithHint(genActions, claudeChip, isRemoved
+      ? 'Creates: a test confirming callers still work after removal'
+      : 'Creates: Call-path test — replays a real caller by hand');
   }
 
   // Shared by the commit row's own click handler and its explicit "Analyze
@@ -14528,19 +15342,33 @@ function getHtml(host, port, cspSource) {
         testsChip.textContent = 'Check tests';
         testsChip.title = 'Look for tests covering ' + symbolic
           + (fireExistingTestsCheck ? ', and run any existing test(s) found (local, no Claude call).' : ' (does not run anything by itself).');
-        const fireCheckTests = () => {
-          if (testsChip.dataset.pending === '1') { return; }
+        // onDone (optional) is called exactly once with the testGapResult
+        // outcome ({ found, runners, totalTests } — see the testGapResult
+        // handler below) once this specific check finishes. Only "Run
+        // CODEMD (Free) Tests" (the Functions-toolbar button) passes one —
+        // it awaits each card's check before moving to the next so checks
+        // never pile up in parallel; the manual chip click and Auto-Run
+        // Tests both still fire-and-forget same as before.
+        const fireCheckTests = (onDone) => {
+          if (testsChip.dataset.pending === '1') {
+            if (onDone) { onDone(null); }
+            return;
+          }
           testsChip.dataset.pending = '1';
           testsChip.textContent = 'Checking tests…';
           const requestId = 'testgap_' + (testGapRequestSeq++) + '_' + Date.now();
           const card = r && r.changeCard;
-          const impactedFunctions = (card && Array.isArray(card.impactedFunctions)) ? card.impactedFunctions : [];
+          // Real direct callers, not the full transitive impact radius — this
+          // feeds the "confirmed caller(s)" wording below, which claims an
+          // actual calling relationship, not just "somewhere upstream."
+          const impactedFunctions = (card && Array.isArray(card.directCallers)) ? card.directCallers : [];
           testGapChipsByRequestId.set(requestId, {
             chip: testsChip,
             testingArea,
             isNewFunction: !!card && card.kind === 'added',
             impactedFunctions,
             result: r,
+            onDone,
           });
           vscode.postMessage({ type: 'findTestsForResult', result: r, requestId });
         };
@@ -14554,6 +15382,11 @@ function getHtml(host, port, cspSource) {
           if (fireExistingTestsCheck) { fireExistingTestsCheck(); }
         });
         actions.appendChild(testsChip);
+        if (graphable) {
+          // Rebuilt on every render (including a re-sort), so a stale
+          // closure from a removed/replaced card can never be invoked.
+          freeRunRegistryBySymbol.set(graphable, { result: r, fireCheckTests });
+        }
         // Auto-Run Tests: automatically discovers and (for Python/Go/Rust/
         // Java/C#/Kotlin only — never Claude) runs existing tests as this
         // card renders, the same way a manual "Check tests" -> "Run all"
@@ -14594,7 +15427,7 @@ function getHtml(host, port, cspSource) {
           event.stopPropagation();
           fireNewFuncTest();
         });
-        actions.appendChild(newFuncChip);
+        appendChipWithHint(actions, newFuncChip, 'Creates: New-function test — grounded in a real caller');
         maybeAutoWriteTest(graphable, graphable + '#newfunc', fireNewFuncTest, actions);
       }
 
@@ -14625,7 +15458,8 @@ function getHtml(host, port, cspSource) {
           event.stopPropagation();
           fireContractTest();
         });
-        actions.appendChild(contractChip);
+        appendChipWithHint(actions, contractChip, 'Creates: ' + r.changeCard.callSiteIssues.length
+          + (r.changeCard.callSiteIssues.length === 1 ? ' Contract test' : ' Contract tests') + ' — one per broken caller');
         maybeAutoWriteTest(graphable, graphable + '#contract', fireContractTest, actions);
       }
 
@@ -14638,11 +15472,11 @@ function getHtml(host, port, cspSource) {
       // Claude call on, so this also requires the card's own risk bucket to
       // agree it's worth the spend.
       const broadCoverageRiskOk = r.changeCard && ['medium', 'high', 'critical'].includes(r.changeCard.riskLevel);
-      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && broadCoverageRiskOk && Array.isArray(r.changeCard.impactedFunctions) && r.changeCard.impactedFunctions.length >= 2 && !generatedTestsBySymbol.has(graphable + '#broadcoverage') && !hasDiskGeneratedKind(r, 'broad_coverage')) {
+      if (symbolic && r.changeCard && r.changeCard.kind === 'modified' && broadCoverageRiskOk && Array.isArray(r.changeCard.directCallers) && r.changeCard.directCallers.length >= 2 && !generatedTestsBySymbol.has(graphable + '#broadcoverage') && !hasDiskGeneratedKind(r, 'broad_coverage')) {
         const broadChip = document.createElement('span');
         broadChip.className = 'actionChip actionChipClickable';
         broadChip.textContent = '🔀 Generate Multi-Caller Test(s) with Claude';
-        broadChip.title = 'Reads multiple of this function\\'s ' + r.changeCard.impactedFunctions.length + ' confirmed real callers and writes one test per genuinely distinct calling pattern found (e.g. different argument shapes or edge cases), not just one caller\\'s usage.';
+        broadChip.title = 'Reads multiple of this function\\'s ' + r.changeCard.directCallers.length + ' confirmed real callers and writes one test per genuinely distinct calling pattern found (e.g. different argument shapes or edge cases), not just one caller\\'s usage.';
         const fireBroadCoverageTest = () => {
           if (broadChip.dataset.pending === '1') { return; }
           broadChip.dataset.pending = '1';
@@ -14661,7 +15495,7 @@ function getHtml(host, port, cspSource) {
           event.stopPropagation();
           fireBroadCoverageTest();
         });
-        actions.appendChild(broadChip);
+        appendChipWithHint(actions, broadChip, 'Creates: Multi-caller test(s) — one per distinct calling pattern');
         maybeAutoWriteTest(graphable, graphable + '#broadcoverage', fireBroadCoverageTest, actions);
       }
 
@@ -14877,6 +15711,82 @@ function getHtml(host, port, cspSource) {
       .forEach((bucket) => bucket.render());
   }
 
+  // "Run CODEMD (Free) Tests" — the Functions-toolbar button. Walks every
+  // function in this result set at or above the selected risk tier
+  // (freeRunRiskThreshold, a rank cutoff off resultRiskBucket's own ladder —
+  // the same buckets the Sort dropdown groups by, just user-adjustable via
+  // the tier <select> in the free-run bar instead of a fixed "medium and up"),
+  // and for each one in turn: fires that card's own "Check tests" (awaiting
+  // the result before moving on), then runs only the free rows it finds
+  // (isDirect or isJsTs — never the "Ask Claude to run" ones), one at a time,
+  // awaiting each before starting the next. Strictly sequential end to end —
+  // never more than one check or one test run in flight — so a large diff
+  // can't flood the OS with parallel pytest/coverage processes the way an
+  // uncapped parallel Auto-Run Tests pass could (see the autoRunBatchCount
+  // comment above). Any real pass/fail surfaces through the exact same
+  // testRunResult path a manual click would use, so failures show up
+  // normally and can be sent to Bugs, Issues & Defects / "Fix with Claude"
+  // like any other run.
+  function isMediumOrHigherChangeResult(r) {
+    if (!r || r.commitHash) { return false; }
+    return resultRiskBucket(r).rank <= freeRunRiskThreshold;
+  }
+
+  async function runFreeTestsSequentially(results, button, statusEl, tierSelect) {
+    const targets = (results || []).filter(isMediumOrHigherChangeResult);
+    let checked = 0;
+    let ran = 0;
+    let passed = 0;
+    let failed = 0;
+    for (let i = 0; i < targets.length; i++) {
+      if (freeTestRunStopRequested) { break; }
+      const r = targets[i];
+      const symbolic = r.graphSymbol || r.fullName || r.symbol || r.name || '';
+      const graphable = symbolic || (r.impactFiles && r.impactFiles.length ? r.impactFiles[0] : '');
+      const entry = graphable ? freeRunRegistryBySymbol.get(graphable) : null;
+      if (!entry) { continue; }
+      statusEl.textContent = 'Checking ' + (i + 1) + '/' + targets.length + ': ' + (symbolic || graphable) + '…';
+      let gapResult = null;
+      try {
+        gapResult = await new Promise((resolve) => entry.fireCheckTests(resolve));
+      } catch (e) {
+        gapResult = null;
+      }
+      checked++;
+      if (freeTestRunStopRequested) { break; }
+      const freeRows = (gapResult && gapResult.found && Array.isArray(gapResult.runners))
+        ? gapResult.runners.filter((row) => row.isDirect || row.isJsTs)
+        : [];
+      for (let j = 0; j < freeRows.length; j++) {
+        if (freeTestRunStopRequested) { break; }
+        statusEl.textContent = 'Running ' + (i + 1) + '/' + targets.length + ': ' + (symbolic || graphable)
+          + ' — test ' + (j + 1) + '/' + freeRows.length + '…';
+        let runMsg = null;
+        try {
+          runMsg = await freeRows[j].runTest();
+        } catch (e) {
+          runMsg = null;
+        }
+        ran++;
+        if (runMsg && runMsg.ok) {
+          if (runMsg.passed) { passed++; } else { failed++; }
+        }
+      }
+    }
+    freeTestRunActive = false;
+    button.disabled = false;
+    button.classList.remove('is-running');
+    if (tierSelect) { tierSelect.disabled = false; }
+    button.textContent = '▶ Run CODEMD (Free) Tests (' + targets.length
+      + (targets.length === 1 ? ' function' : ' functions') + ')';
+    const resultParts = [];
+    if (ran) { resultParts.push(passed + ' passed'); if (failed) { resultParts.push(failed + ' failed'); } }
+    const resultText = resultParts.length ? resultParts.join(', ') + ' — ' + ran + ' test(s) run' : (ran ? ran + ' test(s) run' : 'no free tests found');
+    statusEl.textContent = freeTestRunStopRequested
+      ? 'Stopped after ' + checked + '/' + targets.length + ' function(s) checked (' + resultText + ').'
+      : 'Done — checked ' + checked + '/' + targets.length + ' selected-tier function(s) (' + resultText + ').';
+  }
+
   function unusedLegacyGroupedChangeResultItems(parent, results, mode) {
     /*
       // Impact score (fan-in) is a heuristic, not a finding — a 'modified'
@@ -14952,31 +15862,39 @@ function getHtml(host, port, cspSource) {
     parent.appendChild(grid);
   }
 
-  // Running Tokens/Time across every Claude CLI call this webview session
-  // has seen (test generation + Fix-with-Claude), accumulated purely in
-  // memory — resets on reload, same as the rest of this panel's state.
-  // Both numbers come straight off each call's own result envelope (see
-  // extractClaudeResultEnvelope/tokensFromEnvelope and the generationMs/
-  // durationMs overrides next to them on the host side) rather than being
-  // measured here — Claude's CLI already reports its own token usage and
-  // duration_ms per call, and that report excludes anything on CODEMD's own
-  // side (resolving callers, reading snippets, queueing behind another
-  // in-flight Claude call), so it's the real number instead of an
-  // approximation padded with our own overhead. Cost is deliberately not
-  // shown here: on a Pro/Max subscription nothing is actually billed per
-  // call, so a dollar figure here would read as a real charge and scare
-  // people off for no reason — the CLI's total_cost_usd is still recorded
-  // per-call in .codemd/reports/ for anyone on metered API billing who wants
-  // it. Each render call creates its own set of value spans and registers
-  // them in sessionUsageLiveNodes so a later accumulateSessionUsage() call
-  // updates every visible copy in place, not just the one from the newest
-  // report.
-  const sessionUsageTotals = { tokens: 0, ms: 0, calls: 0 };
-  const sessionUsageLiveNodes = [];
-  const USAGE_MESSAGE_TYPES = new Set([
-    'newFunctionTestResult', 'callChainTestResult', 'contractTestResult',
-    'broadCoverageTestResult', 'callPathTestResult', 'fixTestResult',
-  ]);
+  // Running Tokens/Time across every Claude CLI call this extension has ever
+  // made in this VS Code profile (test generation + Fix-with-Claude), split
+  // into two figures the host sends down together in one 'claudeUsageTotals'
+  // message (see GraphsViewProvider.postClaudeUsageTotals):
+  //   - all-time: persisted in globalState (CLAUDE_USAGE_TOTALS_KEY), so it
+  //     survives webview reloads, panel close/reopen, and extension host
+  //     restarts. User-resettable via the "Reset" link below its heading.
+  //   - this session: held only in the extension host's own memory
+  //     (GraphsViewProvider.sessionUsageTotals), so it resets whenever the
+  //     extension host restarts (VS Code reload/restart) but — like the
+  //     all-time figure — is NOT reset by a webview reload or a second panel
+  //     (main view + side panel open together), since both live on the host
+  //     side and this side just renders whatever it's told.
+  // Both counters come from the same host-side accumulation, straight off
+  // each call's own result envelope (see extractClaudeResultEnvelope/
+  // tokensFromEnvelope and the generationMs/durationMs overrides next to
+  // them on the host side) rather than being measured here — Claude's CLI
+  // already reports its own token usage and duration_ms per call, and that
+  // report excludes anything on CODEMD's own side (resolving callers,
+  // reading snippets, queueing behind another in-flight Claude call), so
+  // it's the real number instead of an approximation padded with our own
+  // overhead. Cost is deliberately not shown here: on a Pro/Max subscription
+  // nothing is actually billed per call, so a dollar figure here would read
+  // as a real charge and scare people off for no reason — the CLI's
+  // total_cost_usd is still recorded per-call in .codemd/reports/ for anyone
+  // on metered API billing who wants it. Each render call creates its own
+  // set of value spans and registers them in the relevant *LiveNodes array so
+  // a later applyClaudeUsageTotals() call updates every visible copy in
+  // place, not just the one from the newest report.
+  const allTimeUsageTotals = { tokens: 0, ms: 0 };
+  const allTimeUsageLiveNodes = [];
+  const sessionOnlyUsageTotals = { tokens: 0, ms: 0 };
+  const sessionOnlyUsageLiveNodes = [];
   function formatUsageTokens(n) {
     if (n >= 1000) { return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'; }
     return String(n);
@@ -14986,32 +15904,50 @@ function getHtml(host, port, cspSource) {
   function formatUsageDuration(ms) {
     return Math.round(ms / 1000) + 's';
   }
-  function renderSessionUsageValues() {
-    sessionUsageLiveNodes.forEach((nodes) => {
-      nodes.tokens.textContent = formatUsageTokens(sessionUsageTotals.tokens);
-      nodes.time.textContent = formatUsageDuration(sessionUsageTotals.ms);
+  function renderAllTimeUsageValues() {
+    allTimeUsageLiveNodes.forEach((nodes) => {
+      nodes.tokens.textContent = formatUsageTokens(allTimeUsageTotals.tokens);
+      nodes.time.textContent = formatUsageDuration(allTimeUsageTotals.ms);
+    });
+  }
+  function renderSessionOnlyUsageValues() {
+    sessionOnlyUsageLiveNodes.forEach((nodes) => {
+      nodes.tokens.textContent = formatUsageTokens(sessionOnlyUsageTotals.tokens);
+      nodes.time.textContent = formatUsageDuration(sessionOnlyUsageTotals.ms);
     });
   }
   // Called for every message from the extension host (see the top-level
-  // 'message' listener) — a no-op unless it's one of the Claude-invoking
-  // result types above and actually carries usage data.
-  function accumulateSessionUsage(msg) {
-    if (!msg || !USAGE_MESSAGE_TYPES.has(msg.type)) { return; }
-    const tokens = typeof msg.generationTokens === 'number' ? msg.generationTokens
-      : typeof msg.tokensUsed === 'number' ? msg.tokensUsed : 0;
-    const ms = typeof msg.generationMs === 'number' ? msg.generationMs
-      : typeof msg.durationMs === 'number' ? msg.durationMs : 0;
-    if (!tokens && !ms) { return; }
-    sessionUsageTotals.tokens += tokens;
-    sessionUsageTotals.ms += ms;
-    sessionUsageTotals.calls += 1;
-    renderSessionUsageValues();
+  // 'message' listener) — a no-op unless it's the host's authoritative
+  // usage-totals broadcast.
+  function applyClaudeUsageTotals(msg) {
+    if (!msg || msg.type !== 'claudeUsageTotals') { return; }
+    if (typeof msg.tokens === 'number') { allTimeUsageTotals.tokens = msg.tokens; }
+    if (typeof msg.ms === 'number') { allTimeUsageTotals.ms = msg.ms; }
+    renderAllTimeUsageValues();
+    if (typeof msg.sessionTokens === 'number') { sessionOnlyUsageTotals.tokens = msg.sessionTokens; }
+    if (typeof msg.sessionMs === 'number') { sessionOnlyUsageTotals.ms = msg.sessionMs; }
+    renderSessionOnlyUsageValues();
   }
-  function renderSessionUsageTiles(parent) {
-    const heading = document.createElement('div');
-    heading.className = 'summaryTileSectionLabel';
-    heading.textContent = 'This session — Claude usage';
-    parent.appendChild(heading);
+  // Shared by both the all-time and this-session sections below — same tile
+  // layout, different heading/data/reset behavior.
+  function renderUsageTileSection(parent, heading, liveNodes, renderValues, resetTitle) {
+    const headingRow = document.createElement('div');
+    headingRow.className = 'summaryTileSectionHeadingRow';
+    const headingEl = document.createElement('div');
+    headingEl.className = 'summaryTileSectionLabel';
+    headingEl.textContent = heading;
+    headingRow.appendChild(headingEl);
+    if (resetTitle) {
+      const resetLink = document.createElement('span');
+      resetLink.className = 'summaryTileResetLink';
+      resetLink.textContent = 'Reset';
+      resetLink.title = resetTitle;
+      resetLink.addEventListener('click', () => {
+        vscode.postMessage({ type: 'resetClaudeUsageTotals' });
+      });
+      headingRow.appendChild(resetLink);
+    }
+    parent.appendChild(headingRow);
     const grid = document.createElement('div');
     grid.className = 'summaryTileGrid';
     const nodes = {};
@@ -15032,9 +15968,22 @@ function getHtml(host, port, cspSource) {
       grid.appendChild(cell);
       nodes[key] = value;
     });
-    sessionUsageLiveNodes.push(nodes);
+    liveNodes.push(nodes);
     parent.appendChild(grid);
-    renderSessionUsageValues();
+    renderValues();
+  }
+  function renderSessionUsageTiles(parent) {
+    renderUsageTileSection(
+      parent, 'Claude Usage (All-Time) — Estimate Only', allTimeUsageLiveNodes, renderAllTimeUsageValues,
+      'Zero out the all-time tokens/time totals shown below.',
+    );
+    // No reset link here — unlike the all-time figure, there is no user
+    // action that should zero this out; it already resets on its own the
+    // next time the extension host restarts (see sessionUsageTotals on the
+    // host side).
+    renderUsageTileSection(
+      parent, 'Claude Usage (This Session) — Estimate Only', sessionOnlyUsageLiveNodes, renderSessionOnlyUsageValues, null,
+    );
   }
 
   // A plain-English restatement of exactly what generateCallChainTestForResult's
@@ -15174,7 +16123,7 @@ function getHtml(host, port, cspSource) {
       '🔗 Call-Path Opportunities — functions changed together on the same call chain',
       table,
       chains.length,
-      true,
+      false,
     );
     parent.appendChild(section);
   }
@@ -15205,8 +16154,8 @@ function getHtml(host, port, cspSource) {
     const body = document.createElement('div');
     if (msg.query) {
       // Same "+"/"-" detailsToggle button used by the Critical Functions /
-      // Calls to CODEMD MCP cards above, instead of this block's own
-      // "v"/">" suffix text — one collapse affordance style across the panel.
+      // Calls to CODEMD MCP cards above — one collapse affordance style
+      // across the panel.
       const headline = document.createElement('div');
       headline.className = 'queryHeadline';
       const toggle = document.createElement('button');
@@ -15257,6 +16206,67 @@ function getHtml(host, port, cspSource) {
       const resultList = document.createElement('div');
       const isChangeList = msg.kind === 'changes' || msg.kind === 'blastRadius' || msg.kind === 'commitDetail';
       if (isChangeList && (msg.results || []).length > 0) {
+        // Any function reaches "Low" risk or below at rank 5+ (resultRiskBucket),
+        // so a tier cutoff of 4 (today's fixed default) always includes
+        // everything the button could ever target — this list is only used to
+        // decide whether the bar renders at all, not to size any one tier.
+        const freeRunAnyEligible = (msg.results || []).filter((r) => r && !r.commitHash && resultRiskBucket(r).rank <= 4);
+        if (freeRunAnyEligible.length > 0) {
+          const freeRunBar = document.createElement('div');
+          freeRunBar.className = 'freeRunBar';
+          const freeRunTierSelect = document.createElement('select');
+          freeRunTierSelect.className = 'freeRunTierSelect';
+          freeRunTierSelect.title = 'Which risk tier(s) "Run CODEMD (Free) Tests" targets, off the same Critical/High/Medium ranking the Sort dropdown groups by. Resets to "Medium and higher" next time this panel reloads.';
+          [
+            { value: 1, label: 'Critical only' },
+            { value: 2, label: 'High and higher' },
+            { value: 3, label: 'Medium-High and higher' },
+            { value: 4, label: 'Medium and higher' },
+          ].forEach((tier) => {
+            const opt = document.createElement('option');
+            opt.value = String(tier.value);
+            opt.textContent = tier.label;
+            if (tier.value === freeRunRiskThreshold) { opt.selected = true; }
+            freeRunTierSelect.appendChild(opt);
+          });
+          const freeRunBtn = document.createElement('button');
+          freeRunBtn.type = 'button';
+          freeRunBtn.className = 'btn is-outline';
+          const updateFreeRunBtnLabel = () => {
+            const eligible = (msg.results || []).filter(isMediumOrHigherChangeResult);
+            freeRunBtn.textContent = '▶ Run CODEMD (Free) Tests (' + eligible.length
+              + (eligible.length === 1 ? ' function' : ' functions') + ')';
+            freeRunBtn.title = 'Checks for tests, then runs the free ones (no Claude call) across all '
+              + eligible.length + ' function(s) below at the selected tier or above — strictly one check '
+              + 'and one test run at a time. Click again to stop after the current test finishes.';
+          };
+          updateFreeRunBtnLabel();
+          freeRunTierSelect.addEventListener('change', () => {
+            freeRunRiskThreshold = Number(freeRunTierSelect.value) || 4;
+            updateFreeRunBtnLabel();
+          });
+          const freeRunStatus = document.createElement('span');
+          freeRunStatus.className = 'freeRunStatus';
+          freeRunBtn.addEventListener('click', () => {
+            if (freeTestRunActive) {
+              freeTestRunStopRequested = true;
+              freeRunBtn.disabled = true;
+              freeRunBtn.textContent = 'Stopping after current test…';
+              return;
+            }
+            freeTestRunActive = true;
+            freeTestRunStopRequested = false;
+            freeRunTierSelect.disabled = true;
+            freeRunBtn.textContent = '■ Stop';
+            freeRunBtn.classList.add('is-running');
+            freeRunStatus.textContent = 'Starting…';
+            runFreeTestsSequentially(msg.results || [], freeRunBtn, freeRunStatus, freeRunTierSelect);
+          });
+          freeRunBar.appendChild(freeRunTierSelect);
+          freeRunBar.appendChild(freeRunBtn);
+          freeRunBar.appendChild(freeRunStatus);
+          functionsBody.appendChild(freeRunBar);
+        }
         const toolbar = document.createElement('div');
         toolbar.className = 'resultToolbar';
         const label = document.createElement('label');
@@ -15316,7 +16326,7 @@ function getHtml(host, port, cspSource) {
 
 	  window.addEventListener('message', (event) => {
 	    const msg = event.data;
-	    accumulateSessionUsage(msg);
+	    applyClaudeUsageTotals(msg);
 	    if (msg && msg.codemdGraphDebug) {
 	      vscode.postMessage({
 	        type: 'graphDebug',
@@ -15521,6 +16531,34 @@ function getHtml(host, port, cspSource) {
         line.textContent = label + ': ' + Number(c.calls || 0) + ' total, ' + callgraphCalls + ' graph, ' + overviewCalls + ' overview/search, ' + statusCalls + ' status';
         mcpUsageByClient.appendChild(line);
       });
+
+      // Per-tool call counts (how many times each specific tool has been
+      // called, broken down by client) — this is the concrete "here's what
+      // you're actually getting" evidence backing mcpToolsWhy's pitch above,
+      // shown right next to the tool names so a developer deciding whether
+      // to install the MCP server can see it's real, ongoing usage rather
+      // than a one-time setup checkbox.
+      if (mcpToolCounts) {
+        mcpToolCounts.innerHTML = '';
+        const allToolNames = [
+          'codemd_search_artifacts', 'codemd_semantic_search', 'codemd_get_impact_radius',
+          'codemd_get_callers', 'codemd_get_callees', 'codemd_get_call_paths',
+          'codemd_find_tests', 'codemd_review_changes', 'codemd_read_artifact', 'codemd_status',
+        ];
+        const countFor = (toolName, label) => Object.entries(toolsByClient)
+          .filter(([clientName]) => clientLabel(clientName) === label)
+          .reduce((sum, [, tools]) => sum + Number((tools || {})[toolName] || 0), 0);
+        const rows = allToolNames
+          .map((toolName) => ({ toolName, claude: countFor(toolName, 'Claude'), codex: countFor(toolName, 'Codex') }))
+          .filter((row) => row.claude > 0 || row.codex > 0)
+          .sort((a, b) => (b.claude + b.codex) - (a.claude + a.codex));
+        rows.forEach((row) => {
+          const line = document.createElement('div');
+          line.className = 'toolCountLine';
+          line.innerHTML = '<code>' + row.toolName + '</code> — Claude ' + row.claude + ', Codex ' + row.codex;
+          mcpToolCounts.appendChild(line);
+        });
+      }
 	    } else if (msg.type === 'clearGraph') {
 	      lastGraphUrl = '';
 	      graphFrame.removeAttribute('src');
@@ -15572,13 +16610,14 @@ function getHtml(host, port, cspSource) {
       const entry = testGapChipsByRequestId.get(msg.requestId);
       testGapChipsByRequestId.delete(msg.requestId);
       if (!entry) { return; }
-      const { chip, testingArea, isNewFunction, impactedFunctions, result: gapResult } = entry;
+      const { chip, testingArea, isNewFunction, impactedFunctions, result: gapResult, onDone } = entry;
       chip.dataset.pending = '0';
       let matchList = testingArea ? testingArea.querySelector(':scope > .testMatchList') : null;
       if (!msg.ok) {
         chip.textContent = 'Check tests';
         chip.title = msg.error || 'Test lookup failed.';
         if (matchList) { matchList.remove(); }
+        if (onDone) { onDone({ found: false }); }
         return;
       }
       const count = Number(msg.matchCount || 0);
@@ -15739,6 +16778,7 @@ function getHtml(host, port, cspSource) {
             if (runnerRow.isDirect) { runnerRow.runTest(); }
           });
         }
+        if (onDone) { onDone({ found: true, runners, totalTests }); }
       } else {
         // No trailing "— add one?": this chip is a status readout, not a
         // button — clicking it only re-runs the same lookup. The actual
@@ -15746,12 +16786,11 @@ function getHtml(host, port, cspSource) {
         chip.textContent = isNewFunction ? '⚠ No tests — new function' : '⚠ No tests found';
         chip.title = 'This is a heuristic, not proof — verify by hand before assuming it is untested.';
         let note = isNewFunction
-          ? 'This is a new function with no test coverage yet — consider adding one before you commit.'
-          : 'No test file appears to reference ' + msg.query + ' — consider adding one before you commit.';
+          ? 'New function — no test coverage yet.'
+          : 'No test file references ' + msg.query + '.';
         if (impactedFunctions.length) {
           const sample = impactedFunctions.slice(0, 3).join(', ');
-          note += ' It has ' + impactedFunctions.length + ' confirmed caller(s) (e.g. ' + sample
-            + ') — a test that exercises one of those call paths would catch more than testing this function alone.';
+          note += ' ' + impactedFunctions.length + ' caller(s) (e.g. ' + sample + ') — testing one of those call paths beats testing this alone.';
         }
         if (testingArea) {
           if (!matchList) {
@@ -15827,7 +16866,7 @@ function getHtml(host, port, cspSource) {
               regressionTestChipsByRequestId.set(requestId, { chip: mechChip, actionsEl: genActions, tickInterval, result: gapResult, symbol });
               vscode.postMessage({ type: 'generateRegressionTest', result: gapResult, requestId });
             });
-            genActions.appendChild(mechChip);
+            appendChipWithHint(genActions, mechChip, 'Creates: Call-path test — replays a real caller\\'s literal arguments');
             genActions.dataset.symbol = symbol;
             matchList.appendChild(genActions);
           } else if (gapResult) {
@@ -15840,19 +16879,26 @@ function getHtml(host, port, cspSource) {
             appendClaudeFallbackChip(genActions, gapResult, symbol, false);
           }
         }
+        if (onDone) { onDone({ found: false }); }
       }
     } else if (msg.type === 'testRunResult') {
       const row = testRunRowsByRequestId.get(msg.requestId);
       testRunRowsByRequestId.delete(msg.requestId);
       if (!row) { return; }
-      const { runBtn, statusPill, statusDetail, outputToggle, outputPre, fixBtn, installBtn, setupBtn, resolveBtn, symbolKey, tickInterval, isDirect } = row;
+      const { runBtn, statusPill, statusDetail, outputToggle, copyFailureBtn, outputPre, fixBtn, installBtn, setupBtn, resolveBtn, symbolKey, tickInterval, isDirect } = row;
       if (tickInterval) { clearInterval(tickInterval); }
       runBtn.dataset.pending = '0';
       // Keep the same "this calls Claude" signal the first click's own
       // label carried (see createTestRunRow's '🤖 Ask Claude to run') —
       // resetting to a bare "Run again" after the first result silently
-      // dropped that warning on every subsequent click.
-      runBtn.textContent = isDirect ? '↻ Run again with CODEMD (free)' : '🤖 Ask Claude to run again';
+      // dropped that warning on every subsequent click. JS/TS is not
+      // actually Claude-only, though: runTestViaClaudeForResult skips Claude
+      // whenever it can build a deterministic vitest/jest/mocha/ava command
+      // itself (the common case) and only falls back to Claude discovery
+      // when it can't — so trust the backend's own viaClaude flag over the
+      // filename-based isDirect guess whenever this result reports one.
+      const wasViaClaude = typeof msg.viaClaude === 'boolean' ? msg.viaClaude : !isDirect;
+      runBtn.textContent = wasViaClaude ? '🤖 Ask Claude to run again' : '↻ Run again with CODEMD (free)';
       runBtn.className = 'btn is-outline';
       if (installBtn) { installBtn.dataset.pending = '0'; }
       if (setupBtn) { setupBtn.style.display = msg.noTestRunner ? '' : 'none'; setupBtn.dataset.pending = '0'; }
@@ -15873,7 +16919,16 @@ function getHtml(host, port, cspSource) {
         if (installBtn) { installBtn.style.display = 'none'; }
         if (setupBtn) { setupBtn.style.display = 'none'; }
         if (resolveBtn) { resolveBtn.style.display = 'none'; }
+        if (copyFailureBtn) { copyFailureBtn.style.display = 'none'; }
         if (row.onResult) { row.onResult(msg); }
+        // "Run CODEMD (Free) Tests" awaits row.runTest() one row at a time
+        // (see row._doneListeners in createTestRunRow) — drain it here so
+        // that wait resolves regardless of which exit path this run took.
+        if (row.domRow && row.domRow._doneListeners && row.domRow._doneListeners.length) {
+          const doneListeners = row.domRow._doneListeners;
+          row.domRow._doneListeners = [];
+          doneListeners.forEach((fn) => fn(msg));
+        }
         return;
       }
       if (!msg.ok) {
@@ -15884,6 +16939,7 @@ function getHtml(host, port, cspSource) {
         statusDetail.className = 'statusDetail';
         statusDetail.style.display = '';
         if (resolveBtn) { resolveBtn.style.display = 'none'; }
+        if (copyFailureBtn) { copyFailureBtn.style.display = ''; }
         if (fixBtn) {
           // "No test runner at all" isn't something "Fix with Claude" should
           // ever get a crack at — its whole job when environmentIssue is set
@@ -15927,6 +16983,14 @@ function getHtml(host, port, cspSource) {
           }
         }
         if (row.onResult) { row.onResult(msg); }
+        // "Run CODEMD (Free) Tests" awaits row.runTest() one row at a time
+        // (see row._doneListeners in createTestRunRow) — drain it here so
+        // that wait resolves regardless of which exit path this run took.
+        if (row.domRow && row.domRow._doneListeners && row.domRow._doneListeners.length) {
+          const doneListeners = row.domRow._doneListeners;
+          row.domRow._doneListeners = [];
+          doneListeners.forEach((fn) => fn(msg));
+        }
         return;
       }
       if (installBtn) { installBtn.style.display = 'none'; }
@@ -15948,6 +17012,7 @@ function getHtml(host, port, cspSource) {
         }
       }
       if (resolveBtn) { resolveBtn.style.display = msg.passed ? '' : 'none'; }
+      if (copyFailureBtn) { copyFailureBtn.style.display = msg.passed ? 'none' : ''; }
       // A passed viaClaude run's "Run again" would spend a real Claude call
       // just to re-discover the same command for a test that already just
       // passed — no new information, only repeat cost (and Vitest/Vite's
@@ -15964,6 +17029,11 @@ function getHtml(host, port, cspSource) {
       // the real exit code ourselves, same as Python/Go — so it's just a
       // trailing note on whichever real tier below actually applies.
       const claudeNote = msg.viaClaude ? ' · command found by Claude' : '';
+      // A genuine failure (as opposed to the couldn't-even-run/environment
+      // case handled in the !msg.ok branch above) is exactly what the
+      // Bugs, Issues & Defects card exists to collect — point the user at
+      // it here instead of leaving them to notice that card on their own.
+      const defectsPointer = msg.passed ? '' : ' See it listed under "Bugs, Issues & Defects" below.';
       statusPill.textContent = passIcon + ' ' + passWord;
       statusPill.className = 'statusPill ' + (msg.passed ? 'is-good' : 'is-bad');
       statusPill.style.display = '';
@@ -15989,7 +17059,7 @@ function getHtml(host, port, cspSource) {
       } else {
         detailText = 'Best effort — execution not confirmed' + (msg.reason ? ': ' + msg.reason : '');
       }
-      statusDetail.textContent = detailText + claudeNote;
+      statusDetail.textContent = detailText + claudeNote + defectsPointer;
       statusDetail.className = 'statusDetail' + (detailTone ? ' is-' + detailTone : '');
       statusDetail.style.display = '';
       if (symbolKey) {
@@ -16003,6 +17073,14 @@ function getHtml(host, port, cspSource) {
         updateVerdictCard(symbolKey);
       }
       if (row.onResult) { row.onResult(msg); }
+      // "Run CODEMD (Free) Tests" awaits row.runTest() one row at a time
+      // (see row._doneListeners in createTestRunRow) — drain it here so
+      // that wait resolves regardless of which exit path this run took.
+      if (row.domRow && row.domRow._doneListeners && row.domRow._doneListeners.length) {
+        const doneListeners = row.domRow._doneListeners;
+        row.domRow._doneListeners = [];
+        doneListeners.forEach((fn) => fn(msg));
+      }
     } else if (msg.type === 'setUpTestRunnerResult') {
       const entry = jsTestRunnerSetupByRequestId.get(msg.requestId);
       jsTestRunnerSetupByRequestId.delete(msg.requestId);
@@ -16044,8 +17122,12 @@ function getHtml(host, port, cspSource) {
       entry.fixOutputPre.textContent += msg.chunk;
       entry.fixOutputPre.scrollTop = entry.fixOutputPre.scrollHeight;
     } else if (msg.type === 'testGenProgress') {
+      // msg.queued === true (see runClaudeTestGeneration/generateCallPathTestForResult)
+      // means this chunk is just the prompt echoed back before the call has
+      // reached the front of the shared Claude CLI queue — real generation
+      // hasn't started yet, so the "Generating… Ns" counter must not either.
       const claudeTicker = claudeTickersByRequestId.get(msg.requestId);
-      if (claudeTicker) { claudeTicker.beginIfNotStarted(); }
+      if (claudeTicker && !msg.queued) { claudeTicker.beginIfNotStarted(); }
       const pre = testGenOutputPreByRequestId.get(msg.requestId);
       if (!pre) { return; }
       pre.textContent += msg.chunk;
@@ -16054,7 +17136,7 @@ function getHtml(host, port, cspSource) {
       const entry = fixTestRowsByRequestId.get(msg.requestId);
       fixTestRowsByRequestId.delete(msg.requestId);
       if (!entry) { return; }
-      const { fixBtn, fixNote, testFile, sourceFile, tickInterval, fixStopBtn, fixOutputPre, statusPill, statusDetail, runBtn, outputToggle, outputPre, isDirect, resolveBtn } = entry;
+      const { fixBtn, fixNote, testFile, sourceFile, tickInterval, fixStopBtn, fixOutputPre, statusPill, statusDetail, runBtn, outputToggle, copyFailureBtn, outputPre, isDirect, resolveBtn } = entry;
       if (tickInterval) { tickInterval.clear(); }
       claudeTickersByRequestId.delete(msg.requestId);
       if (fixStopBtn) { fixStopBtn.style.display = 'none'; }
@@ -16113,7 +17195,12 @@ function getHtml(host, port, cspSource) {
           if (passed === true) {
             runBtn.style.display = 'none';
           } else {
-            runBtn.textContent = isDirect ? '↻ Run again with CODEMD (free)' : '🤖 Ask Claude to run again';
+            // Same guess as createTestRunRow's initial label: JS/TS usually
+            // resolves to a deterministic runner with no Claude call, so
+            // don't default it to the Claude-labeled button just because
+            // it's outside DIRECT_RUN_EXTS.
+            const isJsTs = /\.(jsx?|tsx?|mjs|cjs)$/i.test(String(testFile || '').toLowerCase());
+            runBtn.textContent = (isDirect || isJsTs) ? '↻ Run again with CODEMD (free)' : '🤖 Ask Claude to run again';
             runBtn.className = 'btn is-outline';
             runBtn.style.display = '';
           }
@@ -16123,6 +17210,7 @@ function getHtml(host, port, cspSource) {
           if (outputPre) { outputPre.textContent = msg.output; }
           outputToggle.style.display = '';
         }
+        if (copyFailureBtn) { copyFailureBtn.style.display = passed === true ? 'none' : ''; }
       }
       // Answers the question "did Claude just fix my code, or fix the test
       // it was checking?" instead of leaving the user to infer it from a
@@ -16218,6 +17306,7 @@ function getHtml(host, port, cspSource) {
       if (msg.ok && msg.generated && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
         updateVerdictCard(symbol);
+        refreshTestGapForSymbol(symbol);
       } else if (symbol) {
         // Mechanical couldn't help — this is exactly the case the Claude
         // fallback exists for, so reveal it now rather than up front.
@@ -16267,6 +17356,7 @@ function getHtml(host, port, cspSource) {
       if (msg.ok && msg.path && symbol) {
         generatedTestsBySymbol.set(symbol, opts);
         updateVerdictCard(symbol);
+        refreshTestGapForSymbol(symbol);
       }
     } else if (msg.type === 'existingTestsResult') {
       const entry = existingTestsRequestsByRequestId.get(msg.requestId);
@@ -16292,6 +17382,7 @@ function getHtml(host, port, cspSource) {
         const el = existingTestsCardElsBySymbol.get(entry.symbol);
         if (el && el.isConnected) { renderExistingTestsCard(el, matches); }
         updateVerdictCard(entry.symbol);
+        if (matches.length) { refreshTestGapForSymbol(entry.symbol); }
       }
       // Unblock any Write:Auto chip(s) waiting on this symbol's verdict —
       // even on a failed lookup, so a pytest hiccup can't strand a queued

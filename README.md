@@ -46,7 +46,7 @@ OK  safe to commit
 
 The full loop, from an AI agent's change to a verified commit:
 
-![CODEMD flow: an AI agent writes code, CODEMD tracks the uncommitted change and ranks its risk, checks for existing test coverage, generates a test when nothing covers it, runs it for a real pass/fail, and offers a one-click fix loop until it passes](https://github.com/codemd-dev/CODE.md/blob/main/media/test-loop-flowchart.png?raw=true)
+![CODEMD verifies your AI-generated code before you commit: it analyzes the change to find real callers and impacted code, finds which existing tests already cover it, finds the test gaps, uses your AI coding agent to create the missing tests grounded in real callers and impact, then runs everything automatically — safe to commit if all tests pass, or AI-powered fix suggestions and a re-run loop if any fail](https://github.com/codemd-dev/CODE.md/blob/main/media/TestingPlatform.png?raw=true)
 
 ## Two different things CODEMD does — and only one of them costs anything
 
@@ -137,6 +137,12 @@ CODEMD is beta / pre-release software, provided **"as is," with no warranty of a
 - **No liability.** To the maximum extent permitted by law, CodeVal and CODEMD's contributors accept no liability for damages — direct, indirect, incidental, or consequential — arising from use of this extension, including but not limited to data loss, incorrect test results, missed bugs, or third-party AI usage costs.
 
 Full legal terms: [LICENSE.txt](LICENSE.txt).
+
+## Privacy
+
+CODEMD's analysis runs locally and doesn't upload your code. See
+[PRIVACY.md](PRIVACY.md) for what data, if any, is involved — including the
+optional codemd.dev link in the panel.
 
 ## Learn More
 

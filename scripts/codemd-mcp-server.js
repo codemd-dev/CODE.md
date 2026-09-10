@@ -859,12 +859,28 @@ function isTestFile(relPath) {
   if (isNextjsReservedFile(name)) {
     return false;
   }
+  const ext = path.posix.extname(name);
+  // Python/Go each have one unambiguous, runner-enforced filename
+  // convention (see TEST_NAME_CONVENTION_EXTS) — for those, living inside a
+  // tests/-shaped directory is not enough on its own: that directory also
+  // legitimately holds non-test modules (tests/__init__.py, tests/compat.py,
+  // tests/conftest.py, a tests/testserver/server.py fixture helper, ...).
+  // Matching those as runnable test files hands pytest/go test a file with
+  // zero collectible tests, producing a bogus "could not collect" failure —
+  // so for these two, only the filename convention counts, same as pytest
+  // and `go test` themselves would decide. Every other extension below
+  // (JS/TS's __tests__/ convention allows any filename inside it; Java/C#/
+  // Kotlin/Rust have their own filename-suffix checks) keeps the
+  // directory-based match.
+  if (TEST_NAME_CONVENTION_EXTS.has(ext)) {
+    return ext === '.py'
+      ? /^test_[A-Za-z0-9_-]*\.py$/.test(name) || /_test\.py$/.test(name)
+      : /_test\.go$/.test(name);
+  }
   return (
     /(^|\/)(__tests__|tests?|spec)(\/|$)/.test(normalized) ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
-    /^test_[A-Za-z0-9_-]*\.py$/.test(name) || /_test\.py$/.test(name) ||
     /Test\.(java|kt|cs)$/i.test(name) ||
-    /_test\.go$/.test(name) ||
     /_test(s)?\.rs$/.test(name)
   );
 }
@@ -1068,21 +1084,34 @@ function pythonTestSpans(lines) {
   const classRe = /^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)/;
   const defRe = /^(\s*)(?:async\s+)?def\s+(test[A-Za-z0-9_]*)\s*\(/;
   const spans = [];
-  let lastClass = null;
+  // Nesting-aware stack, not a single "last class seen" variable: a helper
+  // class defined *inside* a test method's own body (e.g. requests' own
+  // tests/test_requests.py has several, like a local `class BadFileObj:`
+  // used to fake a file object for one test) must not leak into being the
+  // "enclosing class" for a later top-level test method just because it was
+  // the most recently matched `class` line. Popping by indent on both class
+  // and def lines keeps only classes that actually still contain the
+  // current line.
+  const classStack = [];
   for (let i = 0; i < lines.length; i++) {
     const classMatch = lines[i].match(classRe);
     if (classMatch) {
-      lastClass = { name: classMatch[2], indent: classMatch[1].length };
+      const indent = classMatch[1].length;
+      while (classStack.length && classStack[classStack.length - 1].indent >= indent) {
+        classStack.pop();
+      }
+      classStack.push({ name: classMatch[2], indent });
       continue;
     }
     const defMatch = lines[i].match(defRe);
     if (defMatch) {
       const indent = defMatch[1].length;
-      const name = defMatch[2];
-      const nodeId = (lastClass && indent > lastClass.indent) ? `${lastClass.name}::${name}` : name;
-      if (!(lastClass && indent > lastClass.indent)) {
-        lastClass = null;
+      while (classStack.length && classStack[classStack.length - 1].indent >= indent) {
+        classStack.pop();
       }
+      const enclosing = classStack.length ? classStack[classStack.length - 1] : null;
+      const name = defMatch[2];
+      const nodeId = enclosing ? `${enclosing.name}::${name}` : name;
       spans.push({ name, nodeId, startLineIdx: i });
     }
   }
@@ -1156,19 +1185,99 @@ function namedTestMatchesForFile(ext, text, targetTerms) {
 // actually call the target, directly or transitively — instead of scanning
 // test file text for keyword overlap, which matches broadly on any common
 // term (e.g. "main") regardless of whether that test exercises this function.
+// isTestFile() only asks whether a FILE lives under a tests/-shaped
+// directory — true for genuine test files, but also true for test-support
+// helpers in the same directory (e.g. tests/testserver/server.py's
+// Server.text_response_server, a fixture-ish helper method, not a test).
+// findTestsViaCallgraph turns each accepted row directly into a pytest/go
+// node id and offers it as a "Confirmed" runnable match, so it additionally
+// needs the CALLER'S OWN NAME to look like something its language's runner
+// would actually collect — not just live in a test-shaped file. Only
+// Python/Go have a naming convention a runner enforces (pytest requires
+// test_*, Go requires Test*); JUnit/xUnit/Rust collect via annotations
+// (@Test/#[test]), not name, so there's no name check to apply there
+// without guessing wrong and dropping legitimately-named tests.
+const TEST_NAME_CONVENTION_EXTS = new Set(['.py', '.go']);
+function callerLooksLikeRunnableTest(relPath, node) {
+  const ext = path.posix.extname(String(relPath || '').toLowerCase());
+  if (!TEST_NAME_CONVENTION_EXTS.has(ext)) {
+    return true;
+  }
+  return /^test/i.test(functionTail(node));
+}
+
+// TDAD's confidence-weighted merge formula (arXiv:2603.17973v2 §3.4):
+// score = (1 - cw)*w_strategy + cw*confidence, cw = 0.3 ("allocates 70% of
+// the score to strategy-specific weights and 30% to link-quality
+// confidence"). We only have one detection strategy here (backward
+// call-graph traversal), so w_strategy is TDAD's own Direct (0.95,
+// depth === 1) vs Transitive (0.70, depth > 1) weight; confidence is a real
+// edge-provenance tier (AST-resolved vs regex/heuristic vs structural — see
+// edgeConfidence/nodeConfidenceMap above) mapped onto TDAD's own published
+// confidence scale (1.0/0.56/0.5/0.45), ranked strongest-to-weakest onto our
+// high/medium/low/unknown tiers. Replaces the previous ad hoc
+// `Math.max(10, 90 - depth*15)` decay, which had no grounding in either
+// evidence strength or a published method, AND was scored off the wrong
+// input for transitive matches: it looked up edgeConfidence(row.node,
+// roots[0]) — a DIRECT edge from a 2+-hop-away caller straight to the
+// target, which almost never exists, so every transitive match silently
+// scored 'unknown' regardless of how strong its actual multi-hop path was.
+// nodeConfidenceMap(walk.edges) fixes that by using the best confidence
+// along the path BFS actually walked to reach that node.
+const TDAD_CONFIDENCE_WEIGHT = 0.3;
+const TDAD_CONFIDENCE_BY_TIER = { high: 1.0, medium: 0.56, low: 0.5, unknown: 0.45 };
+function tddStrategyWeight(depth) {
+  return depth === 1 ? 0.95 : 0.70;
+}
+function tddBlendedScore(depth, tier) {
+  const w = tddStrategyWeight(depth);
+  const c = TDAD_CONFIDENCE_BY_TIER[tier] ?? TDAD_CONFIDENCE_BY_TIER.unknown;
+  return (1 - TDAD_CONFIDENCE_WEIGHT) * w + TDAD_CONFIDENCE_WEIGHT * c;
+}
+// TDAD's own tiers (§3.4): high >= 0.8, medium 0.5-0.8, low < 0.5.
+function tddScoreTier(score01) {
+  if (score01 >= 0.8) { return 'high'; }
+  if (score01 >= 0.5) { return 'medium'; }
+  return 'low';
+}
+
+// impactRadius (above) legitimately defaults to a wide 50-hop/2000-node
+// walk — its whole purpose is exhaustive blast-radius exploration. This
+// traversal answers a much narrower question — "does an existing test
+// actually call this function" — where a real test-to-target call chain is
+// almost always 1-3 hops. Reusing impactRadius's wide bounds here let the
+// backward walk wander dozens of hops through a regex-inferred callgraph and
+// surface a completely unrelated test as "confirmed" coverage for whatever
+// query happened to reach it (observed in practice: one call-chain test's
+// genuine failure got misattributed as a fresh "bug" against 37+ unrelated
+// functions across a whole codebase, because the wide walk could reach that
+// one test file from almost anywhere).
+const COVERAGE_MAX_DEPTH = 6;
+const COVERAGE_MAX_NODES = 300;
+
 function findTestsViaCallgraph(query, limit) {
   const graph = loadImpactGraph();
   const roots = resolveNodes(query, graph.nodes, 8);
   if (!roots.length) {
     return null;
   }
-  const walk = traverse(roots, graph.backward, 50, 2000, graph, true);
+  const walk = traverse(roots, graph.backward, COVERAGE_MAX_DEPTH, COVERAGE_MAX_NODES, graph, true);
+  const nodeConfidence = nodeConfidenceMap(walk.edges);
   const testNodeRows = [];
   for (const [node, depth] of Object.entries(walk.visited)) {
     if (depth === 0) { continue; } // the root itself, not a caller
+    // Beyond the direct-caller hop, require at least some real edge
+    // provenance along the path. An 'unknown' tier at depth > 1 means no
+    // edge info was ever recorded for that hop — in practice that comes from
+    // a merged/fallback reference edge rather than an actual resolved call,
+    // which is exactly the kind of connection that links two otherwise
+    // unrelated functions purely by name coincidence.
+    if (depth > 1 && (nodeConfidence[node]?.tier || 'unknown') === 'unknown') {
+      continue;
+    }
     const loc = graph.locations[node];
     const relPath = loc?.file ? String(loc.file).replace(/\\/g, '/') : '';
-    if (relPath && isTestFile(relPath)) {
+    if (relPath && isTestFile(relPath) && callerLooksLikeRunnableTest(relPath, node)) {
       testNodeRows.push({ node, depth, file: relPath, line: loc?.line || undefined });
     }
   }
@@ -1185,17 +1294,19 @@ function findTestsViaCallgraph(query, limit) {
   const matches = Array.from(byFile.entries()).map(([file, rows]) => {
     rows.sort((a, b) => a.depth - b.depth);
     const minDepth = rows[0].depth;
-    const confidenceEdges = rows.map((row) => edgeConfidence(graph, row.node, roots[0]));
+    const bestTier = (nodeConfidence[rows[0].node]?.tier) || 'unknown';
+    const blended = tddBlendedScore(minDepth, bestTier);
     return {
       file,
-      score: minDepth === 1 ? 100 : Math.max(10, 90 - (minDepth * 15)),
+      score: Math.round(blended * 100),
+      confidence: bestTier,
+      confidence_tier: tddScoreTier(blended),
       reasons: [minDepth === 1
         ? 'directly calls the target (confirmed call-graph edge)'
         : `calls the target transitively (${minDepth} hops, confirmed call-graph path)`],
-      confidence: confidenceEdges[0]?.tier || 'unknown',
       test_names: rows.map((row) => ({
         name: functionTail(row.node),
-        nodeId: row.node,
+        nodeId: pytestNodeIdFor(file, row.node),
         line: row.line || 0,
       })).slice(0, 6),
     };
@@ -1793,6 +1904,62 @@ function summarizeConfidence(edgeRows, coverage) {
 
 function functionTail(name) {
   return String(name || '').split(/[.#/\\:-]/).filter(Boolean).pop() || String(name || '');
+}
+
+// Callgraph node ids for Python are fully dotted module-qualified names
+// (e.g. "tests.test_adapters.TestFoo.test_bar", or "tests.test_adapters.
+// test_bar" with no class) — pyan3/pycg don't mark where the module path
+// ends and the class/function qualname begins. Handing that raw dotted
+// string straight to `pytest <file>::<nodeId>` is a pytest usage error
+// (exit code 4, "ERROR: not found") because pytest's own node-id syntax
+// wants only the qualname after the module boundary, with "::" (not ".")
+// between a class and its method. Strip the module's own dotted name
+// (computed from the test file's path, same way Python resolves imports)
+// off the front of the node id, then swap the remaining dot(s) for "::".
+function pythonModuleDottedName(relPath) {
+  let rel = String(relPath || '').replace(/\\/g, '/');
+  if (rel.toLowerCase().endsWith('.py')) {
+    rel = rel.slice(0, -3);
+  }
+  const parts = rel.split('/').filter(Boolean);
+  if (parts.length && parts[parts.length - 1] === '__init__') {
+    parts.pop();
+  }
+  return parts.length ? parts.join('.') : '';
+}
+
+function pytestNodeIdFor(relPath, rawNode) {
+  const node = String(rawNode || '');
+  const rel = String(relPath || '').replace(/\\/g, '/');
+  if (path.posix.extname(rel) !== '.py') {
+    return node;
+  }
+  const tail = functionTail(node);
+  // Ground truth first: read the actual file and find which class (if any)
+  // actually encloses a test named `tail`, via the same indentation-based
+  // scan namedTestMatchesForFile's keyword fallback already trusts. This
+  // sidesteps every way the dotted-module-prefix guess below can be wrong
+  // (analysis root differs from the workspace root, a src/ layout, case
+  // differences, symlinks, ...) — those mismatches used to silently fall
+  // through to a bare `functionTail(node)`, which drops the class and hands
+  // pytest a node id for a class method as if it were a top-level function
+  // (a pytest "ERROR: not found", since pytest won't collect it that way).
+  try {
+    const full = path.isAbsolute(rel) ? rel : path.join(workspaceRoot, rel);
+    const text = fs.readFileSync(full, 'utf8');
+    const span = pythonTestSpans(text.split(/\r?\n/)).find((s) => s.name === tail);
+    if (span) {
+      return span.nodeId;
+    }
+  } catch {
+    // File unreadable (deleted/moved since indexing) — fall through to the
+    // dotted-name heuristic below.
+  }
+  const moduleName = pythonModuleDottedName(relPath);
+  const qualname = (moduleName && node.startsWith(`${moduleName}.`))
+    ? node.slice(moduleName.length + 1)
+    : tail;
+  return qualname.replace(/\./g, '::') || node;
 }
 
 function resolveNodes(query, nodes, limit = 12) {
@@ -2466,3 +2633,21 @@ process.stdin.on('data', (chunk) => {
 
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('close', () => process.exit(0));
+
+// Lets a generated JS/TS test `require()` these directly instead of the
+// generator falling back to copy-pasting the implementation into the test
+// file (the previous workaround for "the target isn't exported") — this
+// file is CommonJS (see 'use strict'/require above), not an ES module, so
+// these must be plain function declarations with a module.exports block,
+// not `export function`.
+module.exports = {
+  isTestFile,
+  pythonTestSpans,
+  jsTestSpans,
+  callerLooksLikeRunnableTest,
+  tddStrategyWeight,
+  tddBlendedScore,
+  tddScoreTier,
+  pythonModuleDottedName,
+  pytestNodeIdFor,
+};
